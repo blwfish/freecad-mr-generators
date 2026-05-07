@@ -1,0 +1,141 @@
+"""
+Parametric Standing Seam Roof Generator for FreeCAD v1.0.0
+
+Generates standing seam metal roof panels on selected roof faces.
+Panels run from eave to ridge with raised seam ridges at panel boundaries.
+
+WORKFLOW:
+1. Ctrl+click one or more roof faces
+2. Run this macro
+3. Adjust PanelWidth, SeamHeight, SeamWidth, PanelThickness in the
+   Properties panel — panels update live
+
+HO scale defaults: 3.0 mm wide panels, 0.35 mm seam height (~18" panels)
+
+For hip/ridge caps: run the Roof Seam Generator on adjacent faces and set
+HipStyle to 'metal'.
+
+Requires: standing_seam_proxy.py, standing_seam_geometry.py in same directory
+          roof_geometry.py in _lib/ subdirectory or generators/_shared/
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+import os
+
+from standing_seam_proxy import StandingSeamProxy, StandingSeamViewProxy, VERSION
+
+GENERATOR_NAME = "standing_seam_generator"
+
+
+def _get_spreadsheet_params(doc):
+    """Read standing seam parameters from spreadsheet if present."""
+    preferred = ["params", "StandingSeamParameters", "BuildingParameters", "Spreadsheet"]
+    ss = None
+    for name in preferred:
+        obj = doc.getObject(name)
+        if obj:
+            if obj.TypeId == 'App::Link':
+                t = obj.LinkedObject
+                if t and t.TypeId == 'Spreadsheet::Sheet':
+                    ss = t
+                    break
+            elif obj.TypeId == 'Spreadsheet::Sheet':
+                ss = obj
+                break
+        for o in doc.Objects:
+            if o.Label == name:
+                if o.TypeId == 'App::Link':
+                    t = o.LinkedObject
+                    if t and t.TypeId == 'Spreadsheet::Sheet':
+                        ss = t
+                        break
+                elif o.TypeId == 'Spreadsheet::Sheet':
+                    ss = o
+                    break
+        if ss:
+            break
+
+    if ss is None:
+        return {}
+
+    params = {}
+    aliases = {
+        'panel_width':     ['panelWidth',    'standingSeamPanelWidth'],
+        'seam_height':     ['seamHeight',    'standingSeamHeight'],
+        'seam_width':      ['seamWidth',     'standingSeamWidth'],
+        'panel_thickness': ['panelThickness','metalThickness'],
+    }
+    for key, names in aliases.items():
+        for name in names:
+            try:
+                val = ss.get(name)
+                if val is not None:
+                    params[key] = float(val)
+                    break
+            except Exception:
+                continue
+    return params
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — Ctrl+click one or more roof faces.\n")
+        return
+
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith('Face'):
+                face_entries.append((sel_obj.Object, sub))
+
+    if not face_entries:
+        App.Console.PrintError(
+            "No faces selected. Select faces (not whole objects).\n")
+        return
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("StandingSeamProject")
+
+    params = _get_spreadsheet_params(doc)
+    App.Console.PrintMessage(
+        f"Standing Seam Generator v{VERSION}: {len(face_entries)} face(s) selected\n")
+    if params:
+        App.Console.PrintMessage("  Using parameters from spreadsheet\n")
+    else:
+        App.Console.PrintMessage("  Using HO scale defaults\n")
+
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("standing_seam_generator: StandingSeamPanels")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "StandingSeamPanels")
+        StandingSeamProxy(obj)
+        StandingSeamViewProxy(obj.ViewObject)
+        StandingSeamProxy.set_defaults(obj, params)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.75, 0.78, 0.80)  # light grey metal
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric StandingSeamPanels created.\n"
+        f"  Edit PanelWidth, SeamHeight, etc. in the Properties panel.\n"
+        f"  For hip/ridge caps: run Roof Seam Generator with HipStyle = metal.\n\n")
+
+
+if __name__ == '__main__':
+    main()

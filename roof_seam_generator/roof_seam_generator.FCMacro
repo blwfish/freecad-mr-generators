@@ -1,0 +1,150 @@
+"""
+Roof Seam Generator for FreeCAD v4.0.0
+
+Generates hip cap shingles or valley flashing between two selected roof faces.
+Fully parametric: change properties in panel and geometry updates.
+
+WORKFLOW:
+1. Ctrl+click two adjacent roof faces (or shingle faces from ShingledRoof)
+2. Run this macro
+3. Seam object appears — adjust ShingleHeight, MaterialThickness, etc. in panel
+
+Version History:
+- 4.0.0: FeaturePython conversion — fully parametric live-update object.
+         Generation logic moved to roof_seam_proxy.py.
+         Direct Part.Face.extrude() replaces temp Part::Extrusion doc objects.
+         All seam parameters are editable properties (no re-run needed).
+- 3.2.4: Fix cutting blocks on fused bodies — only trim endpoint-adjacent edges.
+- 3.2.3: Fix recursive BaseObject unwrapping.
+- 3.0.0: Extrude + boolean-cut taper, continuous dome strip.
+- 2.0.0: Bent profile hip caps with V cross-section.
+- 1.0.0: Initial release.
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+import os
+
+from roof_seam_proxy import RoofSeamProxy, RoofSeamViewProxy, VERSION
+
+
+def _get_spreadsheet_params(doc):
+    """Read seam parameters from spreadsheet (falls back to empty dict)."""
+    preferred = ["params", "ShingleParameters", "BuildingParameters", "Spreadsheet"]
+    ss = None
+    for name in preferred:
+        obj = doc.getObject(name)
+        if obj:
+            if obj.TypeId == 'App::Link':
+                t = obj.LinkedObject
+                if t and t.TypeId == 'Spreadsheet::Sheet':
+                    ss = t
+                    break
+            elif obj.TypeId == 'Spreadsheet::Sheet':
+                ss = obj
+                break
+        for o in doc.Objects:
+            if o.Label == name:
+                if o.TypeId == 'App::Link':
+                    t = o.LinkedObject
+                    if t and t.TypeId == 'Spreadsheet::Sheet':
+                        ss = t
+                        break
+                elif o.TypeId == 'Spreadsheet::Sheet':
+                    ss = o
+                    break
+        if ss:
+            break
+
+    if ss is None:
+        return {}
+
+    params = {}
+    aliases = {
+        'shingleHeight':      ['shingleHeight'],
+        'materialThickness':  ['materialThickness', 'shingleThickness'],
+        'shingleExposure':    ['shingleExposure', 'exposure'],
+        'angleDepth':          ['angleDepth'],
+        'hipCapWidth':         ['hipCapWidth'],
+        'valleyFlashingWidth': ['valleyFlashingWidth'],
+        'hipStyle':            ['hipStyle'],
+    }
+    string_keys = {'hipStyle'}
+    for key, names in aliases.items():
+        for name in names:
+            try:
+                val = ss.get(name)
+                if val is not None:
+                    if key in string_keys:
+                        params[key] = str(val).strip().strip("'\"").lower()
+                    else:
+                        params[key] = float(val)
+                    break
+            except Exception:
+                continue
+    return params
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError("Nothing selected — Ctrl+click two adjacent roof faces.\n")
+        return
+
+    # Collect exactly 2 face references
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith("Face"):
+                face_entries.append((sel_obj.Object, sub))
+
+    if len(face_entries) != 2:
+        App.Console.PrintError(
+            f"Select exactly 2 adjacent roof faces (got {len(face_entries)}).\n"
+            "Usage: Ctrl+click two adjacent roof faces, then run via toolbar button.\n")
+        return
+
+    App.Console.PrintMessage(f"Roof Seam v{VERSION}: 2 faces selected\n")
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("RoofSeamProject")
+
+    params = _get_spreadsheet_params(doc)
+    if params:
+        App.Console.PrintMessage("Using parameters from spreadsheet\n")
+    else:
+        App.Console.PrintMessage("Using HO scale defaults\n")
+
+    # Build LinkSubList: group by object
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("roof_seam_generator: RoofSeam")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "RoofSeam")
+        RoofSeamProxy(obj)
+        RoofSeamViewProxy(obj.ViewObject)
+
+        RoofSeamProxy.set_defaults(obj, params)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.7, 0.65, 0.55)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric RoofSeam created.\n"
+        f"  Edit ShingleHeight, MaterialThickness, etc. in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()

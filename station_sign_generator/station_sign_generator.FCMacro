@@ -1,0 +1,59 @@
+"""
+Parametric Station Sign Generator for FreeCAD v2.0.0
+
+Fully parametric: change StationName in the Properties panel and the sign
+rebuilds automatically, scaling its width and height to fit the new text.
+
+No selection required — just run this macro. A sign named "Default" is created.
+Edit StationName, FontPath, BorderThickness, BorderGap, etc. in the panel.
+
+WORKFLOW:
+1. Run this macro (no selection needed)
+2. StationSign object appears with text "Default"
+3. Change StationName in the Properties panel → sign updates instantly
+4. Adjust BorderThickness, BorderGap, MaterialThickness as desired
+
+Version History:
+- 2.0.0: FeaturePython conversion — fully parametric live-update object.
+         No selection required; sign auto-scales around StationName text.
+         Generation logic moved to station_sign_proxy.py.
+         Uses Part.makeShapeString directly (no temporary Draft objects).
+- 1.2.0: Transaction wrapping for undo
+- 1.1.1: Increased default border gap
+- 1.1.0: Fixed border gap, improved text centering
+- 1.0.0: Initial release
+"""
+
+import FreeCAD as App
+import sys
+from pathlib import Path
+
+from station_sign_proxy import StationSignProxy, StationSignViewProxy, VERSION
+
+
+def main():
+    doc = App.ActiveDocument or App.newDocument()
+
+    App.Console.PrintMessage(f"Station Sign v{VERSION}: creating parametric sign\n")
+
+    doc.openTransaction("station_sign_generator: StationSign")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "StationSign")
+        StationSignProxy(obj)
+        StationSignViewProxy(obj.ViewObject)
+        StationSignProxy.set_defaults(obj)
+        obj.ViewObject.ShapeColor = (0.95, 0.95, 0.85)
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric StationSign created.\n"
+        f"  Edit StationName in the Properties panel to change the sign text.\n"
+        f"  The sign dimensions scale automatically to fit the text.\n\n")
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,85 @@
+"""
+Smart Trim Generator for FreeCAD v1.5.0
+
+Applies parametric trim (corner boards, eave trim, gable trim) to wall faces.
+Fully parametric: change any property in the panel and the trim updates.
+
+WORKFLOW:
+1. Select one or more wall faces
+2. Run this macro
+3. Trim appears — adjust properties (width, height, flip, etc.) in the panel
+4. Changes take effect immediately on recompute
+
+Author: Brian White
+Version: 1.5.0
+License: MIT
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+
+# Ensure our modules are importable
+# Force-reload during development so installed macro picks up changes
+for mod_name in ('smart_trim_proxy', 'trim_geometry'):
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+
+from smart_trim_proxy import SmartTrimProxy, SmartTrimViewProxy, VERSION
+
+
+def main():
+    """Capture selection and create a parametric SmartTrim object."""
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — please select one or more wall faces.\n")
+        return
+
+    # Build LinkSubList from selection: [(obj, ("Face3", "Face5")), ...]
+    link_sub = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            App.Console.PrintWarning(
+                f"  {sel_obj.Object.Label}: select a face, not the whole object\n")
+            continue
+        face_names = [s for s in sel_obj.SubElementNames
+                      if s.startswith("Face")]
+        if face_names:
+            link_sub.append((sel_obj.Object, tuple(face_names)))
+
+    if not link_sub:
+        App.Console.PrintError("No faces in selection.\n")
+        return
+
+    total_faces = sum(len(names) for _, names in link_sub)
+    print(f"SmartTrim v{VERSION}: {total_faces} face(s) selected")
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("TrimProject")
+
+    doc.openTransaction("smart_trim_generator: Trim")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "Trim")
+        SmartTrimProxy(obj)
+        SmartTrimViewProxy(obj.ViewObject)
+
+        # Set defaults, then assign sources (triggers execute on recompute)
+        SmartTrimProxy.set_defaults(obj)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.8, 0.6, 0.4)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric SmartTrim created — edit properties in the panel.\n"
+        f"  Toggle 'Flip' to move trim to the opposite wall side.\n\n")
+
+
+if __name__ == '__main__':
+    main()

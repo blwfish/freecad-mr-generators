@@ -1,0 +1,143 @@
+"""
+Parametric Slate Roof Generator for FreeCAD v1.0.0
+
+Generates flat slate tiles on selected roof faces.
+Fully parametric: change tile dimensions in the Properties panel and tiles
+regenerate automatically.
+
+WORKFLOW:
+1. Ctrl+click one or more roof faces
+2. Run this macro
+3. Adjust TileWidth, TileHeight, MaterialThickness, Exposure, StaggerPattern
+   in the Properties panel — tiles update live
+
+HO scale defaults: 2.0 × 2.5 mm tiles, 1.2 mm exposure (~12 × 15" slate)
+
+Requires: slate_proxy.py, slate_geometry.py in same directory
+          roof_geometry.py in _lib/ subdirectory or generators/_shared/
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+import os
+
+from slate_proxy import SlateProxy, SlateViewProxy, VERSION
+
+GENERATOR_NAME = "slate_generator"
+
+
+def _get_spreadsheet_params(doc):
+    """Read slate parameters from spreadsheet if present."""
+    preferred = ["params", "SlateParameters", "BuildingParameters", "Spreadsheet"]
+    ss = None
+    for name in preferred:
+        obj = doc.getObject(name)
+        if obj:
+            if obj.TypeId == 'App::Link':
+                t = obj.LinkedObject
+                if t and t.TypeId == 'Spreadsheet::Sheet':
+                    ss = t
+                    break
+            elif obj.TypeId == 'Spreadsheet::Sheet':
+                ss = obj
+                break
+        for o in doc.Objects:
+            if o.Label == name:
+                if o.TypeId == 'App::Link':
+                    t = o.LinkedObject
+                    if t and t.TypeId == 'Spreadsheet::Sheet':
+                        ss = t
+                        break
+                elif o.TypeId == 'Spreadsheet::Sheet':
+                    ss = o
+                    break
+        if ss:
+            break
+
+    if ss is None:
+        return {}
+
+    params = {}
+    aliases = {
+        'tile_width':         ['tileWidth',         'slateWidth',   'tile_width'],
+        'tile_height':        ['tileHeight',        'slateHeight',  'tile_height'],
+        'material_thickness': ['materialThickness', 'slateThickness'],
+        'exposure':           ['slateExposure',     'exposure'],
+        'stagger_pattern':    ['staggerPattern',    'slateStaggerPattern'],
+    }
+    for key, names in aliases.items():
+        for name in names:
+            try:
+                val = ss.get(name)
+                if val is not None:
+                    if key == 'stagger_pattern':
+                        params[key] = str(val).strip().strip("'\"").lower()
+                    else:
+                        params[key] = float(val)
+                    break
+            except Exception:
+                continue
+    return params
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — Ctrl+click one or more roof faces.\n")
+        return
+
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith('Face'):
+                face_entries.append((sel_obj.Object, sub))
+
+    if not face_entries:
+        App.Console.PrintError(
+            "No faces selected. Select faces (not whole objects).\n")
+        return
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("SlateProject")
+
+    params = _get_spreadsheet_params(doc)
+    App.Console.PrintMessage(
+        f"Slate Generator v{VERSION}: {len(face_entries)} face(s) selected\n")
+    if params:
+        App.Console.PrintMessage("  Using parameters from spreadsheet\n")
+    else:
+        App.Console.PrintMessage("  Using HO scale defaults\n")
+
+    # Build LinkSubList grouped by object
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("slate_generator: SlateTiles")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "SlateTiles")
+        SlateProxy(obj)
+        SlateViewProxy(obj.ViewObject)
+        SlateProxy.set_defaults(obj, params)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.35, 0.35, 0.40)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric SlateTiles created.\n"
+        f"  Edit TileWidth, TileHeight, etc. in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()

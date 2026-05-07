@@ -1,0 +1,134 @@
+"""
+Parametric Clapboard Siding Generator for FreeCAD v7.0.0
+
+Fully parametric: change ClapboardHeight or ClapboardThickness in the
+Properties panel and the siding regenerates automatically.
+
+WORKFLOW:
+1. Select one or more wall faces
+2. Run this macro
+3. Clapboard object appears — adjust properties in panel to taste
+
+Version History:
+- 7.0.0: FeaturePython conversion — fully parametric live-update object.
+         Generation logic moved to clapboard_proxy.py.
+         ClapboardHeight and ClapboardThickness are editable properties.
+- 6.1.0: Transaction wrapping for undo
+- 6.0.0: Global grid snapping, single compound from multiple faces
+- 5.4.0: Bay boundary detection for fused arrays
+- 5.3.0: SourceObject → App::PropertyLink (TNP-safe)
+- 5.2.0: Skin-only geometry, Part::Compound output
+- 5.0.0: Face-based selection (not sketches)
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+
+from clapboard_proxy import ClapboardProxy, ClapboardViewProxy, VERSION
+
+
+def _get_spreadsheet_params(doc):
+    """Try to read clapboard parameters from spreadsheet."""
+    preferred = ["params", "ClapboardParameters", "BuildingParameters", "Spreadsheet"]
+    ss = None
+    for name in preferred:
+        obj = doc.getObject(name)
+        if obj:
+            if obj.TypeId == 'App::Link':
+                t = obj.LinkedObject
+                if t and t.TypeId == 'Spreadsheet::Sheet':
+                    ss = t
+                    break
+            elif obj.TypeId == 'Spreadsheet::Sheet':
+                ss = obj
+                break
+        for o in doc.Objects:
+            if o.Label == name:
+                if o.TypeId == 'App::Link':
+                    t = o.LinkedObject
+                    if t and t.TypeId == 'Spreadsheet::Sheet':
+                        ss = t
+                        break
+                elif o.TypeId == 'Spreadsheet::Sheet':
+                    ss = o
+                    break
+        if ss:
+            break
+
+    if ss is None:
+        return {}
+
+    params = {}
+    aliases = {
+        'clapboard_height':    ['clapboard_height', 'ClapboardHeight', 'clapboardHeight', 'reveal'],
+        'clapboard_thickness': ['clapboard_thickness', 'ClapboardThickness', 'thickness', 'materialThickness'],
+    }
+    for key, names in aliases.items():
+        for name in names:
+            try:
+                val = ss.get(name)
+                if val is not None:
+                    params[key] = float(val)
+                    break
+            except Exception:
+                continue
+    return params
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError("Nothing selected — please select one or more wall faces.\n")
+        return
+
+    link_sub = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            App.Console.PrintWarning(
+                f"  {sel_obj.Object.Label}: select a face, not the whole object\n")
+            continue
+        face_names = [s for s in sel_obj.SubElementNames if s.startswith("Face")]
+        if face_names:
+            link_sub.append((sel_obj.Object, tuple(face_names)))
+
+    if not link_sub:
+        App.Console.PrintError("No faces in selection.\n")
+        return
+
+    total = sum(len(n) for _, n in link_sub)
+    App.Console.PrintMessage(f"Clapboard v{VERSION}: {total} face(s) selected\n")
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("ClapboardProject")
+
+    params = _get_spreadsheet_params(doc)
+    if params:
+        App.Console.PrintMessage("Using parameters from spreadsheet\n")
+    else:
+        App.Console.PrintMessage("Using HO scale defaults\n")
+
+    doc.openTransaction("clapboard_generator: ClapboardWall")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "ClapboardWall")
+        ClapboardProxy(obj)
+        ClapboardViewProxy(obj.ViewObject)
+
+        ClapboardProxy.set_defaults(obj, params)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.9, 0.82, 0.65)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric ClapboardWall created.\n"
+        f"  Edit ClapboardHeight / ClapboardThickness in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()

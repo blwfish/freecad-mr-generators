@@ -1,0 +1,108 @@
+"""
+Parametric Bead Board Trim Generator for FreeCAD v2.0.0
+
+Fully parametric: change BeadSpacing, BeadDepth, or BeadGap in the Properties
+panel and the bead board trim regenerates.
+
+WORKFLOW:
+1. Select one or more wall faces
+2. Run this macro
+3. BeadBoardWall appears — adjust properties in panel
+
+Version History:
+- 2.0.0: FeaturePython conversion — fully parametric live-update object.
+         Generation logic moved to bead_board_proxy.py.
+- 1.1.0: Transaction wrapping for undo
+- 1.0.0: Initial release
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+
+from bead_board_proxy import BeadBoardProxy, BeadBoardViewProxy, VERSION
+
+
+def _get_spreadsheet_params(doc):
+    preferred = ["params", "BeadBoardParameters", "BuildingParameters", "Spreadsheet"]
+    ss = None
+    for name in preferred:
+        for o in [doc.getObject(name)] + list(doc.Objects):
+            if o is None:
+                continue
+            if o.TypeId == 'App::Link':
+                t = o.LinkedObject
+                if t and t.TypeId == 'Spreadsheet::Sheet':
+                    ss = t
+                    break
+            elif o.TypeId == 'Spreadsheet::Sheet' and o.Label == name:
+                ss = o
+                break
+        if ss:
+            break
+    if ss is None:
+        return {}
+    params = {}
+    aliases = {
+        'bead_spacing': ['bead_spacing', 'BeadSpacing', 'beadSpacing'],
+        'bead_depth':   ['bead_depth',   'BeadDepth',   'beadDepth', 'materialThickness'],
+        'bead_gap':     ['bead_gap',     'BeadGap',     'beadGap'],
+    }
+    for key, names in aliases.items():
+        for name in names:
+            try:
+                val = ss.get(name)
+                if val is not None:
+                    params[key] = float(val)
+                    break
+            except Exception:
+                continue
+    return params
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError("Nothing selected — please select one or more wall faces.\n")
+        return
+
+    link_sub = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            App.Console.PrintWarning(f"  {sel_obj.Object.Label}: select a face\n")
+            continue
+        face_names = [s for s in sel_obj.SubElementNames if s.startswith("Face")]
+        if face_names:
+            link_sub.append((sel_obj.Object, tuple(face_names)))
+
+    if not link_sub:
+        App.Console.PrintError("No faces in selection.\n")
+        return
+
+    total = sum(len(n) for _, n in link_sub)
+    App.Console.PrintMessage(f"Bead Board v{VERSION}: {total} face(s) selected\n")
+
+    doc = App.ActiveDocument or App.newDocument()
+    params = _get_spreadsheet_params(doc)
+
+    doc.openTransaction("bead_board_generator: BeadBoardWall")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "BeadBoardWall")
+        BeadBoardProxy(obj)
+        BeadBoardViewProxy(obj.ViewObject)
+        BeadBoardProxy.set_defaults(obj, params)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.85, 0.82, 0.72)
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric BeadBoardWall created.\n"
+        f"  Edit BeadSpacing, BeadDepth, BeadGap in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()
