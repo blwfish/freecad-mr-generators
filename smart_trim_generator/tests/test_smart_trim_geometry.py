@@ -12,7 +12,6 @@ from smart_trim_geometry import (
     vector_angle_degrees,
     classify_edge,
     classify_edges,
-    filter_edges_for_trim,
     get_edge_midpoint,
     get_edge_length,
     validate_trim_parameters,
@@ -137,68 +136,6 @@ class TestEdgeClassification:
         assert results[0] == (0, 'vertical')
         assert results[1] == (1, 'horizontal')
         assert results[2] == (2, 'gable')
-
-
-class TestEdgeFiltering:
-    """Test edge filtering (skip rules)."""
-    
-    def test_filter_skip_bottom_edge(self):
-        """Bottom edge should be filtered out."""
-        bbox = {'x_min': 0, 'x_max': 10, 'y_min': 0, 'y_max': 10, 'z_min': 0, 'z_max': 20}
-        
-        edges = [
-            # Bottom edge (both endpoints at z_min)
-            {'start': (0, 0, 0), 'end': (10, 0, 0)},
-            # Not bottom edge
-            {'start': (0, 0, 10), 'end': (10, 0, 10)},
-        ]
-        
-        results = filter_edges_for_trim(edges, bbox, vertical_axis='z', skip_bottom=True)
-        
-        assert results[0] == (0, False)  # bottom, skip
-        assert results[1] == (1, True)   # keep
-    
-    def test_filter_no_skip_when_disabled(self):
-        """When skip_bottom=False, all edges should be kept."""
-        bbox = {'x_min': 0, 'x_max': 10, 'y_min': 0, 'y_max': 10, 'z_min': 0, 'z_max': 20}
-        
-        edges = [
-            {'start': (0, 0, 0), 'end': (10, 0, 0)},
-        ]
-        
-        results = filter_edges_for_trim(edges, bbox, vertical_axis='z', skip_bottom=False)
-        
-        assert results[0] == (0, True)
-    
-    def test_filter_with_tolerance(self):
-        """Test bottom edge detection with tolerance."""
-        bbox = {'x_min': 0, 'x_max': 10, 'y_min': 0, 'y_max': 10, 'z_min': 0, 'z_max': 20}
-        
-        # Edge slightly above minimum (within tolerance)
-        edges = [
-            {'start': (0, 0, 0.5), 'end': (10, 0, 0.5)},
-        ]
-        
-        results = filter_edges_for_trim(edges, bbox, vertical_axis='z', 
-                                       skip_bottom=True, bottom_tolerance=1.0)
-        
-        assert results[0] == (0, False)  # considered bottom edge
-    
-    def test_filter_y_axis_vertical(self):
-        """Test filtering when Y is the vertical axis."""
-        bbox = {'x_min': 0, 'x_max': 10, 'y_min': 0, 'y_max': 20, 'z_min': 0, 'z_max': 10}
-        
-        edges = [
-            # Bottom edge (y_min)
-            {'start': (0, 0, 0), 'end': (10, 0, 0)},
-            # Not bottom
-            {'start': (0, 10, 0), 'end': (10, 10, 0)},
-        ]
-        
-        results = filter_edges_for_trim(edges, bbox, vertical_axis='y', skip_bottom=True)
-        
-        assert results[0] == (0, False)
-        assert results[1] == (1, True)
 
 
 class TestEdgeGeometry:

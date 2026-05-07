@@ -117,13 +117,13 @@ def detect_face_orientation(bbox: Dict) -> Tuple[str, str, str]:
     tolerance = 0.1  # mm
     
     # Check which axis has near-zero extent (that's the normal direction)
-    if x_extent < tolerance:
+    if x_extent <= tolerance:
         # YZ plane (normal is X)
         return 'z', 'y', 'x'
-    elif y_extent < tolerance:
+    elif y_extent <= tolerance:
         # XZ plane (normal is Y)
         return 'z', 'x', 'y'
-    elif z_extent < tolerance:
+    elif z_extent <= tolerance:
         # XY plane (normal is Z)
         return 'y', 'x', 'z'
     else:

@@ -157,6 +157,12 @@ def classify_edges(edges: List[Dict],
     return results
 
 
+def get_edge_midpoint(edge: Dict) -> Tuple[float, float, float]:
+    """Get the midpoint of an edge."""
+    s, e = edge.get('start', (0, 0, 0)), edge.get('end', (0, 0, 0))
+    return ((s[0] + e[0]) / 2, (s[1] + e[1]) / 2, (s[2] + e[2]) / 2)
+
+
 def get_edge_length(edge: Dict) -> float:
     """Get the length of an edge."""
     start = edge.get('start', (0, 0, 0))
