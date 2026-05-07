@@ -45,7 +45,7 @@ All dimensions are in **millimetres**, at the real-world prototype scale you are
 
 ## Requirements and platform notes
 
-- **FreeCAD 0.21 or later.** Tested primarily on weekly development builds. The generators use the FeaturePython parametric object system which has been stable since 0.20.
+- **FreeCAD 1.0 or later.** Tested primarily on weekly development builds. The generators use the FeaturePython parametric object system.
 - **Python 3.x**, bundled with FreeCAD—no separate install needed.
 
 **Platform:** Developed and tested on macOS. The installer detects macOS, Linux, and Windows paths, and the generators themselves use only standard FreeCAD APIs, so they should work on any platform FreeCAD runs on. That said, Linux and Windows are untested. If you run into platform-specific issues, please open an issue or submit a PR.
