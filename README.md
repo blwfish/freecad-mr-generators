@@ -48,7 +48,7 @@ All dimensions are in **millimetres**, at the real-world prototype scale you are
 - **FreeCAD 1.0 or later.** Tested primarily on weekly development builds. The generators use the FeaturePython parametric object system.
 - **Python 3.x**, bundled with FreeCAD—no separate install needed.
 
-**Platform:** Developed and tested on macOS. The installer detects macOS, Linux, and Windows paths, and the generators themselves use only standard FreeCAD APIs, so they should work on any platform FreeCAD runs on. That said, Linux and Windows are untested. If you run into platform-specific issues, please open an issue or submit a PR.
+**Platform:** I develop and test on macOS. The installer detects macOS, Linux, and Windows paths, and the generators use only standard FreeCAD APIs, so they should work on any platform FreeCAD runs on. That said, I've never tested on Linux or Windows. If you run into platform-specific issues, please open an issue or submit a PR.
 
 ---
 
@@ -264,7 +264,7 @@ Produces a raised-letter station sign for 3D printing. No face selection require
 
 ## Scales
 
-All default property values are set for HO scale (1:87), which is what the author models in. The generators themselves have no knowledge of scale—every dimension is just a number in millimetres. To use them at a different scale, divide the HO default by 87 and multiply by your scale denominator, or simply enter your own values directly.
+All default property values are set for HO scale (1:87), which is what I model in. The generators have no knowledge of scale—every dimension is just a number in millimetres. To use them at a different scale, divide the HO default by 87 and multiply by your scale denominator, or simply enter your own values directly.
 
 For example, N scale (1:160) clapboard with a 12" prototype reveal:
 
@@ -284,7 +284,7 @@ Pull requests are welcome.
 - **FreeCAD-dependent code** (proxy objects, macro entry points): these can't be covered by the automated suite—a description of manual testing performed is appreciated.
 - **Platform testing:** Reports of success or failure on Linux and Windows are very welcome.
 
-The author developed these on macOS and uses them for personal modelling projects. There is no guarantee of rapid response to issues or PRs, but contributions that follow the pattern above will be considered.
+I built these for my own modelling projects and use them regularly. There is no guarantee of rapid response to issues or PRs, but contributions that follow the pattern above will be considered.
 
 ### Running tests
 
