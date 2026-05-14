@@ -1,5 +1,5 @@
 """
-Smart Trim Generator for FreeCAD v1.5.0
+Smart Trim Generator for FreeCAD v1.7.0
 
 Applies parametric trim (corner boards, eave trim, gable trim) to wall faces.
 Fully parametric: change any property in the panel and the trim updates.
@@ -18,8 +18,14 @@ License: MIT
 import FreeCAD as App
 import FreeCADGui as Gui
 import sys
+from pathlib import Path
 
 # Ensure our modules are importable
+MACRO_DIR = Path(__file__).parent
+for p in (str(MACRO_DIR), str(MACRO_DIR / '_lib')):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Force-reload during development so installed macro picks up changes
 for mod_name in ('smart_trim_proxy', 'trim_geometry'):
     if mod_name in sys.modules:

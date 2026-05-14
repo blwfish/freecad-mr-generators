@@ -9,7 +9,7 @@ This library works with FreeCAD Part::TopoShape objects but contains no FreeCAD
 dependencies in the core geometry functions - similar to clapboard_geometry.py.
 
 Author: Brian White
-Version: 1.4.1
+Version: 1.6.0
 License: MIT
 """
 
@@ -686,6 +686,124 @@ def create_internal_corner_fill(corner: Corner, face_normal,
         tri_face = Part.Face(tri_wire)
         fill = tri_face.extrude(fn * profile_height)
         return fill
+    except Exception:
+        return None
+
+
+# ============================================================================
+# BUILDING CORNER CLIP / EQUALIZE
+# ============================================================================
+
+def clip_solid_at_plane(solid, plane_point, plane_normal, keep_direction,
+                         cut_size=200.0):
+    """
+    Clip a solid, retaining the half-space on the ``keep_direction`` side of
+    an infinite plane through ``plane_point`` with the given ``plane_normal``.
+
+    Used to equalise trim widths at building corners: each face's trim is
+    clipped at the adjacent face's plane so neither board overshoots the
+    logical corner centre.
+
+    Args:
+        solid:          FreeCAD Solid to clip
+        plane_point:    App.Vector — any point on the clipping plane
+        plane_normal:   App.Vector — normal that orients the clipping plane
+        keep_direction: App.Vector — direction toward the half to retain
+        cut_size:       half-extent of the cutting polygon (mm)
+
+    Returns:
+        Clipped FreeCAD Solid, or the original solid on failure
+    """
+    import Part
+    import FreeCAD as App
+
+    pn = App.Vector(plane_normal)
+    pn.normalize()
+    kd = App.Vector(keep_direction)
+    kd.normalize()
+
+    # Two spanning vectors perpendicular to pn
+    ref = App.Vector(0, 0, 1)
+    if abs(pn.dot(ref)) > 0.9:
+        ref = App.Vector(1, 0, 0)
+    across = pn.cross(ref)
+    across.normalize()
+    up = pn.cross(across)
+    up.normalize()
+
+    pp = App.Vector(plane_point)
+    h = cut_size
+    p1 = pp + up * h + across * h
+    p2 = pp - up * h + across * h
+    p3 = pp - up * h - across * h
+    p4 = pp + up * h - across * h
+
+    keep_point = pp + kd * 1.0
+
+    try:
+        cut_wire = Part.makePolygon([p1, p2, p3, p4, p1])
+        cut_face = Part.Face(cut_wire)
+        half_space = cut_face.makeHalfSpace(keep_point)
+        result = solid.common(half_space)
+        if result.isNull() or not result.Solids:
+            return solid
+        return result
+    except Exception:
+        return solid
+
+
+# ============================================================================
+# BUILDING CORNER FILL
+# ============================================================================
+
+def create_building_corner_fill(corner_start, corner_end,
+                                 normal_A, normal_B, profile_width):
+    """
+    Create a fill prism at a building exterior corner.
+
+    Where two perpendicular wall faces share a corner line, the trim pieces
+    from each face leave a gap at the actual corner (a TrimWidth × TrimWidth
+    square prism).  This function generates that fill piece.
+
+    The cross-section (perpendicular to the corner line) is a parallelogram
+    with sides ``normal_A * profile_width`` and ``normal_B * profile_width``.
+
+    Args:
+        corner_start:  App.Vector — one end of the corner line (typically bottom)
+        corner_end:    App.Vector — other end of the corner line (typically top)
+        normal_A:      App.Vector — outward face normal of wall A
+        normal_B:      App.Vector — outward face normal of wall B
+        profile_width: float — TrimWidth (trim thickness perpendicular to wall)
+
+    Returns:
+        FreeCAD Solid, or None on failure / degenerate geometry
+    """
+    import Part
+    import FreeCAD as App
+
+    n_A = App.Vector(normal_A)
+    n_A.normalize()
+    n_B = App.Vector(normal_B)
+    n_B.normalize()
+
+    p0 = App.Vector(corner_start)
+    p1 = p0 + n_A * profile_width
+    p2 = p0 + n_B * profile_width
+    p3 = p1 + n_B * profile_width   # = p0 + n_A*w + n_B*w
+
+    # Guard against degenerate cross-section (coplanar or zero-width)
+    cross = (p1 - p0).cross(p2 - p0)
+    if cross.Length < 1e-6:
+        return None
+
+    extrusion_vec = App.Vector(corner_end) - App.Vector(corner_start)
+    if extrusion_vec.Length < 1e-6:
+        return None
+
+    try:
+        wire = Part.makePolygon([p0, p1, p3, p2, p0])
+        section = Part.Face(wire)
+        return section.extrude(extrusion_vec)
     except Exception:
         return None
 

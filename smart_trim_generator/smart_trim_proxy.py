@@ -10,7 +10,7 @@ This module must be importable by FreeCAD (lives on sys.path via Macro dir).
 import FreeCAD as App
 import Part
 
-VERSION = "1.5.0"
+VERSION = "1.7.0"
 
 # Ensure trim_geometry is importable (same directory)
 import sys
@@ -106,12 +106,81 @@ def _bbox_corners(bb):
 
 
 # =============================================================================
+# Convex corner fill helpers
+# =============================================================================
+
+def _get_face_vertical_edges(face, perimeter_only=True, vertical_axis='z'):
+    """Return vertical (optionally perimeter-only) edges of a face."""
+    edges = tg.get_face_boundary_edges(face)
+    bbox = face.BoundBox
+    result = []
+    for edge in edges:
+        if tg.classify_edge_direction(edge, vertical_axis) != 'vertical':
+            continue
+        if perimeter_only and not tg._is_perimeter_edge(edge, bbox, vertical_axis):
+            continue
+        result.append(edge)
+    return result
+
+
+def _find_shared_corner_edges(edges_A, edges_B, tolerance=0.5):
+    """
+    Find edges from two faces that share the same geometric line.
+
+    Two edges share a line when both endpoint pairs coincide within tolerance
+    (order-independent — winding direction may differ between faces).
+
+    Returns:
+        List of (start_pt, end_pt, tangent_A, tangent_B) tuples with
+        start_pt.z <= end_pt.z.  tangent_A/B are the CCW-winding tangents of
+        the respective edges at their FirstParameter (needed to compute each
+        face's -binormal direction for corner clipping).
+    """
+    shared = []
+    for eA in edges_A:
+        pA1 = eA.valueAt(eA.FirstParameter)
+        pA2 = eA.valueAt(eA.LastParameter)
+        for eB in edges_B:
+            pB1 = eB.valueAt(eB.FirstParameter)
+            pB2 = eB.valueAt(eB.LastParameter)
+            match = ((pA1.distanceToPoint(pB1) < tolerance and
+                      pA2.distanceToPoint(pB2) < tolerance) or
+                     (pA1.distanceToPoint(pB2) < tolerance and
+                      pA2.distanceToPoint(pB1) < tolerance))
+            if match:
+                # Sort so start has smaller Z (bottom of corner line)
+                start = pA1 if pA1.z <= pA2.z else pA2
+                end   = pA2 if pA1.z <= pA2.z else pA1
+                tA = eA.tangentAt(eA.FirstParameter)
+                tB = eB.tangentAt(eB.FirstParameter)
+                shared.append((start, end, tA, tB))
+    return shared
+
+
+def _neg_binormal(tangent, face_normal):
+    """
+    Return the direction a trim piece extends from an edge along the wall
+    surface: -(tangent × face_normal), normalised.  Returns None if degenerate.
+    """
+    import FreeCAD as App
+    t = App.Vector(tangent);  t.normalize()
+    n = App.Vector(face_normal); n.normalize()
+    nb = t.cross(n) * -1.0
+    if nb.Length < 1e-6:
+        return None
+    nb.normalize()
+    return nb
+
+
+# =============================================================================
 # Trim generation (from face_entries + params dict)
 # =============================================================================
 
 def generate_trim(face_entries, params, doc=None):
     """Generate a compound of trim pieces for the given faces."""
-    all_trim_pieces = []
+    per_face_pieces = []  # list[list[solid]] — one list per successfully processed face
+    face_data = []        # [(outward_normal, vertical_edges)] — parallel to per_face_pieces
+    all_fill_pieces = []  # convex corner fill prisms (added after clipping)
 
     # Build profile
     w, h = params['trim_width'], params['trim_height']
@@ -166,6 +235,12 @@ def generate_trim(face_entries, params, doc=None):
 
         # Generate trim segments
         try:
+            # Outward face normal (needed for corner passes)
+            fn = tg._get_face_normal(face)
+            fn = tg._ensure_outward_normal(face, fn, outward_hint)
+            vert_edges = _get_face_vertical_edges(
+                face, perimeter_only=params.get('perimeter_only', True))
+
             pieces = tg.generate_trim_for_face(
                 face, profile,
                 outward_hint=outward_hint,
@@ -199,11 +274,77 @@ def generate_trim(face_entries, params, doc=None):
                 pieces = [p.translated(face_normal * (-flip_dist))
                           for p in pieces]
 
-            all_trim_pieces.extend(pieces)
+            # Keep per-face lists aligned: both appended together on success
+            per_face_pieces.append(pieces)
+            face_data.append((fn, vert_edges))
+
         except Exception as e:
             App.Console.PrintError(f"  Face {i}: {e}\n")
             import traceback
             traceback.print_exc()
+
+    # Corner passes only make sense with ≥2 faces and no single-edge debug mode
+    _corner_passes_ok = (
+        not params.get('flip', False)
+        and params.get('only_edge', 0) == 0
+        and len(face_data) >= 2
+    )
+
+    if _corner_passes_ok:
+        nf = len(face_data)
+        for i in range(nf):
+            fn_i, edges_i = face_data[i]
+            for j in range(i + 1, nf):
+                fn_j, edges_j = face_data[j]
+
+                # Only process perpendicular face pairs (building corners).
+                # Coplanar/antiparallel pairs (parallel walls, construction
+                # joints) are skipped.
+                dot = fn_i.dot(fn_j)
+                if abs(dot) > 0.85:
+                    continue
+
+                shared = _find_shared_corner_edges(edges_i, edges_j)
+                if not shared:
+                    continue
+
+                for (start_pt, end_pt, tang_i, tang_j) in shared:
+
+                    # --- Pass A: equalise visible trim widths ---
+                    # Clip each face's pieces at the adjacent face's plane,
+                    # keeping only the part that extends in the trim's natural
+                    # direction (-binormal).  This removes any overshoot caused
+                    # by one wall face extending past the logical corner centre.
+                    if params.get('equalize_corners', True):
+                        nb_i = _neg_binormal(tang_i, fn_i)
+                        nb_j = _neg_binormal(tang_j, fn_j)
+
+                        if nb_i is not None:
+                            per_face_pieces[i] = [
+                                tg.clip_solid_at_plane(
+                                    p, start_pt, fn_j, nb_i)
+                                for p in per_face_pieces[i]
+                            ]
+                        if nb_j is not None:
+                            per_face_pieces[j] = [
+                                tg.clip_solid_at_plane(
+                                    p, start_pt, fn_i, nb_j)
+                                for p in per_face_pieces[j]
+                            ]
+
+                    # --- Pass B: convex corner fill ---
+                    # Add the TrimWidth×TrimWidth prism that fills the gap
+                    # between the two trim boards at the corner.
+                    if params.get('convex_corner_fill', True):
+                        fill = tg.create_building_corner_fill(
+                            start_pt, end_pt, fn_i, fn_j,
+                            params['trim_width'])
+                        if fill is not None:
+                            all_fill_pieces.append(fill)
+
+    # Combine: clipped per-face pieces + fill prisms
+    all_trim_pieces = [p for pieces in per_face_pieces for p in pieces]
+    all_trim_pieces.extend(all_fill_pieces)
 
     if not all_trim_pieces:
         raise RuntimeError("No trim pieces were generated")
@@ -272,6 +413,16 @@ class SmartTrimProxy:
                 "App::PropertyInteger", "OnlyEdge", grp,
                 "Only trim edge N (0=all, 1=first, 2=second, ...)")
 
+        if not hasattr(obj, 'EqualizeCorners'):
+            obj.addProperty(
+                "App::PropertyBool", "EqualizeCorners", grp,
+                "Clip trim at building corners so both boards show equal visible width")
+
+        if not hasattr(obj, 'ConvexCornerFill'):
+            obj.addProperty(
+                "App::PropertyBool", "ConvexCornerFill", grp,
+                "Fill gap at exterior building corners (where two trimmed walls meet)")
+
         if not hasattr(obj, 'GeneratorVersion'):
             obj.addProperty(
                 "App::PropertyString", "GeneratorVersion", grp,
@@ -293,6 +444,8 @@ class SmartTrimProxy:
         obj.PerimeterOnly = params.get('perimeter_only', True)
         obj.Flip = params.get('flip', False)
         obj.OnlyEdge = params.get('only_edge', 0)
+        obj.EqualizeCorners = params.get('equalize_corners', True)
+        obj.ConvexCornerFill = params.get('convex_corner_fill', True)
         obj.GeneratorVersion = VERSION
 
     # -- execute (called on recompute) ----------------------------------------
@@ -319,9 +472,11 @@ class SmartTrimProxy:
             'bevel_size':    float(obj.BevelSize),
             'skip_bottom':   bool(obj.SkipBottom),
             'perimeter_only': bool(obj.PerimeterOnly),
-            'flip':          bool(obj.Flip),
-            'only_edge':     int(obj.OnlyEdge),
-            'edge_types':    ['vertical'],
+            'flip':               bool(obj.Flip),
+            'only_edge':          int(obj.OnlyEdge),
+            'equalize_corners':   bool(obj.EqualizeCorners),
+            'convex_corner_fill': bool(obj.ConvexCornerFill),
+            'edge_types':         ['vertical'],
         }
 
         try:
