@@ -8,6 +8,12 @@ Run with: python -m pytest test_brick_geometry.py -v
 import pytest
 import math
 from brick_geometry import BrickGeometry, BrickDef
+from boundary_assertions import assert_overflows_boundary
+
+
+def _brick_u_extent(b):
+    """Extract (u_start, u_end) for boundary-overflow checks."""
+    return (b.u, b.u + b.width)
 
 
 class TestBrickGeometryInit:
@@ -240,16 +246,21 @@ class TestEnglishBond:
         closers = [b for b in result['bricks'] if b.brick_type == 'closer']
         assert len(closers) > 0, "English bond should have queen closers"
 
-    def test_english_wall_width_exact(self):
-        """Courses should exactly fill the wall width."""
+    def test_english_wall_width_overflow(self):
+        """Courses should fill the wall width plus a small TOPO_EPS overflow.
+
+        v5.0.2 added ~10%-of-mortar overflow on both sides to avoid an OCCT
+        common() segfault on coincident boundary faces.  Each course now spans
+        [-TOPO_EPS, u_length + TOPO_EPS] instead of exactly [0, u_length].
+        """
         bg = BrickGeometry(
             u_length=50, v_length=10,
             brick_width=2.32, brick_height=0.65, brick_depth=1.09,
             mortar=0.11, bond_type='english'
         )
         result = bg.generate()
+        TOPO_EPS = 0.011  # mortar * 0.1
 
-        # Check each course fills the wall exactly
         by_course = {}
         for brick in result['bricks']:
             if brick.course not in by_course:
@@ -258,10 +269,12 @@ class TestEnglishBond:
 
         for course_num, course_bricks in by_course.items():
             course_bricks.sort(key=lambda b: b.u)
-            last = course_bricks[-1]
-            total_width = last.u + last.width
-            assert total_width == pytest.approx(50, abs=0.01), \
-                f"Course {course_num} width {total_width} != 50"
+            first, last = course_bricks[0], course_bricks[-1]
+            assert first.u == pytest.approx(-TOPO_EPS, abs=1e-6), \
+                f"Course {course_num} starts at {first.u}, expected -TOPO_EPS"
+            total_end = last.u + last.width
+            assert total_end == pytest.approx(50 + TOPO_EPS, abs=1e-6), \
+                f"Course {course_num} ends at {total_end}, expected 50 + TOPO_EPS"
 
 
 class TestFlemishBond:
@@ -317,14 +330,20 @@ class TestFlemishBond:
         closers = [b for b in result['bricks'] if b.brick_type == 'closer']
         assert len(closers) > 0, "Flemish bond should have queen closers"
 
-    def test_flemish_wall_width_exact(self):
-        """Both even and odd courses should exactly fill the wall width."""
+    def test_flemish_wall_width_overflow(self):
+        """Both even and odd courses fill wall width plus a TOPO_EPS overflow.
+
+        v5.0.2 added ~10%-of-mortar overflow on both sides to avoid an OCCT
+        common() segfault on coincident boundary faces.  Each course now spans
+        [-TOPO_EPS, u_length + TOPO_EPS] instead of exactly [0, u_length].
+        """
         bg = BrickGeometry(
             u_length=50, v_length=10,
             brick_width=2.32, brick_height=0.65, brick_depth=1.09,
             mortar=0.11, bond_type='flemish'
         )
         result = bg.generate()
+        TOPO_EPS = 0.011  # mortar * 0.1
 
         by_course = {}
         for brick in result['bricks']:
@@ -334,10 +353,12 @@ class TestFlemishBond:
 
         for course_num, course_bricks in by_course.items():
             course_bricks.sort(key=lambda b: b.u)
-            last = course_bricks[-1]
-            total_width = last.u + last.width
-            assert total_width == pytest.approx(50, abs=0.01), \
-                f"Course {course_num} width {total_width} != 50"
+            first, last = course_bricks[0], course_bricks[-1]
+            assert first.u == pytest.approx(-TOPO_EPS, abs=1e-6), \
+                f"Course {course_num} starts at {first.u}, expected -TOPO_EPS"
+            total_end = last.u + last.width
+            assert total_end == pytest.approx(50 + TOPO_EPS, abs=1e-6), \
+                f"Course {course_num} ends at {total_end}, expected 50 + TOPO_EPS"
 
     def test_flemish_header_alignment(self):
         """Headers in odd courses should center over stretchers in even courses."""
@@ -564,6 +585,76 @@ class TestBrickDefNamedTuple:
         brick2 = brick1._replace(index=99)
         assert brick1.index == 0
         assert brick2.index == 99
+
+
+class TestBoundaryOverflow:
+    """Boundary-overflow invariant: placed bricks must overflow wall edges.
+
+    Bonds that fit bricks *exactly* to the wall width (Flemish, English) trigger
+    an OCCT common() segfault during _create_mortar_grid because brick boundary
+    faces become coincident with the face_slab boundary faces.  Stretcher bond
+    overflows naturally via the `while u < u_length + spacing` loop.
+
+    These tests assert the invariant in pure Python so the bug can't regress
+    without breaking the test suite — no FreeCAD/OCCT needed.
+    """
+
+    BRICK = dict(brick_width=2.32, brick_height=0.65, brick_depth=1.09,
+                 mortar=0.11, skin_depth=0.06)
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'flemish', 'common'])
+    @pytest.mark.parametrize('u_length', [
+        52.55,         # the original demo-model wall that crashed
+        50.0,          # round number
+        100.0,         # wide wall, n maxes out
+        2.32 + 2*0.11, # absolute minimum: just one stretcher + two mortar joints
+        # Exact integer multiples — most likely to produce C0=0 in Flemish:
+        14 * 2.32 + 13 * 0.11,
+        20 * 2.32 + 19 * 0.11,
+    ])
+    def test_courses_overflow_wall_width(self, bond, u_length):
+        """Every course must start before u=0 and end after u=u_length."""
+        bg = BrickGeometry(u_length=u_length, v_length=20.0,
+                           bond_type=bond, **self.BRICK)
+        result = bg.generate()
+        bricks = result['bricks']
+
+        # Group bricks by course; check each course independently so we catch
+        # the case where SOME courses overflow but others (e.g. odd vs even) don't.
+        by_course = {}
+        for b in bricks:
+            by_course.setdefault(b.course, []).append(b)
+
+        for course_idx, course_bricks in by_course.items():
+            assert_overflows_boundary(
+                course_bricks, lo=0.0, hi=u_length,
+                get_extent=_brick_u_extent,
+                label=f"bond={bond} u_length={u_length} course={course_idx}: ",
+            )
+
+    def test_flemish_zero_closer_overflow(self):
+        """Wall sized so the Flemish closer math yields C0≈0 still overflows."""
+        # Pick a width where n+1 stretchers + n headers + 2*(n+1) mortars
+        # sums to almost exactly the wall width — closer would be ~0 without
+        # the TOPO_EPS safety margin.
+        S, H, m = 2.32, 1.09, 0.11
+        for n in (5, 10, 20):
+            # u_length = (n+1)*S + n*H + 2*(n+1)*m + 2*min_closer
+            # Use min_closer slightly above the loop's exit threshold so the
+            # last valid n is exactly this n.
+            u_length = (n+1)*S + n*H + 2*(n+1)*m + 2 * (m * 2)
+            bg = BrickGeometry(u_length=u_length, v_length=10.0,
+                               bond_type='flemish', **self.BRICK)
+            result = bg.generate()
+            by_course = {}
+            for b in result['bricks']:
+                by_course.setdefault(b.course, []).append(b)
+            for course_idx, course_bricks in by_course.items():
+                assert_overflows_boundary(
+                    course_bricks, lo=0.0, hi=u_length,
+                    get_extent=_brick_u_extent,
+                    label=f"flemish n={n} u_length={u_length:.4f} course={course_idx}: ",
+                )
 
 
 if __name__ == '__main__':
