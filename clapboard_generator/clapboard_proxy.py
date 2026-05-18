@@ -13,7 +13,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "7.0.0"
+VERSION = "7.0.1"
 GENERATOR_NAME = "clapboard_generator"
 CLAPBOARD_TRIM_OFFSET = 0.05  # mm — clapboard bottom inboard of trim edge
 
@@ -164,6 +164,14 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
     if not segs:
         segs = [(h_min_all, h_max_all)]
 
+    # TOPO_EPS: snap any course edge within this distance of the wall
+    # vertical boundary strictly OUTSIDE the wall.  Required to avoid an
+    # OCCT common() segfault during gable-trim when wall_height is an exact
+    # integer multiple of clapboard_height (top course's v_top would
+    # otherwise coincide with bbox.ZMax / bbox.YMax).  Matches the invariant
+    # tested by calculate_course_v_positions in clapboard_geometry.py.
+    TOPO_EPS = 1e-3
+
     pieces = []
     for h_min, h_max in segs:
         if vert_axis == 'z':
@@ -171,6 +179,10 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
             v_top = min(vert_pos + height, bbox.ZMax + 0.1)
             if v_bot >= bbox.ZMax:
                 continue
+            if abs(v_bot - bbox.ZMin) < TOPO_EPS:
+                v_bot = bbox.ZMin - TOPO_EPS
+            if abs(v_top - bbox.ZMax) < TOPO_EPS:
+                v_top = bbox.ZMax + TOPO_EPS
             if horiz_axis == 'x':
                 by = bbox.YMin
                 to = actual_thick if normal.y > 0 else -actual_thick
@@ -204,6 +216,10 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
             v_top = min(vert_pos + height, bbox.YMax + 0.1)
             if v_bot >= bbox.YMax:
                 continue
+            if abs(v_bot - bbox.YMin) < TOPO_EPS:
+                v_bot = bbox.YMin - TOPO_EPS
+            if abs(v_top - bbox.YMax) < TOPO_EPS:
+                v_top = bbox.YMax + TOPO_EPS
             bz = 0
             to = actual_thick if normal.z > 0 else -actual_thick
             no = thin if normal.z > 0 else -thin

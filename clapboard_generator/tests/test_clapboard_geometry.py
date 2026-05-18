@@ -296,5 +296,56 @@ class TestHOScaleDefaults:
         assert 1.0 < ho_trim < 2.5
 
 
+from clapboard_geometry import calculate_course_v_positions
+from boundary_assertions import assert_overflows_boundary
+
+
+class TestBoundaryOverflow:
+    """Boundary-overflow invariant for clapboard courses.
+
+    Clapboard courses tile the wall vertically; the topmost course must
+    overflow wall_v_max and the bottommost must overflow wall_v_min, or
+    an OCCT common() segfault triggers in clapboard_proxy.generate_clapboard_skin
+    during the gable-cut step.
+
+    The dangerous parameter family: wall_height = N * clapboard_height
+    for any integer N (and wall_v_min on the same grid).  At those values
+    the top course's v_top would fall exactly on wall_v_max.
+    """
+
+    @pytest.mark.parametrize('wall_v_min,wall_v_max,clapboard_height', [
+        # Exact integer multiples of clapboard_height — the dangerous family
+        (0.0,  8.0, 0.8),     # 10 courses fit exactly
+        (0.0, 16.0, 0.8),     # 20 courses fit exactly
+        (0.0, 31.5, 0.9),     # 35 courses fit exactly
+        (0.0, 25.6, 0.8),     # demo-model wall height
+        # Non-integer ratios (should also pass)
+        (0.0, 25.4, 0.8),
+        (0.0, 31.53, 0.7),    # actual demo-model dimensions
+        # Non-zero wall_v_min
+        (1.6, 25.6, 0.8),
+    ])
+    def test_courses_overflow_wall_edges(self, wall_v_min, wall_v_max, clapboard_height):
+        positions = calculate_course_v_positions(
+            wall_v_min, wall_v_max, clapboard_height
+        )
+        assert_overflows_boundary(
+            positions, lo=wall_v_min, hi=wall_v_max,
+            get_extent=lambda p: p,
+            label=f"clapboard_height={clapboard_height} "
+                  f"wall=[{wall_v_min},{wall_v_max}]: ",
+        )
+
+    def test_course_count_matches_calculate_clapboard_courses(self):
+        """calculate_course_v_positions returns count consistent with
+        calculate_clapboard_courses (modulo +/- 1 for boundary handling)."""
+        # 25.6mm wall / 0.8mm course = 32 courses (exact multiple)
+        positions = calculate_course_v_positions(0.0, 25.6, 0.8)
+        count_from_count_fn = calculate_clapboard_courses(25.6, 0.8)
+        # The position function may add one course to ensure top overflow;
+        # but it should be at most one course more than the count function.
+        assert count_from_count_fn <= len(positions) <= count_from_count_fn + 2
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

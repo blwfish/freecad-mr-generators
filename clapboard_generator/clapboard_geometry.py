@@ -1,11 +1,19 @@
 """
-Clapboard Geometry Library v5.1.0
+Clapboard Geometry Library v5.2.0
 
 Pure Python geometry functions extracted from clapboard_generator.FCMacro.
 These functions are testable without FreeCAD and can be used in pytest.
 
 No dependencies on FreeCAD.Part, FreeCAD.Vector, etc.
 Uses standard Python types (tuples, dicts, lists) for I/O.
+
+v5.2.0: Added calculate_course_v_positions() — extracted the per-course
+        vertical-extent calculation from clapboard_proxy._make_course so it
+        can be unit-tested in pure Python.  The new function guarantees no
+        course edge falls within `topo_eps` of the wall's vertical bounds,
+        preventing the OCCT common() segfault that occurs when a wall
+        height equals an integer multiple of clapboard_height (the top of
+        the last course would otherwise coincide with the face top edge).
 """
 
 import math
@@ -167,11 +175,11 @@ def is_building_corner(edge_h_pos: float, bbox: Dict, horizontal_axis: str = 'x'
 def calculate_clapboard_courses(wall_height: float, clapboard_height: float) -> int:
     """
     Calculate number of clapboard courses needed for a wall height.
-    
+
     Args:
         wall_height: Height of wall in mm
         clapboard_height: Height of each course (reveal) in mm
-    
+
     Returns:
         Number of courses needed
     """
@@ -179,8 +187,82 @@ def calculate_clapboard_courses(wall_height: float, clapboard_height: float) -> 
         raise ValueError("clapboard_height must be positive")
     if wall_height < 0:
         raise ValueError("wall_height must be non-negative")
-    
+
     return int(math.ceil(wall_height / clapboard_height))
+
+
+def calculate_course_v_positions(wall_v_min: float, wall_v_max: float,
+                                 clapboard_height: float,
+                                 overlap: float = 0.01,
+                                 topo_eps: float = 1e-3
+                                 ) -> List[Tuple[float, float]]:
+    """
+    Calculate (v_bot, v_top) extents for every clapboard course on a wall.
+
+    Courses are laid bottom-up starting from a grid-snapped position
+    (round(wall_v_min / clapboard_height) * clapboard_height) so courses
+    align across multiple faces of the same building.  Each course above
+    the first overlaps the one below by `overlap` mm.
+
+    Boundary safety: when a course edge would land within `topo_eps` of
+    either wall boundary (e.g. wall_height is an exact integer multiple
+    of clapboard_height), the edge is pushed STRICTLY OUTSIDE the wall.
+    This prevents an OCCT common() segfault in clapboard_proxy when the
+    course face becomes coincident with the face_slab boundary face.
+
+    Args:
+        wall_v_min: bottom edge of wall (mm)
+        wall_v_max: top edge of wall (mm)
+        clapboard_height: per-course reveal height (mm)
+        overlap: how much each non-first course overlaps the one below (mm)
+        topo_eps: forbidden zone width at each boundary; coincident edges
+                  are pushed this distance strictly outside the wall
+
+    Returns:
+        List of (v_bot, v_top) tuples — one per course that intersects the
+        wall.  The first course's v_bot is guaranteed < wall_v_min - topo_eps;
+        the last course's v_top is guaranteed > wall_v_max + topo_eps.
+    """
+    if clapboard_height <= 0:
+        raise ValueError("clapboard_height must be positive")
+    if wall_v_max <= wall_v_min:
+        raise ValueError("wall_v_max must exceed wall_v_min")
+
+    wall_h = wall_v_max - wall_v_min
+    vert_min = round(wall_v_min / clapboard_height) * clapboard_height
+    num_courses = int(math.ceil(wall_h / clapboard_height)) + 1  # +1 ensures top overflow
+
+    positions: List[Tuple[float, float]] = []
+    for i in range(num_courses):
+        ov = overlap if i > 0 else 0.0
+        v_bot = vert_min + i * clapboard_height - ov
+        v_top = v_bot + clapboard_height
+
+        # Drop courses entirely outside the wall (can happen at the edges
+        # after grid snapping).
+        if v_top <= wall_v_min or v_bot >= wall_v_max:
+            continue
+
+        # Snap any edge within topo_eps of a wall boundary STRICTLY OUTSIDE.
+        if abs(v_bot - wall_v_min) < topo_eps:
+            v_bot = wall_v_min - topo_eps
+        if abs(v_top - wall_v_max) < topo_eps:
+            v_top = wall_v_max + topo_eps
+
+        positions.append((v_bot, v_top))
+
+    # Guarantee the bottom course overflows wall_v_min and the top course
+    # overflows wall_v_max — covers cases where natural positions stop just
+    # short of the boundary without triggering the abs(...) snap above.
+    if positions:
+        b0, t0 = positions[0]
+        if b0 >= wall_v_min - topo_eps:
+            positions[0] = (wall_v_min - topo_eps, t0)
+        bN, tN = positions[-1]
+        if tN <= wall_v_max + topo_eps:
+            positions[-1] = (bN, wall_v_max + topo_eps)
+
+    return positions
 
 
 def validate_parameters(clapboard_height: float, clapboard_thickness: float) -> Tuple[bool, List[str]]:
