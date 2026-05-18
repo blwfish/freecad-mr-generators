@@ -1,11 +1,16 @@
 """
-Board-and-Batten Geometry Library v1.0.0
+Board-and-Batten Geometry Library v1.0.1
 
 Pure Python geometry functions for board-and-batten siding generator.
 These functions are testable without FreeCAD and can be used in pytest.
 
 No dependencies on FreeCAD.Part, FreeCAD.Vector, etc.
 Uses standard Python types (tuples, dicts, lists) for I/O.
+
+v1.0.1: calculate_board_positions() now overflows the wall edges by TOPO_EPS
+        instead of clipping to them.  Prevents an OCCT common() segfault when
+        board boundary faces are coincident with the face_slab boundary.
+        See shared/boundary_assertions.py for the underlying invariant.
 """
 
 import math
@@ -160,9 +165,24 @@ def calculate_board_positions(h_min: float, h_max: float, board_width: float,
         board_start = start_pos + i * board_width
         board_end = board_start + board_width
 
-        # Only include boards that actually overlap with the wall
+        # Only include boards that actually overlap with the wall.  Boards
+        # are returned UNCLIPPED so they strictly overflow the wall edges —
+        # the downstream OCCT common() handles the actual clipping.  Clipping
+        # in pure Python produced board faces exactly coincident with the
+        # face_slab boundary, which segfaults OCCT's BRep Boolean builder.
         if board_end > h_min and board_start < h_max:
-            positions.append((max(board_start, h_min), min(board_end, h_max)))
+            positions.append((board_start, board_end))
+
+    # Guarantee strict overflow on both outermost boards even when the natural
+    # layout fits the wall exactly (num_boards * board_width == h_max - h_min).
+    # TOPO_EPS = 0.1% of board_width keeps the visual displacement well below
+    # any practical scale yet large enough for OCCT's tolerance handling.
+    if positions:
+        TOPO_EPS = board_width * 0.001
+        s0, e0 = positions[0]
+        sN, eN = positions[-1]
+        positions[0]  = (s0 - TOPO_EPS, e0)
+        positions[-1] = (sN, eN + TOPO_EPS)
 
     return positions
 

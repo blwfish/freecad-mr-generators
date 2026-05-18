@@ -13,7 +13,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 GENERATOR_NAME = "board_batten_generator"
 
 _here = Path(__file__).parent
@@ -115,11 +115,21 @@ def generate_board_batten_skin(face, board_width=7.0, batten_width=0.6,
 
     num_boards = int(math.ceil((h_max - h_min) / board_width))
 
+    # TOPO_EPS: outermost boards overflow the wall edges by 0.1% of board_width.
+    # Required to avoid an OCCT common() segfault when num_boards*board_width
+    # happens to land exactly on the face_slab boundary.  See
+    # shared/boundary_assertions.py for the invariant this enforces.
+    TOPO_EPS = board_width * 0.001
+
     # Boards
     boards = []
     for i in range(num_boards):
         h_s = h_min + i * board_width
         h_e = h_s + board_width
+        if i == 0:
+            h_s -= TOPO_EPS
+        if i == num_boards - 1:
+            h_e += TOPO_EPS
         try:
             boards.append(_make_rect_solid(h_s, h_e, v_min, v_max,
                                            board_thickness, None,

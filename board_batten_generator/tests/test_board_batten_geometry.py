@@ -175,47 +175,60 @@ class TestCalculateBoardPositions:
     """Tests for board position calculation."""
 
     def test_simple_positions(self):
-        """Calculate board positions for simple wall."""
+        """Calculate board positions for simple wall.
+
+        v1.0.1: outermost boards overflow wall edges by TOPO_EPS = bw * 0.001
+        to avoid OCCT coincident-face segfault.  Interior boards unchanged.
+        """
         positions = calculate_board_positions(
             h_min=0.0,
             h_max=21.0,
             board_width=7.0,
             center_align=False
         )
+        TOPO_EPS = 7.0 * 0.001
         assert len(positions) == 3
-        assert positions[0] == (0.0, 7.0)
+        assert positions[0] == pytest.approx((0.0 - TOPO_EPS, 7.0))
         assert positions[1] == (7.0, 14.0)
-        assert positions[2] == (14.0, 21.0)
+        assert positions[2] == pytest.approx((14.0, 21.0 + TOPO_EPS))
 
     def test_center_aligned(self):
-        """Center-aligned boards should be symmetric."""
+        """Center-aligned boards should be symmetric and unclipped.
+
+        v1.0.1: boards are no longer clipped to wall bounds in Python; they
+        overflow naturally so OCCT common() can do the clipping safely.
+        """
         positions = calculate_board_positions(
             h_min=0.0,
             h_max=20.0,
             board_width=7.0,
             center_align=True
         )
-        # 20mm needs 3 boards @ 7mm = 21mm total
-        # Centered means boards are symmetric, but clipped to wall bounds
+        # 20mm needs 3 boards @ 7mm = 21mm total → 0.5mm overhang per side
+        TOPO_EPS = 7.0 * 0.001
         assert len(positions) == 3
-        # Boards should be clipped to wall boundaries
-        assert positions[0][0] == 0.0  # Clipped to h_min
-        assert positions[-1][1] == 20.0  # Clipped to h_max
-        # Middle board should be roughly centered
+        # First board starts at -0.5 - TOPO_EPS (natural overhang + epsilon)
+        assert positions[0][0] == pytest.approx(-0.5 - TOPO_EPS)
+        # Last board ends at 20.5 + TOPO_EPS
+        assert positions[-1][1] == pytest.approx(20.5 + TOPO_EPS)
+        # Middle board should be roughly centered around 10mm
         mid_board_center = (positions[1][0] + positions[1][1]) / 2
-        assert 9.0 < mid_board_center < 11.0  # Around 10mm center
+        assert 9.0 < mid_board_center < 11.0
 
     def test_partial_board_overlap(self):
-        """Boards that partially overlap wall are included."""
+        """Boards that partially overlap wall are included and overflow edges.
+
+        v1.0.1: boards unclipped — overflow on both wall edges is invariant.
+        """
         positions = calculate_board_positions(
             h_min=1.0,
             h_max=15.0,
             board_width=7.0,
             center_align=False
         )
-        # Should clip boards to wall boundaries
-        assert all(start >= 1.0 for start, end in positions)
-        assert all(end <= 15.0 for start, end in positions)
+        # Boards must overflow both wall edges (not clipped to them)
+        assert positions[0][0] < 1.0   # first board overflows left
+        assert positions[-1][1] > 15.0  # last board overflows right
 
 
 class TestCalculateBattenPositions:
@@ -287,3 +300,36 @@ class TestEdgeValidation:
         ]
         duplicates = check_for_duplicate_edges(edges)
         assert len(duplicates) == 1
+
+
+from boundary_assertions import assert_overflows_boundary
+
+
+class TestBoundaryOverflow:
+    """Boundary-overflow invariant for board-batten wall fills.
+
+    calculate_board_positions() generates board (start, end) tuples that
+    feed an OCCT common() clip box in board_batten_proxy._build_engraving.
+    If the leftmost/rightmost boards end exactly at the wall edge, common()
+    sees coincident boundary faces and segfaults.
+
+    These tests enforce that placed boards always overflow the wall edges
+    on both sides — purely in Python, no OCCT needed.
+    """
+
+    @pytest.mark.parametrize('h_min,h_max,board_width', [
+        (0.0,   50.0, 2.0),   # exact integer multiple: most likely zero remnant
+        (0.0,   50.0, 1.5),   # non-integer ratio
+        (0.0,  100.0, 5.0),
+        (-10.0, 10.0, 4.0),   # negative h_min, exact fit
+        (0.0,   8.0,  2.0),   # narrow wall, 4 boards exactly fit
+    ])
+    def test_boards_overflow_wall_edges(self, h_min, h_max, board_width):
+        positions = calculate_board_positions(
+            h_min, h_max, board_width, center_align=True
+        )
+        assert_overflows_boundary(
+            positions, lo=h_min, hi=h_max,
+            get_extent=lambda p: p,  # positions are already (start, end) tuples
+            label=f"board_width={board_width} wall=[{h_min},{h_max}]: ",
+        )
