@@ -16,7 +16,7 @@ Version: 5.0.1
 Date: 2025-12-31
 """
 
-__version__ = "5.0.1"
+__version__ = "5.0.2"
 
 import math
 from typing import List, Dict, Tuple, NamedTuple
@@ -235,6 +235,13 @@ class BrickGeometry:
             self.u_length, self.header_width
         )
 
+        # TOPO_EPS: same coincident-face overflow fix as _generate_flemish_bond.
+        # English bond closers also sum exactly to wall width; add a small overflow
+        # so common() in _create_mortar_grid never sees coincident boundary faces.
+        TOPO_EPS = self.mortar * 0.1
+        stretcher_closer += TOPO_EPS
+        header_closer += TOPO_EPS
+
         for course in range(self.num_courses):
             v = course * self.course_spacing_v
             is_header_course = (course % 2) == 1
@@ -243,7 +250,7 @@ class BrickGeometry:
                 # Header course
                 # Layout: closer + mortar + header + mortar + ... + header + mortar + closer
 
-                u = 0.0
+                u = -TOPO_EPS  # start slightly before left wall edge
 
                 # Left closer (if any)
                 if header_closer > 0:
@@ -293,7 +300,7 @@ class BrickGeometry:
                 # Stretcher course
                 # Layout: closer + mortar + stretcher + mortar + ... + stretcher + mortar + closer
 
-                u = 0.0
+                u = -TOPO_EPS  # start slightly before left wall edge
 
                 # Left closer (if any)
                 if stretcher_closer > 0:
@@ -387,10 +394,21 @@ class BrickGeometry:
         # Odd course closer is offset
         C1 = C0 + (S - H) / 2
 
+        # TOPO_EPS: small overflow on both sides prevents an OCCT segfault that
+        # occurs when brick faces are *exactly* coincident with the face_slab
+        # boundary during the common() Boolean operation.  Flemish/English bond
+        # geometry is designed to sum exactly to wall width, which triggers this
+        # OCCT edge case.  Adding 10% of the mortar joint (~0.011 mm at HO scale)
+        # to each closer pushes the course just past both wall edges so common()
+        # always sees clean non-coincident geometry to clip.
+        TOPO_EPS = m * 0.1
+        C0 += TOPO_EPS
+        C1 += TOPO_EPS
+
         for course in range(self.num_courses):
             v = course * self.course_spacing_v
             is_odd = (course % 2) == 1
-            u = 0.0
+            u = -TOPO_EPS  # start slightly before left wall edge
 
             if is_odd:
                 # Odd course: C1 + H + S + H + S + ... + H + C1
