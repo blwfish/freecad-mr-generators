@@ -1,11 +1,21 @@
 """
-Parametric Shingle Generator for FreeCAD v5.2.0
+Parametric Shingle Generator for FreeCAD v5.4.0
 Generates realistic shingles on roof surfaces from selected faces
 
 Author: Brian (with Claude assistance)
 Usage: Select one or more roof faces, run as macro in FreeCAD
 
 Version History:
+- 5.4.0 (2026-05-18): FIX: Ridge slivers — skip any course whose butt lands within
+                           50% of shingle_height from the top face edge.  The clipped
+                           fragment was thicker in the normal direction than it was
+                           tall up the slope, making it read as a raised fin.
+                           FIX: Wedge angle — default wedge_thickness reduced from
+                           3× to 1× materialThickness.  3× created a ~17° tilt of
+                           the exposed face relative to the roof surface (visually
+                           "propped up"); 1× gives ~6°, which is realistic.  Override
+                           via shingleWedgeThickness in spreadsheet if deeper steps
+                           are needed for STL print visibility.
 - 5.3.2 (2026-03-13): FIX: Flat compound output — all children are bare Solids.
                            Part::MultiFuse can't handle nested Compounds
                            (Compound→{Solid, Compound→{Solid...}}).  Now builds
@@ -118,7 +128,7 @@ from shingle_geometry import (
 import freecad_utils
 from freecad_utils import commit_result
 
-VERSION = "5.3.4"
+VERSION = "5.4.0"
 GENERATOR_NAME = "shingle_generator"
 
 
@@ -524,7 +534,7 @@ def generate_shingles(face, base_object, params):
     shingle_thickness = params.get('materialThickness', 0.5)
     exposure = params.get('shingleExposure', 15.0)
     stagger_pattern = params.get('shingleStaggerPattern', 'half')
-    wedge_thickness = params.get('shingleWedgeThickness', shingle_thickness * 3)
+    wedge_thickness = params.get('shingleWedgeThickness', shingle_thickness)
     chamfer = params.get('shingleChamfer', shingle_thickness * 1.50)
     
     print(f"\n{'='*60}")
@@ -602,6 +612,20 @@ def generate_shingles(face, base_object, params):
     clip_fail = 0
     clip_zero = 0
     for row in range(num_courses):
+        # Skip courses where less than half the shingle height lies on the face.
+        # Row 0 is a box of height=exposure; all other rows use shingle_height.
+        # Eave-side courses (butt below v=0) are handled by clip_zero — skip but
+        # keep looping.  Ridge-side courses produce raised slivers that are thicker
+        # in the normal direction than they are tall — break there.
+        v_row   = row * exposure - exposure          # covered (top) end v-coord
+        v_h     = exposure if row == 0 else shingle_height
+        v_butt  = v_row - v_h                        # butt (bottom) end v-coord
+        v_on_face = min(v_row, v_length) - max(v_butt, 0.0)
+        if v_on_face < v_h * 0.5:
+            if v_butt >= 0.0:
+                break    # past the ridge — no useful courses remain
+            continue     # below the eave — skip, keep looping
+
         # Calculate stagger offset for this row (using geometry library)
         stagger = calculate_stagger_offset(row, stagger_pattern, shingle_width)
 
