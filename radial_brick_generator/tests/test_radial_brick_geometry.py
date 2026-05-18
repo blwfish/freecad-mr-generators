@@ -594,5 +594,116 @@ class TestRadialBrickDefNamedTuple:
         assert brick2.index == 99
 
 
+class TestCircumferenceEdgeCases:
+    """Edge-case parameter families for the radial bricks-per-course math.
+
+    _calculate_bricks_per_course uses `max(1, int(circumference / (L+m)))`
+    and then back-calculates `angle_per_brick = 2π / num_bricks`.  Because
+    the geometry wraps around 2π, the OCCT coincident-face crash that hit
+    Flemish brick walls *cannot* occur here (no flat boundary to coincide
+    with).  But three other edge cases live in this math:
+
+      1. Single-brick fallback when radius is tiny — the brick wraps the
+         full circle, which the proxy still needs to render without crashing.
+      2. Exact-multiple circumference — int() truncation is a no-op, the
+         course fits exactly.  Sanity: angles still sum to 2π.
+      3. Taper-induced course-count drop — adjacent courses with different
+         brick counts on a conical surface.  The bond_offset logic must
+         remain well-defined when n_above ≠ n_below.
+
+    These were not covered by the pre-existing tests.
+    """
+
+    BRICK = dict(brick_length=2.32, brick_height=0.65, brick_thickness=1.09,
+                 mortar_thickness=0.11)
+
+    def test_minimum_radius_rejected(self):
+        """Radii too small to fit MIN_BRICKS_PER_COURSE (8) bricks raise
+        ValueError — this guards the proxy against the OCCT degenerate-
+        wedge case where 1- or 2-brick "rings" produce tiny solids that
+        crash Part.Solid.  Pin the contract."""
+        # 8 bricks at L+m=2.43 needs circumference >= 19.44 → r >= 3.09
+        with pytest.raises(ValueError, match="Radius too small"):
+            RadialBrickGeometry(
+                z_min=0, z_max=5,
+                radius_at_z_min=2.0, radius_at_z_max=2.0,  # only 5 bricks fit
+                **self.BRICK,
+            )
+
+    @pytest.mark.parametrize('n_bricks', [8, 12, 24, 100])
+    def test_exact_multiple_circumference(self, n_bricks):
+        """Pick radius so int(C / (L+m)) gives exactly n_bricks with no
+        remainder.  Verify the bricks span exactly 2π — radial layout's
+        equivalent of the boundary-overflow invariant for tiling fills."""
+        L, m = 2.32, 0.11
+        target_circ = n_bricks * (L + m)
+        radius = target_circ / (2 * math.pi)
+        rbg = RadialBrickGeometry(
+            z_min=0, z_max=5,
+            radius_at_z_min=radius, radius_at_z_max=radius,
+            brick_length=L, brick_height=0.65, brick_thickness=1.09,
+            mortar_thickness=m,
+        )
+        result = rbg.generate()
+        course0 = [b for b in result['bricks'] if b.course == 0]
+        assert len(course0) == n_bricks
+        total_arc = sum(b.angle_end - b.angle_start for b in course0)
+        assert total_arc == pytest.approx(2 * math.pi, abs=1e-9)
+
+    def test_cone_taper_brick_count_drops_between_courses(self):
+        """Conical surface where the brick count must change between adjacent
+        courses.  At narrow top, n_top < n_bottom — verify both courses
+        produce well-formed bricks and bond_offset doesn't break the layout."""
+        L, m = 2.32, 0.11
+        # Bottom radius gives n=20, top gives n=10 (both well above MIN=8)
+        r_bottom = 20 * (L + m) / (2 * math.pi)
+        r_top    = 10 * (L + m) / (2 * math.pi)
+        rbg = RadialBrickGeometry(
+            z_min=0, z_max=10,
+            radius_at_z_min=r_bottom, radius_at_z_max=r_top,
+            brick_length=L, brick_height=0.65, brick_thickness=1.09,
+            mortar_thickness=m,
+        )
+        result = rbg.generate()
+
+        per_course = {}
+        for b in result['bricks']:
+            per_course.setdefault(b.course, []).append(b)
+        counts = [len(per_course[c]) for c in sorted(per_course)]
+        assert counts[0] > counts[-1], (
+            f"Cone should have fewer bricks at top: counts={counts}"
+        )
+
+        # Every course's arcs must sum to exactly 2π — the int-then-divide
+        # layout keeps each course self-consistent regardless of taper.
+        for course_idx, bricks in per_course.items():
+            arcs = [b.angle_end - b.angle_start for b in bricks]
+            assert sum(arcs) == pytest.approx(2 * math.pi, abs=1e-9), (
+                f"course {course_idx}: arcs don't sum to 2π"
+            )
+
+    def test_bond_offset_wraps_correctly_on_odd_courses(self):
+        """For odd courses with running-bond offset, every brick's
+        (angle_start, angle_end) must remain in [0, 4π) after normalization
+        and wrap correction.  No brick should have angle_end < angle_start
+        in the final output."""
+        rbg = RadialBrickGeometry(
+            z_min=0, z_max=10,
+            radius_at_z_min=20.0, radius_at_z_max=20.0,
+            brick_length=2.32, brick_height=0.65, brick_thickness=1.09,
+            mortar_thickness=0.11,
+            bond_offset=0.5,  # half-brick running bond
+        )
+        result = rbg.generate()
+        odd_course_bricks = [b for b in result['bricks'] if b.course % 2 == 1]
+        assert len(odd_course_bricks) > 0
+        for b in odd_course_bricks:
+            assert b.angle_end > b.angle_start, (
+                f"course={b.course} brick={b.brick_in_course}: "
+                f"angle_end={b.angle_end} <= angle_start={b.angle_start} "
+                "— wrap correction broken"
+            )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

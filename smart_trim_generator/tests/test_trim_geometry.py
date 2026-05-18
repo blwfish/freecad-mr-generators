@@ -167,3 +167,63 @@ class TestFilterCornersForTrim:
         result = filter_corners_for_trim(corners)
         assert len(result) == 1
         assert result[0].corner_type == CornerType.INTERNAL
+
+
+class TestClassifyCornerAngleThresholds:
+    """Threshold-boundary tests for classify_corner().
+
+    classify_corner uses `abs(angle - 180.0) < tolerance` for STRAIGHT, then
+    `angle < 180` for EXTERNAL, else INTERNAL.  The boundary is at exactly
+    `180 ± tolerance` — at those values the strict-< comparison flips the
+    classification.  These tests pin the contract.
+
+    Additional cases pulled from the audit:
+      - tolerance=0 → STRAIGHT is unreachable (no angle satisfies `abs(...) < 0`)
+      - non-default tolerance values still respect strict-< boundary
+    """
+
+    @pytest.mark.parametrize('angle,expected', [
+        # Default tolerance = 5°.  STRAIGHT zone is (175, 185) exclusive.
+        (174.999, CornerType.EXTERNAL),
+        (175.0,   CornerType.EXTERNAL),   # exactly at boundary — flip
+        (175.001, CornerType.STRAIGHT),
+        (180.0,   CornerType.STRAIGHT),
+        (184.999, CornerType.STRAIGHT),
+        (185.0,   CornerType.INTERNAL),   # exactly at boundary — flip
+        (185.001, CornerType.INTERNAL),
+        # Pure external / internal far from STRAIGHT zone
+        (0.001,   CornerType.EXTERNAL),
+        (90.0,    CornerType.EXTERNAL),
+        (270.0,   CornerType.INTERNAL),
+        (359.999, CornerType.INTERNAL),
+    ])
+    def test_default_tolerance_boundaries(self, angle, expected):
+        assert classify_corner(angle) == expected
+
+    @pytest.mark.parametrize('angle,tolerance,expected', [
+        (170.0, 10.0, CornerType.EXTERNAL),     # exactly at boundary (170 = 180-10)
+        (170.001, 10.0, CornerType.STRAIGHT),
+        (190.0, 10.0, CornerType.INTERNAL),     # exactly at boundary (190 = 180+10)
+        (189.999, 10.0, CornerType.STRAIGHT),
+        # tolerance=1 — STRAIGHT is a very narrow window
+        (179.0, 1.0, CornerType.EXTERNAL),
+        (179.001, 1.0, CornerType.STRAIGHT),
+        (180.999, 1.0, CornerType.STRAIGHT),
+        (181.0, 1.0, CornerType.INTERNAL),
+    ])
+    def test_custom_tolerance_boundaries(self, angle, tolerance, expected):
+        assert classify_corner(angle, tolerance=tolerance) == expected
+
+    def test_zero_tolerance_makes_straight_unreachable(self):
+        """With tolerance=0, no angle satisfies abs(a-180) < 0 — STRAIGHT
+        becomes unreachable.  An angle of exactly 180 falls through the
+        first guard (0 < 0 is False), then through `elif angle < 180`
+        (180 < 180 is False), and ends in the INTERNAL else-branch.
+
+        That's almost certainly NOT what callers expect from tolerance=0 —
+        but it IS the contract.  Pinning it here makes any future change
+        to the strict-< vs <= choice visible.
+        """
+        assert classify_corner(180.0, tolerance=0.0) == CornerType.INTERNAL
+        assert classify_corner(179.9999, tolerance=0.0) == CornerType.EXTERNAL
+        assert classify_corner(180.0001, tolerance=0.0) == CornerType.INTERNAL
