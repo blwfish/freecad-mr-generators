@@ -16,7 +16,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 GENERATOR_NAME = "bead_board_generator"
 
 _here = Path(__file__).parent
@@ -123,10 +123,23 @@ def generate_bead_board_skin(face, bead_spacing=101.6, bead_depth=0.20, bead_gap
     bead_centers = [h_min + i * bead_spacing for i in range(num_beads)
                     if h_min + i * bead_spacing < h_max]
 
+    # TOPO_EPS: any gap edge within this distance of h_min/h_max is pushed
+    # strictly outside the wall to avoid an OCCT common() segfault on
+    # coincident faces.  Triggered when wall_width = K*bead_spacing + half_gap
+    # for any integer K — the last gap's right edge would otherwise land
+    # exactly on h_max.  See shared/boundary_assertions.py for the invariant.
+    TOPO_EPS = 1e-3
+
     gaps = []
     for i, center in enumerate(bead_centers):
+        gs = center - half_gap
+        ge = center + half_gap
+        if abs(gs - h_min) < TOPO_EPS: gs = h_min - TOPO_EPS
+        if abs(gs - h_max) < TOPO_EPS: gs = h_max + TOPO_EPS
+        if abs(ge - h_min) < TOPO_EPS: ge = h_min - TOPO_EPS
+        if abs(ge - h_max) < TOPO_EPS: ge = h_max + TOPO_EPS
         try:
-            g = _make_gap(center - half_gap, center + half_gap,
+            g = _make_gap(gs, ge,
                           v_min, v_max, bead_depth,
                           horiz_axis, vert_axis, bbox, normal)
             gaps.append(g)

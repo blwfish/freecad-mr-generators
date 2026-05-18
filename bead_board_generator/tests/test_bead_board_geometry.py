@@ -287,3 +287,57 @@ class TestEdgeValidation:
         ]
         duplicates = check_for_duplicate_edges(edges)
         assert len(duplicates) == 1
+
+
+from boundary_assertions import assert_no_boundary_coincidence
+
+
+class TestBoundaryCoincidence:
+    """Per-element non-coincidence invariant for bead-board gaps.
+
+    Bead-board places sparse vertical grooves; most gaps stop well inside
+    the wall edges so strict "must overflow both edges" doesn't apply.
+    The OCCT crash condition is narrower: it triggers only when an
+    individual gap edge lands *exactly* on the wall boundary.
+
+    The dangerous parameter family: wall_width = K*bead_spacing + half_gap
+    for any integer K — at those widths the last gap's right edge falls
+    precisely on h_max.  Same risk exists symmetrically on the left for
+    the first gap (gap_start = h_min - half_gap could coincide with the
+    face_slab left edge if bead_gap is somehow zero, which validation
+    prevents).
+    """
+
+    @pytest.mark.parametrize('h_min,h_max,bead_spacing,bead_gap', [
+        # The dangerous case: wall = K * bead_spacing + half_gap
+        (0.0, 1 * 5.0 + 0.10, 5.0, 0.20),
+        (0.0, 5 * 5.0 + 0.10, 5.0, 0.20),
+        (0.0, 10 * 5.0 + 0.10, 5.0, 0.20),
+        # Defaults (101.6mm bead_spacing) at the dangerous K=2 width:
+        (0.0, 2 * 101.6 + 0.10, 101.6, 0.20),
+        # Safe cases for contrast (should also pass):
+        (0.0, 50.0, 5.0, 0.20),
+        (0.0, 47.3, 5.0, 0.20),
+    ])
+    def test_no_gap_edge_coincides_with_wall(self, h_min, h_max, bead_spacing, bead_gap):
+        beads = calculate_bead_positions(h_min, h_max, bead_spacing)
+        # v1.0.1: pass h_min/h_max so calculate_gap_positions can push any
+        # coincident edges strictly outside the wall.
+        gaps = calculate_gap_positions(beads, bead_gap, h_min=h_min, h_max=h_max)
+        assert_no_boundary_coincidence(
+            gaps, lo=h_min, hi=h_max,
+            get_extent=lambda g: g,
+            label=f"bead_spacing={bead_spacing} bead_gap={bead_gap} "
+                  f"wall=[{h_min},{h_max}]: ",
+        )
+
+    def test_legacy_call_without_bounds_unchanged(self):
+        """Sanity: calling without h_min/h_max preserves original behavior.
+
+        The boundary-coincidence fix is opt-in via the new optional args so
+        existing callers and tests get identical output.
+        """
+        gaps_no_bounds = calculate_gap_positions([0.0, 5.0, 10.1], 0.20)
+        assert gaps_no_bounds[0] == pytest.approx((-0.10, 0.10))
+        assert gaps_no_bounds[1] == pytest.approx((4.90, 5.10))
+        assert gaps_no_bounds[2] == pytest.approx((10.00, 10.20))

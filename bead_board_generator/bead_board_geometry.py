@@ -1,5 +1,5 @@
 """
-Bead Board Geometry Library v1.0.0
+Bead Board Geometry Library v1.0.1
 
 Pure Python geometry functions for bead board trim generator.
 These functions are testable without FreeCAD and can be used in pytest.
@@ -10,6 +10,12 @@ creating a recessed groove pattern.
 
 No dependencies on FreeCAD.Part, FreeCAD.Vector, etc.
 Uses standard Python types (tuples, dicts, lists) for I/O.
+
+v1.0.1: calculate_gap_positions() accepts optional h_min/h_max and pushes
+        any gap edge within `topo_eps` of those boundaries strictly outside.
+        Prevents an OCCT common() segfault for the dangerous parameter
+        family wall_width = K*bead_spacing + bead_gap/2 where the last
+        gap's right edge would otherwise fall exactly on h_max.
 """
 
 import math
@@ -153,7 +159,9 @@ def calculate_bead_positions(h_min: float, h_max: float, bead_spacing: float) ->
     return positions
 
 
-def calculate_gap_positions(bead_positions: List[float], bead_gap: float) -> List[Tuple[float, float]]:
+def calculate_gap_positions(bead_positions: List[float], bead_gap: float,
+                            h_min: float = None, h_max: float = None,
+                            topo_eps: float = 1e-3) -> List[Tuple[float, float]]:
     """
     Calculate start and end positions for each gap based on bead centers.
 
@@ -162,6 +170,13 @@ def calculate_gap_positions(bead_positions: List[float], bead_gap: float) -> Lis
     Args:
         bead_positions: List of bead center positions
         bead_gap: Width of each gap in mm
+        h_min: Optional left wall boundary; if provided, any gap edge within
+               `topo_eps` of it is pushed strictly outside (overflow) to
+               prevent an OCCT common() segfault on coincident faces.
+        h_max: Optional right wall boundary; same treatment as h_min.
+        topo_eps: Tolerance / overflow distance for boundary-coincidence
+               avoidance (default 1e-3 mm — well above OCCT's BRep tolerance,
+               invisible at any practical scale).
 
     Returns:
         List of (gap_start, gap_end) tuples in mm
@@ -172,6 +187,20 @@ def calculate_gap_positions(bead_positions: List[float], bead_gap: float) -> Lis
     for bead_center in bead_positions:
         gap_start = bead_center - half_gap
         gap_end = bead_center + half_gap
+
+        # Push any edge within topo_eps of a wall boundary OUTSIDE that
+        # boundary so OCCT common() never sees coincident faces.
+        if h_min is not None:
+            if abs(gap_start - h_min) < topo_eps:
+                gap_start = h_min - topo_eps
+            if abs(gap_end - h_min) < topo_eps:
+                gap_end = h_min - topo_eps
+        if h_max is not None:
+            if abs(gap_start - h_max) < topo_eps:
+                gap_start = h_max + topo_eps
+            if abs(gap_end - h_max) < topo_eps:
+                gap_end = h_max + topo_eps
+
         gap_positions.append((gap_start, gap_end))
 
     return gap_positions

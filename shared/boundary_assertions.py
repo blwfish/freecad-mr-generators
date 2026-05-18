@@ -82,3 +82,52 @@ def assert_overflows_boundary(
             f"Exact-coincident boundary faces crash OCCT common() — "
             f"placed elements must extend strictly past the face edge."
         )
+
+
+def assert_no_boundary_coincidence(
+    elements: Iterable[Any],
+    lo: float,
+    hi: float,
+    get_extent: Callable[[Any], Tuple[float, float]],
+    eps: float = 1e-4,
+    label: str = '',
+) -> None:
+    """Assert no element edge lands within `eps` of the [lo, hi] boundary.
+
+    This is the WEAKER form of the boundary invariant, suitable for sparse
+    placement patterns (e.g. bead-board gaps) where elements don't tile the
+    entire wall and most gaps stop well inside the boundary.  The crash
+    condition is only triggered when an individual element edge falls
+    *exactly* on the boundary — so we check each element's edges
+    independently rather than demanding overflow of the whole union.
+
+    For tiling patterns (bricks, boards) use the stronger
+    `assert_overflows_boundary` instead.
+
+    Args:
+        elements: iterable of placed elements
+        lo, hi: boundary values
+        get_extent: callable(element) -> (start, end)
+        eps: forbidden zone width on each side of each boundary
+        label: descriptive prefix for the assertion message
+
+    Raises:
+        AssertionError: if any element has an edge within `eps` of `lo` or `hi`.
+    """
+    bad = []
+    for elem in elements:
+        s, e = get_extent(elem)
+        for boundary_name, boundary_val in (('lo', lo), ('hi', hi)):
+            if abs(s - boundary_val) < eps:
+                bad.append((elem, 'start', s, boundary_name, boundary_val))
+            if abs(e - boundary_val) < eps:
+                bad.append((elem, 'end', e, boundary_name, boundary_val))
+
+    if bad:
+        msg = f"{label}{len(bad)} element edge(s) within {eps} of boundary:\n"
+        for elem, side, val, bname, bval in bad[:5]:
+            msg += f"  {side}={val:.6f} ≈ {bname}={bval} on element {elem}\n"
+        if len(bad) > 5:
+            msg += f"  ... and {len(bad) - 5} more\n"
+        msg += "OCCT common() segfaults on coincident boundary faces."
+        raise AssertionError(msg)
