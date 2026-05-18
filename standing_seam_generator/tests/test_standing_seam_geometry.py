@@ -258,3 +258,40 @@ class TestSharedGeometryReexports:
         cs = get_roof_coordinate_system(verts, normal)
         dot = sum(cs['u_vec'][i]*cs['normal'][i] for i in range(3))
         assert abs(dot) < 1e-6
+
+
+class TestBoundaryOverflowRegression:
+    """Regression guard for standing-seam's intentional overflow.
+
+    calculate_panel_layout() returns start_u = -panel_width and adds +2
+    panels to num_panels, so panels strictly overflow both face edges.
+    OCCT common() then clips cleanly with non-coincident geometry.
+    Removing the overflow would reintroduce the same OCCT crash family
+    that affected Flemish-bond bricks.
+    """
+
+    @pytest.mark.parametrize('face_width,panel_width', [
+        (50.0,  5.0),
+        (52.55, 5.0),     # demo-roof dimensions
+        (50.0,  10.0),    # exact 5x fit — most likely to coincide without overflow
+        (100.0, 5.0),
+        (15.0,  5.0),     # exact 3x fit
+    ])
+    def test_panel_layout_overflows_both_edges(self, face_width, panel_width):
+        layout = calculate_panel_layout(face_width, panel_width)
+
+        # Left overflow: start_u is one full panel_width before the face
+        assert layout['start_u'] <= -panel_width, (
+            f"start_u={layout['start_u']} doesn't overflow left edge"
+        )
+
+        # Right overflow: start_u + num_panels*panel_width > face_width
+        right_edge = layout['start_u'] + layout['num_panels'] * panel_width
+        assert right_edge > face_width, (
+            f"right edge {right_edge} doesn't overflow face_width {face_width}"
+        )
+
+        # Sanity: the overflow margin on the right is at least one panel
+        assert right_edge - face_width >= panel_width, (
+            f"insufficient right-side overflow margin: {right_edge - face_width}"
+        )

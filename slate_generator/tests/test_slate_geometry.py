@@ -187,3 +187,40 @@ class TestSharedGeometry:
         shared = ((5,0,5),(5,10,5))
         result = classify_roof_intersection(face1, face2, shared)
         assert result['classification'] == 'ridge'
+
+
+class TestBoundaryOverflowRegression:
+    """Regression guard for the slate layout's intentional overflow.
+
+    Mirrors the shingle generator's pattern: calculate_layout() adds +3 to
+    both num_courses and tiles_per_course, and the macro starts placement
+    at -max_stagger.  The over-coverage is what keeps OCCT common() safe
+    against the coincident-face segfault demonstrated by Flemish bond.
+    """
+
+    @pytest.mark.parametrize('face_w,face_h,tile_w,exposure,stagger', [
+        (50.0, 30.0, 2.5, 1.5, 'half'),
+        (52.55, 31.53, 2.5, 1.5, 'half'),    # demo-roof dimensions
+        (10.0, 10.0, 5.0, 5.0, 'half'),      # exact integer ratios
+        (50.0, 30.0, 2.5, 1.5, 'third'),
+        (50.0, 30.0, 2.5, 1.5, 'none'),
+    ])
+    def test_layout_provides_overflow_margin(self, face_w, face_h,
+                                              tile_w, exposure, stagger):
+        layout = calculate_layout(face_w, face_h, tile_w, exposure, stagger)
+        min_courses = int(math.ceil(face_h / exposure))
+        min_tiles = int(math.ceil(face_w / tile_w))
+
+        assert layout['num_courses'] >= min_courses + 2, (
+            f"num_courses={layout['num_courses']} insufficient overflow"
+        )
+        assert layout['tiles_per_course'] >= min_tiles + 2, (
+            f"tiles_per_course={layout['tiles_per_course']} insufficient overflow"
+        )
+
+        if stagger == 'half':
+            assert layout['max_stagger'] == pytest.approx(tile_w / 2)
+        elif stagger == 'third':
+            assert layout['max_stagger'] == pytest.approx(tile_w / 3)
+        else:
+            assert layout['max_stagger'] == 0.0

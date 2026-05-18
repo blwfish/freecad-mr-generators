@@ -893,5 +893,52 @@ class TestAnalyzeRoofIntersection:
         assert 'RIDGE' in result['trim_recommendation']
 
 
+class TestBoundaryOverflowRegression:
+    """Regression guard for the shingle layout's intentional overflow.
+
+    shingle_geometry.calculate_layout() adds +3 to both num_courses and
+    shingles_per_course, and the macro starts placement at -max_stagger.
+    This deliberate over-coverage is what keeps OCCT common() safe — if
+    a future edit removes the padding, the generator becomes vulnerable
+    to the same coincident-face segfault that hit Flemish bond bricks.
+
+    These tests assert the overflow contract so regressions surface in CI.
+    """
+
+    @pytest.mark.parametrize('face_w,face_h,shingle_w,exposure,stagger', [
+        (50.0, 30.0, 2.5, 1.5, 'half'),
+        (52.55, 31.53, 2.5, 1.5, 'half'),   # actual demo-roof dimensions
+        (10.0, 10.0, 5.0, 5.0, 'half'),     # exact integer ratios
+        (50.0, 30.0, 2.5, 1.5, 'third'),
+        (50.0, 30.0, 2.5, 1.5, 'none'),
+    ])
+    def test_layout_provides_overflow_margin(self, face_w, face_h,
+                                              shingle_w, exposure, stagger):
+        layout = calculate_layout(face_w, face_h, shingle_w, exposure, stagger)
+        min_courses = int(math.ceil(face_h / exposure))
+        min_shingles = int(math.ceil(face_w / shingle_w))
+
+        # +3 padding on each axis is the documented overflow margin.
+        # Anything less risks the OCCT coincident-face crash at the
+        # ridge/eave or left/right boundaries.
+        assert layout['num_courses'] >= min_courses + 2, (
+            f"num_courses={layout['num_courses']} insufficient overflow "
+            f"(need >= {min_courses + 2})"
+        )
+        assert layout['shingles_per_course'] >= min_shingles + 2, (
+            f"shingles_per_course={layout['shingles_per_course']} insufficient "
+            f"overflow (need >= {min_shingles + 2})"
+        )
+
+        # Stagger pattern must contribute max_stagger so the macro can
+        # start placement at -max_stagger (left-edge overflow).
+        if stagger == 'half':
+            assert layout['max_stagger'] == pytest.approx(shingle_w / 2)
+        elif stagger == 'third':
+            assert layout['max_stagger'] == pytest.approx(shingle_w / 3)
+        else:
+            assert layout['max_stagger'] == 0.0
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
