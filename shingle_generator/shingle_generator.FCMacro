@@ -852,51 +852,36 @@ if __name__ == "__main__":
         print(f"Shingle Generator v{VERSION}")
         print(f"{'='*60}\n")
         
-        # Try to get parameters from spreadsheet
-        params_sheet = doc.getObject("Spreadsheet")
-        
-        if params_sheet:
-            try:
-                defaults = {
-                    'shingleWidth': 3.5,
-                    'shingleHeight': 2.0,
-                    'materialThickness': 0.25,
-                    'shingleExposure': 1.5,
-                    'shingleStaggerPattern': 'half'
-                }
-                sheet_params = get_params_from_spreadsheet(doc)
-                if sheet_params:
-                    params = {**defaults, **sheet_params}
-                    print("Loaded parameters from spreadsheet (missing keys use defaults):")
-                    for key, val in params.items():
-                        src = "(spreadsheet)" if key in sheet_params else "(default)"
-                        print(f"  {key}: {val} {src}")
-                    print()
-                else:
-                    print("Warning: Could not load parameters from spreadsheet, using defaults\n")
-                    params = defaults
-            except Exception as e:
-                print(f"Warning: {e}")
-                print("Using default parameters\n")
-                params = {
-                    'shingleWidth': 3.5,
-                    'shingleHeight': 2.0,
-                    'materialThickness': 0.25,
-                    'shingleExposure': 1.5,
-                    'shingleStaggerPattern': 'half'
-                }
-        else:
-            print("No spreadsheet found, using default parameters:")
-            params = {
-                'shingleWidth': 3.5,
-                'shingleHeight': 2.0,
-                'materialThickness': 0.25,
-                'shingleExposure': 1.5,
-                'shingleStaggerPattern': 'half'
-            }
-            for key, val in params.items():
-                print(f"  {key}: {val}")
-            print()
+        # Try to get parameters from spreadsheet.
+        # get_params_from_spreadsheet searches "params", "ShingleParameters",
+        # "BuildingParameters", "Spreadsheet" in that order — "params" is the
+        # canonical name from Skeleton.FCStd.
+        defaults = {
+            'shingleWidth': 3.5,
+            'shingleHeight': 2.0,
+            'materialThickness': 0.25,
+            'shingleExposure': 1.5,
+            'shingleStaggerPattern': 'half'
+        }
+        try:
+            sheet_params = get_params_from_spreadsheet(doc)
+            if sheet_params:
+                params = {**defaults, **sheet_params}
+                print("Loaded parameters from spreadsheet (missing keys use defaults):")
+                for key, val in params.items():
+                    src = "(spreadsheet)" if key in sheet_params else "(default)"
+                    print(f"  {key}: {val} {src}")
+                print()
+            else:
+                print("No spreadsheet found, using default parameters:")
+                params = defaults
+                for key, val in params.items():
+                    print(f"  {key}: {val}")
+                print()
+        except Exception as e:
+            print(f"Warning: {e}")
+            print("Using default parameters\n")
+            params = defaults
         
         # Validate parameters early
         is_valid, errors = validate_parameters(
