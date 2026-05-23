@@ -1,0 +1,195 @@
+"""
+Ashlar Geometry Library v1.0.0
+
+Pure Python geometry functions for ashlar stone surface generation.
+No FreeCAD imports — importable by pytest.
+
+The approach: for each stone, generate a perturbed regular grid of 2D
+points, apply fracture-plane Z displacement to simulate quarried stone
+texture, then Delaunay-triangulate the result.  The proxy extrudes the
+resulting triangulated shell backward to produce a printable solid.
+
+Requires: numpy, scipy
+"""
+
+import numpy as np
+from scipy.spatial import Delaunay
+from typing import List, Tuple
+
+VERSION = "1.0.0"
+
+
+def generate_perturbed_grid(
+    width: float,
+    height: float,
+    avg_spacing: float,
+    randomness: float = 0.3,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    Regular grid with boundary-preserving interior perturbation.
+
+    Boundary points stay exactly on the boundary so edge taper works
+    correctly and the rectangular stone outline is preserved.
+
+    Returns np.ndarray shape (N, 2).
+    """
+    rng = np.random.default_rng(seed)
+    nx = int(width / avg_spacing) + 1
+    ny = int(height / avg_spacing) + 1
+
+    x = np.linspace(0, width, nx)
+    y = np.linspace(0, height, ny)
+    xx, yy = np.meshgrid(x, y)
+
+    points_x = xx.flatten().copy()
+    points_y = yy.flatten().copy()
+
+    is_boundary = (
+        (points_x == 0.0) | (points_x == width) |
+        (points_y == 0.0) | (points_y == height)
+    )
+    n_interior = int((~is_boundary).sum())
+    max_p = avg_spacing * randomness * 0.5
+    perturb = rng.uniform(-max_p, max_p, (n_interior, 2))
+    points_x[~is_boundary] += perturb[:, 0]
+    points_y[~is_boundary] += perturb[:, 1]
+
+    return np.column_stack([points_x, points_y])
+
+
+def compute_fracture_z_values(
+    points_2d: np.ndarray,
+    width: float,
+    height: float,
+    displacement_range: Tuple[float, float] = (0.0, 0.8),
+    n_fractures: int = 3,
+    edge_taper: float = 1.5,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    Fracture-plane Z displacement for each 2D grid point.
+
+    Uses n_fractures random planes with tanh transitions to simulate
+    quarried stone texture.  Edge taper brings displacement to zero at
+    stone boundaries so adjacent stones fit cleanly (no gaps or overhangs
+    at the joint line).
+
+    Fine Gaussian noise adds sub-millimetre surface roughness.
+
+    Returns np.ndarray shape (N,).
+    """
+    rng = np.random.default_rng(seed)
+    n_points = len(points_2d)
+    min_z, max_z = displacement_range
+
+    scale = max(width, height) / 4.0
+
+    planes = []
+    for _ in range(n_fractures):
+        angle = rng.uniform(0, 2 * np.pi)
+        planes.append({
+            'normal': np.array([np.cos(angle), np.sin(angle)]),
+            'center': np.array([width / 2.0, height / 2.0]),
+            'offset': rng.uniform(-width / 4.0, width / 4.0),
+            'z_tilt': rng.uniform(min_z, max_z),
+        })
+
+    z_values = np.zeros(n_points)
+    for p in planes:
+        dist = (points_2d - p['center']) @ p['normal'] - p['offset']
+        z_values += p['z_tilt'] * np.tanh(dist / scale)
+    z_values /= n_fractures
+
+    # Normalise to fill displacement_range
+    z_values -= z_values.mean()
+    current_range = z_values.max() - z_values.min()
+    if current_range > 0:
+        z_values *= (max_z - min_z) / current_range
+    z_values += (min_z + max_z) / 2.0
+    z_values = np.clip(z_values, min_z, max_z)
+
+    z_values += rng.normal(0, 0.05, n_points)
+
+    # Edge taper to zero at stone boundary
+    dist_from_edge = np.minimum(
+        np.minimum(points_2d[:, 0], width - points_2d[:, 0]),
+        np.minimum(points_2d[:, 1], height - points_2d[:, 1]),
+    )
+    taper = np.clip(dist_from_edge / edge_taper, 0.0, 1.0)
+    return z_values * taper
+
+
+def generate_stone_surface(
+    width: float,
+    height: float,
+    avg_spacing: float = 0.25,
+    randomness: float = 0.6,
+    displacement_range: Tuple[float, float] = (-0.8, 0.8),
+    n_fractures: int = 3,
+    edge_taper: float = 1.5,
+    z_offset: float = 1.0,
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Triangulated stone surface ready for proxy conversion.
+
+    z_offset shifts the entire surface forward so even the deepest
+    recesses are above Z=0, preventing hollow lakes that would trap
+    resin during printing and simplifying the backing-box geometry.
+
+    Returns (points_2d, z_values, simplices):
+      points_2d  — (N, 2)  2D mesh points within [0,width] x [0,height]
+      z_values   — (N,)    Z = fracture displacement + z_offset
+      simplices  — (M, 3)  Delaunay triangle vertex indices
+    """
+    points_2d = generate_perturbed_grid(width, height, avg_spacing, randomness, seed)
+    z_raw = compute_fracture_z_values(
+        points_2d, width, height, displacement_range, n_fractures, edge_taper,
+        seed=seed + 1000,
+    )
+    z_values = z_raw + z_offset
+    simplices = Delaunay(points_2d).simplices
+    return points_2d, z_values, simplices
+
+
+def compute_stone_positions(
+    n_cols: int,
+    n_rows: int,
+    stone_width: float,
+    stone_height: float,
+    joint_width: float,
+) -> List[dict]:
+    """
+    Grid layout for all stones in the wall.
+
+    Each entry has: row, col, x, y, width, height, seed.
+    Seeds are deterministic from position so the wall is reproducible.
+    """
+    stones = []
+    for row in range(n_rows):
+        for col in range(n_cols):
+            stones.append({
+                'row': row,
+                'col': col,
+                'x': col * (stone_width + joint_width),
+                'y': row * (stone_height + joint_width),
+                'width': stone_width,
+                'height': stone_height,
+                'seed': 2000 + (row * n_cols + col) * 10,
+            })
+    return stones
+
+
+def compute_wall_dimensions(
+    n_cols: int,
+    n_rows: int,
+    stone_width: float,
+    stone_height: float,
+    joint_width: float,
+) -> dict:
+    """Overall wall width and height (outer boundary including joints)."""
+    return {
+        'width': n_cols * stone_width + (n_cols - 1) * joint_width,
+        'height': n_rows * stone_height + (n_rows - 1) * joint_width,
+    }

@@ -1,0 +1,35 @@
+"""
+Parametric Ashlar Stone Wall Generator for FreeCAD v1.0.0
+
+Generates a standalone ashlar masonry wall with:
+  - Fracture-textured stone faces (triangulated mesh, extruded to solids)
+  - Mortar joints between stones
+  - Backing box for structural integrity
+
+Designed for STL export and resin printing.  Stone texture is controlled
+by fracture-plane displacement — each stone gets a unique random seed so
+no two faces look alike.
+
+Usage: Macro → Macros → select this file → Execute
+       Then adjust properties in the panel to regenerate.
+
+Author: Brian (with Claude assistance)
+"""
+
+import FreeCAD as App
+import sys
+from pathlib import Path
+
+# Ensure the proxy module is importable from the Macro directory
+_macro_dir = Path(__file__).parent
+if str(_macro_dir) not in sys.path:
+    sys.path.insert(0, str(_macro_dir))
+
+from ashlar_proxy import make_ashlar_wall
+
+make_ashlar_wall()
+
+if App.GuiUp:
+    import FreeCADGui as Gui
+    Gui.activeDocument().activeView().viewAxometric()
+    Gui.SendMsgToActiveView("ViewFit")
