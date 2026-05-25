@@ -229,13 +229,24 @@ class LabelProxy:
 
             faces, bb = _make_text_faces(text, font_path, font_size)
 
-            # Centre at local origin then extrude each glyph face
+            # Centre at local origin then extrude each glyph face.
+            #
+            # Extrude the label slightly into the parent surface so a Boolean
+            # Union (Part → Boolean → Union) can actually fuse the two solids.
+            # OCCT's Boolean Fuse will not merge solids whose faces are merely
+            # coincident-coplanar; without overlap the result degenerates to a
+            # Compound of two disjoint solids.  A 0.01 mm overlap is far below
+            # any printable resolution but enough for OCCT to register a real
+            # volumetric intersection.
             offset_x = -(bb.XMin + bb.XLength / 2.0)
             offset_y = -(bb.YMin + bb.YLength / 2.0)
+            overlap = 0.01 if height >= 0 else -0.01   # mm into the face
+            extrude_z = height + overlap
+            base_z    = -overlap
             solids = []
             for face in faces:
-                solid = face.extrude(Vector(0.0, 0.0, height))
-                solid.translate(Vector(offset_x, offset_y, 0.0))
+                solid = face.extrude(Vector(0.0, 0.0, extrude_z))
+                solid.translate(Vector(offset_x, offset_y, base_z))
                 solids.append(solid)
 
             compound = Part.makeCompound(solids)
