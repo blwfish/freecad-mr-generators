@@ -1,0 +1,163 @@
+"""
+label_generator.FCMacro — Place a raised (or inset) text label on a selected face.
+
+Usage:
+  1. Select exactly one face on a solid.
+  2. Run this macro.
+  3. A parametric LabelProxy object is created, positioned on that face.
+  4. Edit Text, FontPath, FontSize (0 = auto), Height, Padding, Rotation
+     in the Properties panel — the label rebuilds automatically.
+
+The label is a separate Part::FeaturePython object.  If you want it fused into
+the parent solid, use Part → Boolean → Union manually after creation.
+
+Version History:
+  1.0.0: Initial release — face selection, FeaturePython proxy, auto-fit font size.
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import sys
+import math
+from pathlib import Path
+
+_here = Path(__file__).parent
+for p in (str(_here), str(_here / '_lib')):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from label_proxy import LabelProxy, LabelViewProxy, VERSION
+from label_geometry import orthonormal_frame
+
+
+# ---------------------------------------------------------------------------
+# Face-frame extraction
+# ---------------------------------------------------------------------------
+
+def _face_frame(obj, face_index):
+    """
+    Return (center, normal, x_axis, face_w, face_h) for the given face in
+    world coordinates.
+
+    Uses obj.getGlobalPlacement() so the frame is correct even when the
+    object is inside a Part container with a non-identity placement.
+    """
+    from freecad_utils import get_global_face
+    face = get_global_face(obj, face_index)
+
+    # Centre of mass in world coords
+    center = face.CenterOfMass
+
+    # Outward normal at face centre
+    try:
+        u_min, u_max, v_min, v_max = face.ParameterRange
+    except Exception:
+        u_min, u_max, v_min, v_max = 0.0, 1.0, 0.0, 1.0
+
+    u_mid = (u_min + u_max) * 0.5
+    v_mid = (v_min + v_max) * 0.5
+    normal_vec = face.normalAt(u_mid, v_mid)
+
+    # Face u-direction: finite-difference along the u parameter
+    eps_u = max((u_max - u_min) * 1e-4, 1e-6)
+    try:
+        p0 = face.valueAt(u_mid - eps_u, v_mid)
+        p1 = face.valueAt(u_mid + eps_u, v_mid)
+        du = p1 - p0
+        if du.Length > 1e-12:
+            x_axis_vec = du / du.Length
+        else:
+            raise ValueError("zero-length u tangent")
+    except Exception:
+        # Fall back to orthonormal_frame computed from the normal
+        n_tuple = (normal_vec.x, normal_vec.y, normal_vec.z)
+        x_t, _ = orthonormal_frame(n_tuple)
+        from FreeCAD import Vector as V
+        x_axis_vec = V(*x_t)
+
+    # Face dimensions from parameter range (valid for planar faces; mm units)
+    face_w = abs(u_max - u_min)
+    face_h = abs(v_max - v_min)
+
+    # Sanity-check: if ParameterRange gave degenerate dimensions (e.g. non-planar
+    # surface with UV != mm), fall back to bounding-box projection.
+    bb = face.BoundBox
+    bb_diag = bb.DiagonalLength
+    if face_w < 1e-6 or face_h < 1e-6 or max(face_w, face_h) > bb_diag * 10:
+        face_w = bb.XLength if bb.XLength > 1e-6 else bb.DiagonalLength
+        face_h = bb.YLength if bb.YLength > 1e-6 else bb.DiagonalLength
+
+    return center, normal_vec, x_axis_vec, face_w, face_h
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    doc = App.ActiveDocument
+    if doc is None:
+        App.Console.PrintError("label_generator: no active document.\n")
+        return
+
+    sel = Gui.Selection.getSelectionEx()
+    if not sel or not sel[0].SubElementNames:
+        App.Console.PrintError(
+            "label_generator: select exactly one face, then run this macro.\n"
+        )
+        return
+
+    sub_name = sel[0].SubElementNames[0]
+    if not sub_name.startswith("Face"):
+        App.Console.PrintError(
+            f"label_generator: expected a Face sub-element; got {sub_name!r}.\n"
+        )
+        return
+
+    sel_obj = sel[0].Object
+    face_index = int(sub_name[4:]) - 1  # "Face1" → 0
+
+    App.Console.PrintMessage(
+        f"label_generator v{VERSION}: labelling {sel_obj.Label!r} {sub_name}\n"
+    )
+
+    try:
+        center, normal, x_axis, face_w, face_h = _face_frame(sel_obj, face_index)
+    except Exception as exc:
+        App.Console.PrintError(f"label_generator: cannot read face frame: {exc}\n")
+        return
+
+    default_text = sel_obj.Label
+
+    doc.openTransaction("label_generator: Label")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "Label")
+        LabelProxy(obj)
+        LabelViewProxy(obj.ViewObject)
+        LabelProxy.set_defaults(obj, text=default_text)
+
+        # Store the face frame
+        from FreeCAD import Vector as V
+        obj.FaceCenter = V(center.x, center.y, center.z)
+        obj.FaceNormal = V(normal.x, normal.y, normal.z)
+        obj.FaceXAxis  = V(x_axis.x, x_axis.y, x_axis.z)
+        obj.FaceWidth  = face_w
+        obj.FaceHeight = face_h
+
+        obj.ViewObject.ShapeColor = (0.9, 0.9, 0.5)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"  ✓ Label object created on {sel_obj.Label!r} {sub_name}\n"
+        f"  Edit Text, Height, FontSize, Padding, Rotation in the Properties panel.\n"
+        f"  FontSize=0 auto-fits text to face ({face_w:.1f} × {face_h:.1f} mm).\n\n"
+    )
+
+
+if __name__ == "__main__":
+    main()
