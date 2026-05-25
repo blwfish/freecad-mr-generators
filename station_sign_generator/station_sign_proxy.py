@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from FreeCAD import Vector
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 GENERATOR_NAME = "station_sign_generator"
 
 _here = Path(__file__).parent
@@ -67,20 +67,67 @@ def _make_text_faces(text, font_path, height):
 
     faces = []
     for char_wires in wire_lists:
-        if not char_wires:
-            continue
-        try:
-            face = Part.Face(char_wires)
-            if not face.isNull():
-                faces.append(face)
-        except Exception:
-            pass  # skip degenerate glyphs (e.g. space)
+        faces.extend(_wires_to_faces(char_wires))
 
     if not faces:
         raise RuntimeError(f"No valid glyph faces for '{text}' — check font path")
 
     bbox = Part.makeCompound(faces).BoundBox
     return faces, bbox
+
+
+def _wires_to_faces(char_wires):
+    """
+    Convert the wire list for one glyph to one or more Part.Face objects.
+
+    Handles disconnected glyph parts (dot of 'i', 'j', etc.) by using
+    bounding-box containment to distinguish holes from separate islands.
+    """
+    if not char_wires:
+        return []
+    if len(char_wires) == 1:
+        try:
+            f = Part.Face(char_wires)
+            return [f] if not f.isNull() else []
+        except Exception:
+            return []
+
+    eps = 1e-6
+    bbs = [w.BoundBox for w in char_wires]
+
+    def contains(outer_bb, inner_bb):
+        return (inner_bb.XMin >= outer_bb.XMin - eps and
+                inner_bb.XMax <= outer_bb.XMax + eps and
+                inner_bb.YMin >= outer_bb.YMin - eps and
+                inner_bb.YMax <= outer_bb.YMax + eps)
+
+    n = len(char_wires)
+    is_outer = [True] * n
+    for i in range(n):
+        for j in range(n):
+            if i != j and contains(bbs[j], bbs[i]):
+                is_outer[i] = False
+                break
+
+    used = [False] * n
+    faces = []
+    for i in range(n):
+        if not is_outer[i] or used[i]:
+            continue
+        used[i] = True
+        group = [char_wires[i]]
+        for j in range(n):
+            if not used[j] and not is_outer[j] and contains(bbs[i], bbs[j]):
+                group.append(char_wires[j])
+                used[j] = True
+        try:
+            f = Part.Face(group)
+            if not f.isNull():
+                faces.append(f)
+        except Exception:
+            pass
+
+    return faces
 
 
 # =============================================================================
