@@ -58,22 +58,25 @@ def _face_frame(obj, face_index):
     v_mid = (v_min + v_max) * 0.5
     normal_vec = face.normalAt(u_mid, v_mid)
 
-    # Face u-direction: finite-difference along the u parameter
-    eps_u = max((u_max - u_min) * 1e-4, 1e-6)
-    try:
-        p0 = face.valueAt(u_mid - eps_u, v_mid)
-        p1 = face.valueAt(u_mid + eps_u, v_mid)
-        du = p1 - p0
-        if du.Length > 1e-12:
-            x_axis_vec = du / du.Length
+    # Face x-direction: cross(world_Z, normal) gives a horizontal direction on
+    # any vertical face (text reads left-to-right when viewed from outside).
+    # For nearly-horizontal faces (normal ≈ ±Z) fall back to world_X projected
+    # onto the face plane so the top/bottom face also gets natural orientation.
+    from FreeCAD import Vector as V
+    world_z = V(0.0, 0.0, 1.0)
+    x_candidate = world_z.cross(normal_vec)
+    if x_candidate.Length > 1e-6:
+        x_axis_vec = x_candidate / x_candidate.Length
+    else:
+        # Face is horizontal (normal ≈ ±Z): project world_X onto face plane
+        world_x = V(1.0, 0.0, 0.0)
+        proj = world_x - normal_vec * world_x.dot(normal_vec)
+        if proj.Length > 1e-6:
+            x_axis_vec = proj / proj.Length
         else:
-            raise ValueError("zero-length u tangent")
-    except Exception:
-        # Fall back to orthonormal_frame computed from the normal
-        n_tuple = (normal_vec.x, normal_vec.y, normal_vec.z)
-        x_t, _ = orthonormal_frame(n_tuple)
-        from FreeCAD import Vector as V
-        x_axis_vec = V(*x_t)
+            n_tuple = (normal_vec.x, normal_vec.y, normal_vec.z)
+            x_t, _ = orthonormal_frame(n_tuple)
+            x_axis_vec = V(*x_t)
 
     # Face dimensions from parameter range (valid for planar faces; mm units)
     face_w = abs(u_max - u_min)

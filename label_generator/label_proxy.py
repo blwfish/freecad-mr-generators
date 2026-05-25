@@ -240,17 +240,19 @@ class LabelProxy:
 
             compound = Part.makeCompound(solids)
 
-            # Bake world transform into the shape geometry.
-            # Setting obj.Placement inside execute() causes FreeCAD to mark
-            # the object touched mid-recompute, which crashes on the second
-            # cycle with "cannot determine type of null shape".
+            # Bake world transform into the shape geometry using transformGeometry.
+            # transformShape sets a TopoDS_Location which FreeCAD extracts into
+            # obj.Placement on assignment, triggering a second recompute and an
+            # unpredictable shape position.  transformGeometry returns a new shape
+            # with actual vertex coordinates moved to world space; obj.Placement
+            # stays identity and no second recompute is triggered.
             rows = build_frame_matrix(center, normal, x_axis, rotation)
             m = Matrix()
             m.A11, m.A12, m.A13, m.A14 = rows[0]
             m.A21, m.A22, m.A23, m.A24 = rows[1]
             m.A31, m.A32, m.A33, m.A34 = rows[2]
             m.A41, m.A42, m.A43, m.A44 = rows[3]
-            compound.transformShape(m)
+            compound = compound.transformGeometry(m)
 
             obj.Shape = compound
 
