@@ -28,6 +28,7 @@ GENERATORS = [
     "board_batten_generator",
     "brick_generator",
     "clapboard_generator",
+    "label_generator",
     "radial_brick_generator",
     "roof_seam_generator",
     "shingle_generator",
@@ -132,7 +133,7 @@ def install(macro_dir: Path, mod_dir: Path, dry_run: bool = False):
             shutil.copy2(src, dest)
 
     if not dry_run:
-        print(f"\nDone. Restart FreeCAD and run macros from Tools → Macros.")
+        print(f"\nDone. Run macros from Tools → Macros (no FreeCAD restart needed).")
 
 
 def uninstall(macro_dir: Path, mod_dir: Path):

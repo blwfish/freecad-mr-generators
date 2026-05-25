@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from FreeCAD import Vector
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 GENERATOR_NAME = "station_sign_generator"
 
 _here = Path(__file__).parent
@@ -45,38 +45,42 @@ _TEXT_HEIGHT_HO = (16.0 / 87.0) * 25.4   # ≈ 4.67 mm
 # Text shape helper
 # =============================================================================
 
-def _make_text_shape(text, font_path, height):
+def _make_text_faces(text, font_path, height):
     """
-    Return a Part compound shape for the given text string.
+    Return (faces, bbox) for the given text string at the given height.
 
-    Tries Part.makeShapeString first (no document objects created).
-    Falls back to a temporary Draft shapestring if that fails.
+    faces: list of Part.Face objects (one per glyph, holes handled by Part.Face)
+    bbox:  BoundBox of Part.makeCompound(faces)
+
+    Uses Part.makeWireString — the correct Part-module API.
+    Part.makeShapeString was never a real Part function; it only appeared to work
+    via a Draft fallback that silently created and discarded document objects.
     """
     path = font_path if (font_path and os.path.exists(font_path)) else ""
     try:
-        shape = Part.makeShapeString(text, path, height, 0)
-        if shape.isNull():
-            raise RuntimeError("makeShapeString returned null shape")
-        return shape
-    except Exception as e:
-        App.Console.PrintWarning(
-            f"StationSignProxy: Part.makeShapeString failed ({e}), trying Draft\n")
+        wire_lists = Part.makeWireString(text, path, height, 0)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot create text wires for '{text}': {exc}") from exc
 
-    # Draft fallback — creates a temp document object then discards it
-    try:
-        import Draft
-        doc = App.ActiveDocument
-        if doc is None:
-            raise RuntimeError("No active document for Draft fallback")
-        tmp = Draft.make_shapestring(text, path, Size=height)
-        doc.recompute()
-        shape = tmp.Shape.copy()
-        tmp.ViewObject.Visibility = False
-        doc.recompute()
-        doc.removeObject(tmp.Name)
-        return shape
-    except Exception as e2:
-        raise RuntimeError(f"Cannot create text shape for '{text}': {e2}")
+    if not wire_lists:
+        raise RuntimeError(f"makeWireString returned empty result for '{text}'")
+
+    faces = []
+    for char_wires in wire_lists:
+        if not char_wires:
+            continue
+        try:
+            face = Part.Face(char_wires)
+            if not face.isNull():
+                faces.append(face)
+        except Exception:
+            pass  # skip degenerate glyphs (e.g. space)
+
+    if not faces:
+        raise RuntimeError(f"No valid glyph faces for '{text}' — check font path")
+
+    bbox = Part.makeCompound(faces).BoundBox
+    return faces, bbox
 
 
 # =============================================================================
@@ -93,9 +97,8 @@ def generate_sign_shape(station_name, font_path, text_height,
     sign_width  = 2*border_thick + 2*border_gap + measured_text_width
     sign_height = 2*border_thick + 2*border_gap + measured_text_height
     """
-    text_shape = _make_text_shape(station_name, font_path, text_height)
+    text_faces, bb = _make_text_faces(station_name, font_path, text_height)
 
-    bb = text_shape.BoundBox
     text_w = bb.XLength
     text_h = bb.YLength
 
@@ -125,8 +128,12 @@ def generate_sign_shape(station_name, font_path, text_height,
     text_y = inner_y + (inner_h - text_h) / 2 - bb.YMin
     text_z = border_height
 
-    text_solid = text_shape.extrude(Vector(0, 0, mat_thick))
-    text_solid.translate(Vector(text_x, text_y, text_z))
+    glyph_solids = []
+    for face in text_faces:
+        s = face.extrude(Vector(0, 0, mat_thick))
+        s.translate(Vector(text_x, text_y, text_z))
+        glyph_solids.append(s)
+    text_solid = Part.makeCompound(glyph_solids)
 
     # Fuse all layers
     try:
