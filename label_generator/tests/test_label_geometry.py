@@ -199,6 +199,17 @@ class TestComputeFontSize:
         size = compute_font_size(1.0, 0.001, 10.0, 10.0, 4.999)
         assert size > 0
 
+    def test_only_width_zeroed_raises(self):
+        """Mutation guard: usable_w=0 but usable_h>0 — width guard must fire alone.
+
+        The existing `test_padding_exactly_half_face_width_raises` zeros BOTH
+        dimensions so either guard firing makes the test pass.  This case zeros
+        only width; the `usable_w <= 0` → `usable_w < 0` mutation would let it
+        through silently since usable_h=90 won't trigger the height guard.
+        """
+        with pytest.raises(ValueError, match="too small"):
+            compute_font_size(1.0, 1.0, 10.0, 100.0, 5.0)  # usable_w=0, usable_h=90
+
     def test_padding_exactly_half_face_width_raises(self):
         """padding=5.0 on face_w=10 → usable_w=0 → ValueError."""
         with pytest.raises(ValueError, match="too small"):

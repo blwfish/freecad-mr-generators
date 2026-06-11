@@ -1,5 +1,5 @@
 """
-Brick Geometry Generator Library v5.0.1
+Brick Geometry Generator Library v5.0.2
 
 Pure Python geometry generation for parametric brick walls.
 No FreeCAD dependencies - designed for testing and reuse.
@@ -534,7 +534,7 @@ class BrickGeometry:
                 v = course * self.course_spacing_v
                 
                 # Offset alternating stretcher courses by half width
-                offset = (self.stretcher_spacing_u / 2) if (_ % 2) else 0
+                offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
                 u = offset - self.stretcher_spacing_u
                 
                 while u < self.u_length + self.stretcher_spacing_u:

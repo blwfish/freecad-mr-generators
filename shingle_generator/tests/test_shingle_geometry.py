@@ -77,6 +77,12 @@ class TestParameterValidation:
         is_valid, errors = validate_parameters(10.0, 20.0, 0.5, 25.0)
         assert not is_valid
         assert any("exposure" in e.lower() and "exceed" in e.lower() for e in errors)
+
+    def test_exposure_equals_height_valid(self):
+        """exposure == height is the legal maximum — strict `>` means == is allowed."""
+        is_valid, errors = validate_parameters(10.0, 20.0, 0.5, 20.0)
+        assert is_valid
+        assert errors == []
     
     def test_thickness_exceeds_height_rejected(self):
         """Thickness cannot exceed height"""
@@ -466,9 +472,15 @@ class TestShinglePosition:
         assert v == -15.0
     
     def test_row_1_col_0_half_stagger(self):
-        """Row 1, Col 0 with half stagger should offset by width/2"""
+        """Row 1, Col 0 with half stagger: net u = stagger - max_stagger = 0.
+
+        calculate_shingle_position now subtracts max_stagger so col=0, stagger=0
+        lands at u=0 (the left wall edge), matching the proxy's placement formula.
+        Row 1 half-stagger adds shingle_width/2 but max_stagger is also width/2,
+        so they cancel and u=0 for this position.
+        """
         u, v = calculate_shingle_position(1, 0, 10.0, 20.0, 15.0, "half")
-        assert u == 5.0  # Half stagger
+        assert u == 0.0  # stagger(5.0) - max_stagger(5.0) = 0
         assert v == 0.0  # At exposure height
     
     def test_vertical_positions_increase(self):
@@ -938,6 +950,65 @@ class TestBoundaryOverflowRegression:
             assert layout['max_stagger'] == pytest.approx(shingle_w / 3)
         else:
             assert layout['max_stagger'] == 0.0
+
+
+class TestShinglePositionProxyParity:
+    """Cross-validation: calculate_shingle_position must stay in sync with
+    the inline formula in shingle_proxy._generate_shingles_for_face.
+
+    The proxy does NOT call calculate_shingle_position — it inlines the
+    u/v math directly.  Any future edit to one side that doesn't update
+    the other will silently misplace shingles in the actual FreeCAD output
+    while all geometry-only tests continue to pass.
+
+    This class tests both sides against the same expected values to create
+    a coupling point that CI can catch.
+    """
+
+    @pytest.mark.parametrize('row,col,shingle_width,exposure,pattern', [
+        # half-stagger: even rows unshifted, odd rows shifted by half
+        (0, 0, 2.5, 1.5, 'half'),
+        (1, 0, 2.5, 1.5, 'half'),
+        (0, 2, 2.5, 1.5, 'half'),
+        (1, 3, 2.5, 1.5, 'half'),
+        # third-stagger
+        (0, 0, 3.0, 1.5, 'third'),
+        (1, 0, 3.0, 1.5, 'third'),
+        (2, 0, 3.0, 1.5, 'third'),
+        (3, 0, 3.0, 1.5, 'third'),  # wraps: same as row 0
+        # no stagger
+        (0, 0, 2.5, 1.5, 'none'),
+        (1, 1, 2.5, 1.5, 'none'),
+        # real model dimensions (from demo roof)
+        (4, 7, 2.5, 1.5, 'half'),
+    ])
+    def test_geometry_matches_proxy_inline_formula(
+            self, row, col, shingle_width, exposure, pattern):
+        shingle_height = 3.0  # not used for u/v but required arg
+
+        # Proxy inline formula (verbatim from shingle_proxy.py):
+        stagger = calculate_stagger_offset(row, pattern, shingle_width)
+        if pattern == 'half':
+            max_stagger = shingle_width / 2.0
+        elif pattern == 'third':
+            max_stagger = shingle_width / 3.0
+        else:
+            max_stagger = 0.0
+        proxy_u = col * shingle_width + stagger - max_stagger
+        proxy_v = row * exposure - exposure
+
+        # Geometry module result:
+        geo_u, geo_v = calculate_shingle_position(
+            row, col, shingle_width, shingle_height, exposure, pattern)
+
+        assert geo_u == pytest.approx(proxy_u, abs=1e-9), (
+            f"u mismatch row={row} col={col} pattern={pattern}: "
+            f"geometry={geo_u} proxy={proxy_u}"
+        )
+        assert geo_v == pytest.approx(proxy_v, abs=1e-9), (
+            f"v mismatch row={row} col={col} pattern={pattern}: "
+            f"geometry={geo_v} proxy={proxy_v}"
+        )
 
 
 if __name__ == '__main__':

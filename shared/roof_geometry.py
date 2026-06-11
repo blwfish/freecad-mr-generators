@@ -40,22 +40,26 @@ def is_planar(points: List[Tuple[float, float, float]],
     if len(points) < 4:
         return True
 
-    p0, p1, p2 = points[0], points[1], points[2]
-    v1 = (p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2])
-    v2 = (p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2])
+    p0 = points[0]
+    normal = None
+    for i in range(1, len(points) - 1):
+        v1 = (points[i][0]-p0[0], points[i][1]-p0[1], points[i][2]-p0[2])
+        v2 = (points[i+1][0]-p0[0], points[i+1][1]-p0[1], points[i+1][2]-p0[2])
+        n = (
+            v1[1]*v2[2] - v1[2]*v2[1],
+            v1[2]*v2[0] - v1[0]*v2[2],
+            v1[0]*v2[1] - v1[1]*v2[0],
+        )
+        norm_len = math.sqrt(n[0]**2 + n[1]**2 + n[2]**2)
+        if norm_len >= 0.001:
+            normal = (n[0]/norm_len, n[1]/norm_len, n[2]/norm_len)
+            break
 
-    normal = (
-        v1[1]*v2[2] - v1[2]*v2[1],
-        v1[2]*v2[0] - v1[0]*v2[2],
-        v1[0]*v2[1] - v1[1]*v2[0],
-    )
-    norm_len = math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2)
-    if norm_len < 0.001:
+    if normal is None:
         return False
-    normal = (normal[0]/norm_len, normal[1]/norm_len, normal[2]/norm_len)
 
     plane_d = -(normal[0]*p0[0] + normal[1]*p0[1] + normal[2]*p0[2])
-    for pt in points[3:]:
+    for pt in points:
         dist = abs(normal[0]*pt[0] + normal[1]*pt[1] + normal[2]*pt[2] + plane_d)
         if dist > tolerance:
             return False

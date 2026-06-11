@@ -166,16 +166,36 @@ def compute_stone_positions(
     Each entry has: row, col, x, y, width, height, seed.
     Seeds are deterministic from position so the wall is reproducible.
     """
+    # TOPO_EPS: push boundary stones slightly outside the wall edges so OCCT
+    # Boolean ops (base.cut(stones)) never see coincident coplanar faces.
+    TOPO_EPS = joint_width * 0.1
+
     stones = []
     for row in range(n_rows):
         for col in range(n_cols):
+            x = col * (stone_width + joint_width)
+            y = row * (stone_height + joint_width)
+            w = stone_width
+            h = stone_height
+
+            if col == 0:
+                x -= TOPO_EPS
+                w += TOPO_EPS
+            if col == n_cols - 1:
+                w += TOPO_EPS
+            if row == 0:
+                y -= TOPO_EPS
+                h += TOPO_EPS
+            if row == n_rows - 1:
+                h += TOPO_EPS
+
             stones.append({
                 'row': row,
                 'col': col,
-                'x': col * (stone_width + joint_width),
-                'y': row * (stone_height + joint_width),
-                'width': stone_width,
-                'height': stone_height,
+                'x': x,
+                'y': y,
+                'width': w,
+                'height': h,
                 'seed': 2000 + (row * n_cols + col) * 10,
             })
     return stones

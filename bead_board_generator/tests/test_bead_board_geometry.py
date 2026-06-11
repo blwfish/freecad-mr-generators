@@ -331,6 +331,34 @@ class TestBoundaryCoincidence:
                   f"wall=[{h_min},{h_max}]: ",
         )
 
+    def test_snap_fires_at_exact_topo_eps_from_boundary(self):
+        """Mutation guard: gap snap uses `<` not `<=` — pin the exact-boundary case.
+
+        gap_start == h_min (distance 0 < topo_eps): must snap.
+        gap_start == topo_eps (distance topo_eps, NOT < topo_eps with `<`): must NOT snap.
+        The `<`→`<=` mutation makes the second case snap, changing gap_start.
+        """
+        topo_eps = 1e-3
+        bead_gap = 0.20
+        half_gap = bead_gap / 2  # 0.10
+
+        # gap_start == h_min exactly (distance 0 < topo_eps → should snap)
+        bead_center = 0.0 + half_gap
+        gaps = calculate_gap_positions([bead_center], bead_gap,
+                                       h_min=0.0, h_max=10.0, topo_eps=topo_eps)
+        assert gaps[0][0] == pytest.approx(-topo_eps, abs=1e-9), (
+            "gap_start == h_min must snap to h_min - topo_eps"
+        )
+
+        # gap_start == topo_eps (distance topo_eps, not < topo_eps → must NOT snap)
+        bead_center2 = topo_eps + half_gap
+        gaps2 = calculate_gap_positions([bead_center2], bead_gap,
+                                        h_min=0.0, h_max=10.0, topo_eps=topo_eps)
+        # gap_start = bead_center2 - half_gap = (topo_eps + half_gap) - half_gap = topo_eps
+        assert gaps2[0][0] == pytest.approx(topo_eps, abs=1e-9), (
+            f"gap_start == topo_eps should NOT snap with `<` (only `<=` would snap)"
+        )
+
     def test_legacy_call_without_bounds_unchanged(self):
         """Sanity: calling without h_min/h_max preserves original behavior.
 

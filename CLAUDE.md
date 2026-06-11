@@ -13,6 +13,30 @@ structures (bricks, clapboards, shingles, etc.).  Each generator splits cleanly:
 Shared utilities live in `shared/` (roof coordinate system, boundary
 assertions, FreeCAD helpers).
 
+## Testing rule: proxy/geometry parity
+
+Every `*_proxy.py` that inlines arithmetic from the corresponding
+`*_geometry.py` — rather than calling the geometry function directly —
+**must have a parity test** that runs both formulas against the same
+inputs and asserts they agree.
+
+Why this is High severity, not Low: the test suite can only exercise
+`*_geometry.py` (no FreeCAD in pytest).  If the proxy inlines a
+divergent copy of the same formula, all geometry tests stay green while
+the proxy silently places elements incorrectly.  The divergence is
+structurally invisible to CI — "both sides look correct in isolation"
+is exactly the condition that lets it hide.
+
+The parity test pattern: compute the expected value two ways — once via
+the geometry function, once by directly transcribing the proxy's inline
+formula — and assert they are equal.  This creates a coupling point that
+breaks as soon as either side drifts.  Model on
+`TestShinglePositionProxyParity` in
+`shingle_generator/tests/test_shingle_geometry.py`.
+
+When reviewing: the *absence* of a parity test for any proxy that inlines
+geometry math is a High finding, not a gap to defer.
+
 ## Testing rule: parametric edge cases + downstream invariants
 
 A full repo audit (May 2026) found that **5% of existing tests are

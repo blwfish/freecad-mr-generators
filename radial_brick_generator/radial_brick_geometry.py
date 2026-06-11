@@ -199,6 +199,10 @@ class RadialBrickGeometry:
                 # Handle wrap-around case
                 if angle_end < angle_start:
                     angle_end += 2 * math.pi
+                assert angle_end - angle_start > 1e-6, (
+                    f"Zero-width arc at course {course}, brick {brick_num}: "
+                    f"angle_start={angle_start:.8f}, angle_end={angle_end:.8f}"
+                )
 
                 brick = RadialBrickDef(
                     index=0,  # Will be filled in below

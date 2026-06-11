@@ -265,8 +265,10 @@ class TestComputeStonePositions:
     def test_single_stone(self):
         stones = compute_stone_positions(1, 1, 7.0, 5.25, 0.3)
         assert len(stones) == 1
-        assert stones[0]['x'] == pytest.approx(0.0, abs=1e-9)
-        assert stones[0]['y'] == pytest.approx(0.0, abs=1e-9)
+        TOPO_EPS = 0.3 * 0.1
+        # Boundary stones are shifted out by TOPO_EPS on all sides
+        assert stones[0]['x'] == pytest.approx(-TOPO_EPS, abs=1e-9)
+        assert stones[0]['y'] == pytest.approx(-TOPO_EPS, abs=1e-9)
 
     def test_positions_no_overlap(self):
         stones = compute_stone_positions(4, 3, 7.0, 5.25, 0.3)
@@ -280,11 +282,12 @@ class TestComputeStonePositions:
                     f"Stones {i} and {j} overlap"
 
     def test_column_spacing_exact_multiple(self):
-        """StoneWidth=7.0 is exact multiple of JointWidth=0.5."""
+        """StoneWidth=7.0 is exact multiple of JointWidth=7.0."""
         stones = compute_stone_positions(4, 1, 7.0, 7.0, 7.0)
         xs = sorted(s['x'] for s in stones)
-        assert xs[0] == pytest.approx(0.0, abs=1e-9)
-        assert xs[1] == pytest.approx(14.0, abs=1e-9)  # 7.0 + 7.0
+        TOPO_EPS = 7.0 * 0.1  # joint_width * 0.1
+        assert xs[0] == pytest.approx(-TOPO_EPS, abs=1e-9)  # col 0 shifted left
+        assert xs[1] == pytest.approx(14.0, abs=1e-9)       # 7.0 + 7.0, interior
 
     def test_unique_seeds(self):
         stones = compute_stone_positions(4, 3, 7.0, 5.25, 0.3)
@@ -301,14 +304,18 @@ class TestComputeStonePositions:
     def test_single_row(self):
         stones = compute_stone_positions(5, 1, 7.0, 5.25, 0.3)
         assert len(stones) == 5
+        TOPO_EPS = 0.3 * 0.1
+        # All stones are in the only row (row 0 == last row), so y is shifted
         ys = [s['y'] for s in stones]
-        assert all(y == pytest.approx(0.0) for y in ys)
+        assert all(y == pytest.approx(-TOPO_EPS) for y in ys)
 
     def test_single_column(self):
         stones = compute_stone_positions(1, 5, 7.0, 5.25, 0.3)
         assert len(stones) == 5
+        TOPO_EPS = 0.3 * 0.1
+        # All stones are in the only column (col 0 == last col), so x is shifted
         xs = [s['x'] for s in stones]
-        assert all(x == pytest.approx(0.0) for x in xs)
+        assert all(x == pytest.approx(-TOPO_EPS) for x in xs)
 
 
 # ---------------------------------------------------------------------------
@@ -345,12 +352,18 @@ class TestComputeWallDimensions:
         assert d['height'] == pytest.approx(2*7.0 + 1*7.0, abs=1e-9)
 
     def test_wall_covers_all_stone_positions(self):
-        """Rightmost stone x + width == wall width, topmost y + height == wall height."""
+        """Boundary stones overflow the wall by TOPO_EPS on each outer edge."""
         n_cols, n_rows = 4, 3
         sw, sh, jw = 7.0, 5.25, 0.3
+        TOPO_EPS = jw * 0.1
         d = compute_wall_dimensions(n_cols, n_rows, sw, sh, jw)
         stones = compute_stone_positions(n_cols, n_rows, sw, sh, jw)
         max_x = max(s['x'] + s['width']  for s in stones)
         max_y = max(s['y'] + s['height'] for s in stones)
-        assert max_x == pytest.approx(d['width'],  abs=1e-6)
-        assert max_y == pytest.approx(d['height'], abs=1e-6)
+        min_x = min(s['x'] for s in stones)
+        min_y = min(s['y'] for s in stones)
+        # Outer edges overflow wall bounds by TOPO_EPS
+        assert max_x == pytest.approx(d['width']  + TOPO_EPS, abs=1e-6)
+        assert max_y == pytest.approx(d['height'] + TOPO_EPS, abs=1e-6)
+        assert min_x == pytest.approx(-TOPO_EPS, abs=1e-6)
+        assert min_y == pytest.approx(-TOPO_EPS, abs=1e-6)

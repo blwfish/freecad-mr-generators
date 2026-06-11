@@ -272,22 +272,27 @@ class TestOrientationDescription:
 
 
 class TestHOScaleDefaults:
-    """Test HO scale parameter defaults"""
-    
+    """Documentation of HO scale default constants.
+
+    NOTE: These tests assert on hardcoded literals without calling any geometry
+    function — they cannot fail regardless of code changes.  They are kept as
+    scale-reference documentation, not as functional tests.
+    """
+
     def test_ho_scale_clapboard_height(self):
         """HO scale clapboard height ~0.8mm is reasonable"""
         # Real clapboard ~100mm reveal, HO scale 1:87
         # Expected: 100/87 ≈ 1.15mm
         ho_reveal = 0.8
         assert 0.5 < ho_reveal < 2.0
-    
+
     def test_ho_scale_clapboard_thickness(self):
         """HO scale clapboard thickness ~0.2mm is reasonable"""
         # Real clapboard ~15mm thick, HO scale 1:87
         # Expected: 15/87 ≈ 0.17mm
         ho_thickness = 0.2
         assert 0.1 < ho_thickness < 0.5
-    
+
     def test_ho_scale_trim_width(self):
         """HO scale trim width ~1.5mm is reasonable"""
         # Real trim ~130mm, HO scale 1:87
@@ -334,6 +339,26 @@ class TestBoundaryOverflow:
             get_extent=lambda p: p,
             label=f"clapboard_height={clapboard_height} "
                   f"wall=[{wall_v_min},{wall_v_max}]: ",
+        )
+
+    def test_post_loop_guarantee_is_load_bearing(self):
+        """Mutation guard: the post-loop fixup block is the real safety net.
+
+        Three mechanisms overlap: snap guard, +1 course count, post-loop fixup.
+        All three survived mutation because the post-loop block rescues every
+        case.  This test uses wall_v_min=0.8 on a 0.8 grid (no snap fires,
+        +1 produces one extra course that ends exactly at wall_v_max=1.6)
+        to force the post-loop guarantee to do real work.
+        """
+        positions = calculate_course_v_positions(0.8, 1.6, 0.8)
+        last_top = positions[-1][1]
+        assert last_top > 1.6, (
+            f"Post-loop guarantee must push last course above wall_v_max=1.6, "
+            f"got v_top={last_top} — removing the block would leave OCCT exposed"
+        )
+        first_bot = positions[0][0]
+        assert first_bot < 0.8, (
+            f"First course must start below wall_v_min=0.8, got v_bot={first_bot}"
         )
 
     def test_course_count_matches_calculate_clapboard_courses(self):

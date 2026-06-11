@@ -550,6 +550,45 @@ class TestEdgeCases:
         assert max_course < 50
 
 
+class TestCommonBondBoundaries:
+    """Mutation guards and edge-case coverage for common bond."""
+
+    BRICK = dict(brick_width=2.32, brick_height=0.65, brick_depth=1.09,
+                 mortar=0.11, skin_depth=0.06)
+
+    def test_common_bond_does_not_exceed_num_courses(self):
+        """Mutation guard: `course >= num_courses` break — pin the upper-course boundary.
+
+        With `>=` (correct), the loop breaks before emitting course num_courses.
+        With `>` (mutant), one extra course is emitted.  Pinning the max course
+        index catches that mutation.
+        """
+        bg = BrickGeometry(u_length=100, v_length=100, bond_type='common',
+                           common_bond_count=3, **self.BRICK)
+        result = bg.generate()
+        max_course = max(b.course for b in result['bricks'])
+        assert max_course < bg.num_courses, (
+            f"max course {max_course} must be < num_courses {bg.num_courses} "
+            f"(`>=`→`>` mutation would emit one extra course)"
+        )
+
+    def test_common_bond_count_1_minimum(self):
+        """common_bond_count=1 is the legal minimum; every other course is a header."""
+        bg = BrickGeometry(u_length=50, v_length=20, bond_type='common',
+                           common_bond_count=1, **self.BRICK)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, set()).add(b.brick_type)
+        for c in sorted(by_course.keys()):
+            if c % 2 == 0:
+                assert 'stretcher' in by_course[c], f"Course {c} should be stretcher"
+                assert 'header' not in by_course[c], f"Course {c} should not mix headers"
+            else:
+                assert 'header' in by_course[c], f"Course {c} should be header"
+                assert 'stretcher' not in by_course[c], f"Course {c} should not mix stretchers"
+
+
 class TestBrickDefNamedTuple:
     """Test BrickDef namedtuple."""
     
@@ -631,6 +670,40 @@ class TestBoundaryOverflow:
                 get_extent=_brick_u_extent,
                 label=f"bond={bond} u_length={u_length} course={course_idx}: ",
             )
+
+    def test_flemish_closer_at_min_closer_boundary(self):
+        """Mutation guard: `while closer_width < min_closer` — pin the exact-boundary case.
+
+        Choose W so C0 comes out exactly equal to min_closer for n=1.  With the
+        correct `<` the loop exits (n=1 is valid); with `<=` the loop reduces n
+        to 0 and produces a different course layout.  Pinning the stretcher count
+        catches that mutation without FreeCAD.
+        """
+        S, H, m = 2.32, 1.09, 0.11
+        min_closer = m * 2  # 0.22
+        n = 1
+        W = 2 * min_closer + (n + 1) * S + n * H + 2 * (n + 1) * m
+        bg = BrickGeometry(u_length=W, v_length=5.0,
+                           brick_width=S, brick_height=0.65, brick_depth=H,
+                           mortar=m, bond_type='flemish')
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course_idx, course_bricks in by_course.items():
+            assert_overflows_boundary(
+                course_bricks, lo=0.0, hi=W,
+                get_extent=_brick_u_extent,
+                label=f"closer_boundary course={course_idx}: ",
+            )
+        # With `<` (correct): loop exits when closer_width == min_closer so n=1 → 2 stretchers
+        # With `<=` (mutant): loop reduces n to 0 → 1 stretcher
+        even_stretchers = [b for b in result['bricks']
+                           if b.course == 0 and b.brick_type == 'stretcher']
+        assert len(even_stretchers) == n + 1, (
+            f"Expected {n+1} stretchers in even course (closer_width==min_closer boundary), "
+            f"got {len(even_stretchers)} — `<`→`<=` mutation would give {n}"
+        )
 
     def test_flemish_zero_closer_overflow(self):
         """Wall sized so the Flemish closer math yields C0≈0 still overflows."""

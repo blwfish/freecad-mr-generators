@@ -333,11 +333,17 @@ def calculate_shingle_position(row: int, col: int,
     Returns:
         Tuple of (u_position, v_position) in mm
     """
-    # Calculate stagger
+    # Calculate stagger and the maximum stagger for this pattern (used as left-edge offset)
     stagger = calculate_stagger_offset(row, stagger_pattern, shingle_width)
-    
-    # U position (horizontal)
-    u = col * shingle_width + stagger
+    if stagger_pattern == "half":
+        max_stagger = shingle_width / 2.0
+    elif stagger_pattern == "third":
+        max_stagger = shingle_width / 3.0
+    else:
+        max_stagger = 0.0
+
+    # U position: starts at -max_stagger so col=0, stagger=0 lands at the left wall edge
+    u = col * shingle_width + stagger - max_stagger
     
     # V position (vertical, starting one course below origin)
     v = row * shingle_exposure - shingle_exposure

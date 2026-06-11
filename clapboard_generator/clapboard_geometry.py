@@ -251,6 +251,13 @@ def calculate_course_v_positions(wall_v_min: float, wall_v_max: float,
 
         positions.append((v_bot, v_top))
 
+    if not positions:
+        raise ValueError(
+            f"No clapboard courses intersect wall [{wall_v_min}, {wall_v_max}] "
+            f"with clapboard_height={clapboard_height}. "
+            f"Grid snap placed all courses outside the wall bounds."
+        )
+
     # Guarantee the bottom course overflows wall_v_min and the top course
     # overflows wall_v_max — covers cases where natural positions stop just
     # short of the boundary without triggering the abs(...) snap above.
