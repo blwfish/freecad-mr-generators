@@ -27,60 +27,6 @@ from slate_proxy import SlateProxy, SlateViewProxy, VERSION
 GENERATOR_NAME = "slate_generator"
 
 
-def _get_spreadsheet_params(doc):
-    """Read slate parameters from spreadsheet if present."""
-    preferred = ["params", "SlateParameters", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        obj = doc.getObject(name)
-        if obj:
-            if obj.TypeId == 'App::Link':
-                t = obj.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif obj.TypeId == 'Spreadsheet::Sheet':
-                ss = obj
-                break
-        for o in doc.Objects:
-            if o.Label == name:
-                if o.TypeId == 'App::Link':
-                    t = o.LinkedObject
-                    if t and t.TypeId == 'Spreadsheet::Sheet':
-                        ss = t
-                        break
-                elif o.TypeId == 'Spreadsheet::Sheet':
-                    ss = o
-                    break
-        if ss:
-            break
-
-    if ss is None:
-        return {}
-
-    params = {}
-    aliases = {
-        'tile_width':         ['tileWidth',         'slateWidth',   'tile_width'],
-        'tile_height':        ['tileHeight',        'slateHeight',  'tile_height'],
-        'material_thickness': ['materialThickness', 'slateThickness'],
-        'exposure':           ['slateExposure',     'exposure'],
-        'stagger_pattern':    ['staggerPattern',    'slateStaggerPattern'],
-    }
-    for key, names in aliases.items():
-        for name in names:
-            try:
-                val = ss.get(name)
-                if val is not None:
-                    if key == 'stagger_pattern':
-                        params[key] = str(val).strip().strip("'\"").lower()
-                    else:
-                        params[key] = float(val)
-                    break
-            except Exception:
-                continue
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -105,13 +51,8 @@ def main():
     if not doc:
         doc = App.newDocument("SlateProject")
 
-    params = _get_spreadsheet_params(doc)
     App.Console.PrintMessage(
         f"Slate Generator v{VERSION}: {len(face_entries)} face(s) selected\n")
-    if params:
-        App.Console.PrintMessage("  Using parameters from spreadsheet\n")
-    else:
-        App.Console.PrintMessage("  Using HO scale defaults\n")
 
     # Build LinkSubList grouped by object
     link_map = {}
@@ -124,7 +65,7 @@ def main():
         obj = doc.addObject("Part::FeaturePython", "SlateTiles")
         SlateProxy(obj)
         SlateViewProxy(obj.ViewObject)
-        SlateProxy.set_defaults(obj, params)
+        SlateProxy.set_defaults(obj)
         obj.Sources = link_sub
         obj.ViewObject.ShapeColor = (0.35, 0.35, 0.40)
 

@@ -26,44 +26,6 @@ import sys
 from radial_brick_proxy import RadialBrickProxy, RadialBrickViewProxy, VERSION
 
 
-def _get_spreadsheet_params(doc):
-    preferred = ["params", "RadialBrickParameters", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        for o in [doc.getObject(name)] + list(doc.Objects):
-            if o is None:
-                continue
-            if o.TypeId == 'App::Link':
-                t = o.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif o.TypeId == 'Spreadsheet::Sheet' and o.Label == name:
-                ss = o
-                break
-        if ss:
-            break
-    if ss is None:
-        return {}
-    params = {}
-    aliases = {
-        'brick_length':       ['brick_length', 'brickLength', 'brickWidth', 'BrickLength'],
-        'brick_height':       ['brick_height', 'brickHeight', 'BrickHeight'],
-        'material_thickness': ['material_thickness', 'materialThickness', 'MaterialThickness'],
-        'mortar_thickness':   ['mortar_thickness', 'mortarThickness', 'mortar', 'MortarThickness'],
-    }
-    for key, names in aliases.items():
-        for name in names:
-            try:
-                val = ss.get(name)
-                if val is not None:
-                    params[key] = float(val)
-                    break
-            except Exception:
-                continue
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -88,14 +50,13 @@ def main():
     App.Console.PrintMessage(f"Radial Brick v{VERSION}: {total} face(s) selected\n")
 
     doc = App.ActiveDocument or App.newDocument()
-    params = _get_spreadsheet_params(doc)
 
     doc.openTransaction("radial_brick_generator: RadialBrickWall")
     try:
         obj = doc.addObject("Part::FeaturePython", "RadialBrickWall")
         RadialBrickProxy(obj)
         RadialBrickViewProxy(obj.ViewObject)
-        RadialBrickProxy.set_defaults(obj, params)
+        RadialBrickProxy.set_defaults(obj)
         obj.Sources = link_sub
         obj.ViewObject.ShapeColor = (0.72, 0.48, 0.38)
         doc.recompute()

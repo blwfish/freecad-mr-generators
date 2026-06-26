@@ -28,54 +28,6 @@ import sys
 from clapboard_proxy import ClapboardProxy, ClapboardViewProxy, VERSION
 
 
-def _get_spreadsheet_params(doc):
-    """Try to read clapboard parameters from spreadsheet."""
-    preferred = ["params", "ClapboardParameters", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        obj = doc.getObject(name)
-        if obj:
-            if obj.TypeId == 'App::Link':
-                t = obj.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif obj.TypeId == 'Spreadsheet::Sheet':
-                ss = obj
-                break
-        for o in doc.Objects:
-            if o.Label == name:
-                if o.TypeId == 'App::Link':
-                    t = o.LinkedObject
-                    if t and t.TypeId == 'Spreadsheet::Sheet':
-                        ss = t
-                        break
-                elif o.TypeId == 'Spreadsheet::Sheet':
-                    ss = o
-                    break
-        if ss:
-            break
-
-    if ss is None:
-        return {}
-
-    params = {}
-    aliases = {
-        'clapboard_height':    ['clapboard_height', 'ClapboardHeight', 'clapboardHeight', 'reveal'],
-        'clapboard_thickness': ['clapboard_thickness', 'ClapboardThickness', 'thickness', 'materialThickness'],
-    }
-    for key, names in aliases.items():
-        for name in names:
-            try:
-                val = ss.get(name)
-                if val is not None:
-                    params[key] = float(val)
-                    break
-            except Exception:
-                continue
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -103,11 +55,6 @@ def main():
     if not doc:
         doc = App.newDocument("ClapboardProject")
 
-    params = _get_spreadsheet_params(doc)
-    if params:
-        App.Console.PrintMessage("Using parameters from spreadsheet\n")
-    else:
-        App.Console.PrintMessage("Using HO scale defaults\n")
 
     doc.openTransaction("clapboard_generator: ClapboardWall")
     try:
@@ -115,7 +62,7 @@ def main():
         ClapboardProxy(obj)
         ClapboardViewProxy(obj.ViewObject)
 
-        ClapboardProxy.set_defaults(obj, params)
+        ClapboardProxy.set_defaults(obj)
         obj.Sources = link_sub
         obj.ViewObject.ShapeColor = (0.9, 0.82, 0.65)
 

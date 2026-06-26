@@ -29,63 +29,6 @@ import os
 from roof_seam_proxy import RoofSeamProxy, RoofSeamViewProxy, VERSION
 
 
-def _get_spreadsheet_params(doc):
-    """Read seam parameters from spreadsheet (falls back to empty dict)."""
-    preferred = ["params", "ShingleParameters", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        obj = doc.getObject(name)
-        if obj:
-            if obj.TypeId == 'App::Link':
-                t = obj.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif obj.TypeId == 'Spreadsheet::Sheet':
-                ss = obj
-                break
-        for o in doc.Objects:
-            if o.Label == name:
-                if o.TypeId == 'App::Link':
-                    t = o.LinkedObject
-                    if t and t.TypeId == 'Spreadsheet::Sheet':
-                        ss = t
-                        break
-                elif o.TypeId == 'Spreadsheet::Sheet':
-                    ss = o
-                    break
-        if ss:
-            break
-
-    if ss is None:
-        return {}
-
-    params = {}
-    aliases = {
-        'shingleHeight':      ['shingleHeight'],
-        'materialThickness':  ['materialThickness', 'shingleThickness'],
-        'shingleExposure':    ['shingleExposure', 'exposure'],
-        'angleDepth':          ['angleDepth'],
-        'hipCapWidth':         ['hipCapWidth'],
-        'valleyFlashingWidth': ['valleyFlashingWidth'],
-        'hipStyle':            ['hipStyle'],
-    }
-    string_keys = {'hipStyle'}
-    for key, names in aliases.items():
-        for name in names:
-            try:
-                val = ss.get(name)
-                if val is not None:
-                    if key in string_keys:
-                        params[key] = str(val).strip().strip("'\"").lower()
-                    else:
-                        params[key] = float(val)
-                    break
-            except Exception:
-                continue
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -113,11 +56,6 @@ def main():
     if not doc:
         doc = App.newDocument("RoofSeamProject")
 
-    params = _get_spreadsheet_params(doc)
-    if params:
-        App.Console.PrintMessage("Using parameters from spreadsheet\n")
-    else:
-        App.Console.PrintMessage("Using HO scale defaults\n")
 
     # Build LinkSubList: group by object
     link_map = {}
@@ -131,7 +69,7 @@ def main():
         RoofSeamProxy(obj)
         RoofSeamViewProxy(obj.ViewObject)
 
-        RoofSeamProxy.set_defaults(obj, params)
+        RoofSeamProxy.set_defaults(obj)
         obj.Sources = link_sub
         obj.ViewObject.ShapeColor = (0.7, 0.65, 0.55)
 

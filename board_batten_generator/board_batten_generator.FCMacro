@@ -23,44 +23,6 @@ import sys
 from board_batten_proxy import BoardBattenProxy, BoardBattenViewProxy, VERSION
 
 
-def _get_spreadsheet_params(doc):
-    preferred = ["params", "BoardBattenParameters", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        for o in [doc.getObject(name)] + list(doc.Objects):
-            if o is None:
-                continue
-            if o.TypeId == 'App::Link':
-                t = o.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif o.TypeId == 'Spreadsheet::Sheet' and o.Label == name:
-                ss = o
-                break
-        if ss:
-            break
-    if ss is None:
-        return {}
-    params = {}
-    aliases = {
-        'board_width':       ['board_width', 'BoardWidth', 'boardWidth'],
-        'batten_width':      ['batten_width', 'BattenWidth', 'battenWidth'],
-        'board_thickness':   ['board_thickness', 'BoardThickness', 'thickness', 'materialThickness'],
-        'batten_projection': ['batten_projection', 'BattenProjection', 'battenProjection'],
-    }
-    for key, names in aliases.items():
-        for name in names:
-            try:
-                val = ss.get(name)
-                if val is not None:
-                    params[key] = float(val)
-                    break
-            except Exception:
-                continue
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -84,14 +46,13 @@ def main():
     App.Console.PrintMessage(f"Board-and-Batten v{VERSION}: {total} face(s) selected\n")
 
     doc = App.ActiveDocument or App.newDocument()
-    params = _get_spreadsheet_params(doc)
 
     doc.openTransaction("board_batten_generator: BoardBattenWall")
     try:
         obj = doc.addObject("Part::FeaturePython", "BoardBattenWall")
         BoardBattenProxy(obj)
         BoardBattenViewProxy(obj.ViewObject)
-        BoardBattenProxy.set_defaults(obj, params)
+        BoardBattenProxy.set_defaults(obj)
         obj.Sources = link_sub
         obj.ViewObject.ShapeColor = (0.85, 0.72, 0.52)
         doc.recompute()

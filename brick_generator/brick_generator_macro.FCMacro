@@ -36,58 +36,6 @@ from brick_proxy import BrickProxy, BrickViewProxy, VERSION
 App.Console.PrintMessage(f"Brick Generator v{VERSION}\n")
 
 
-def _get_spreadsheet_params(doc):
-    """Read brick parameters from spreadsheet. Returns {} if not found."""
-    preferred = ["params", "BuildingParameters", "Spreadsheet"]
-    ss = None
-    for name in preferred:
-        obj = doc.getObject(name)
-        if obj:
-            if obj.TypeId == 'App::Link':
-                t = obj.LinkedObject
-                if t and t.TypeId == 'Spreadsheet::Sheet':
-                    ss = t
-                    break
-            elif obj.TypeId == 'Spreadsheet::Sheet':
-                ss = obj
-                break
-        for o in doc.Objects:
-            if o.Label == name:
-                if o.TypeId == 'App::Link':
-                    t = o.LinkedObject
-                    if t and t.TypeId == 'Spreadsheet::Sheet':
-                        ss = t
-                        break
-                elif o.TypeId == 'Spreadsheet::Sheet':
-                    ss = o
-                    break
-        if ss:
-            break
-
-    if ss is None:
-        return {}
-
-    params = {}
-    aliases = {
-        'brick_width':        'brickWidth',
-        'brick_height':       'brickHeight',
-        'brick_depth':        'brickDepth',
-        'mortar':             'mortar',
-        'bond_type':          'bondType',
-        'common_bond_count':  'commonBondCount',
-        'material_thickness': 'materialThickness',
-        'mortar_depth':       'mortarDepth',
-    }
-    for key, alias in aliases.items():
-        try:
-            val = ss.get(alias)
-            if val is not None:
-                params[key] = str(val) if key == 'bond_type' else float(val)
-        except Exception:
-            pass
-    return params
-
-
 def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
@@ -114,11 +62,6 @@ def main():
     if not doc:
         doc = App.newDocument("BrickProject")
 
-    params = _get_spreadsheet_params(doc)
-    if params:
-        App.Console.PrintMessage("Using parameters from spreadsheet\n")
-    else:
-        App.Console.PrintMessage("Using HO scale defaults\n")
 
     link_sub = [(sel_obj, tuple(sub_elements))]
     obj_label = sel_obj.Label
@@ -129,7 +72,7 @@ def main():
         BrickProxy(obj)
         BrickViewProxy(obj.ViewObject)
 
-        BrickProxy.set_defaults(obj, params)
+        BrickProxy.set_defaults(obj)
         obj.Sources = link_sub
 
         # Match source color
