@@ -730,5 +730,246 @@ class TestBoundaryOverflow:
                 )
 
 
+# =============================================================================
+# left_quoin feature tests
+# =============================================================================
+
+HO = dict(brick_width=2.32, brick_height=0.65, brick_depth=1.09, mortar=0.11)
+
+
+def _make_bg(bond, primary=True, W=30.0, H=20.0, **extra):
+    return BrickGeometry(
+        u_length=W, v_length=H,
+        left_quoin=True, left_quoin_primary=primary,
+        bond_type=bond, **HO, **extra,
+    )
+
+
+class TestLeftQuoinFillStart:
+    """_quoin_fill_start returns the correct u-offset per course and face."""
+
+    @pytest.mark.parametrize('course,primary,expected', [
+        (0, True,  2.32 + 0.11),   # even, primary   → S quoin → S+m
+        (1, True,  1.09 + 0.11),   # odd,  primary   → H quoin → H+m
+        (0, False, 1.09 + 0.11),   # even, return    → H quoin → H+m
+        (1, False, 2.32 + 0.11),   # odd,  return    → S quoin → S+m
+    ])
+    def test_fill_start_value(self, course, primary, expected):
+        bg = _make_bg('stretcher', primary=primary)
+        assert bg._quoin_fill_start(course) == pytest.approx(expected, abs=1e-9)
+
+    def test_no_quoin_returns_zero(self):
+        bg = BrickGeometry(u_length=30, v_length=20, bond_type='stretcher', **HO)
+        for course in range(5):
+            assert bg._quoin_fill_start(course) == 0.0
+
+
+class TestLeftQuoinStretcherBond:
+    """Stretcher bond with left_quoin: fill tiles from quoin_width + mortar."""
+
+    @pytest.mark.parametrize('primary,course', [
+        (True,  0), (True,  1), (False, 0), (False, 1),
+    ])
+    def test_no_fill_bricks_in_quoin_region(self, primary, course):
+        bg = _make_bg('stretcher', primary=primary, W=30.0)
+        result = bg.generate()
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        # quoin occupies [0, quoin_width]; fill must start after it
+        is_s = (course % 2 == 0) == primary
+        quoin_w = S if is_s else H
+        course_bricks = [b for b in result['bricks'] if b.course == course]
+        for brick in course_bricks:
+            # Left edge of each fill brick must be ≥ quoin_width (with small tolerance)
+            assert brick.u >= quoin_w - 1e-6, (
+                f"primary={primary} course={course}: "
+                f"fill brick at u={brick.u:.4f} inside quoin region [0,{quoin_w}]"
+            )
+
+    def test_fill_covers_full_wall_width(self):
+        """At least one fill brick extends past the right wall edge."""
+        bg = _make_bg('stretcher', W=30.0)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course, bricks in by_course.items():
+            rightmost = max(b.u + b.width for b in bricks)
+            assert rightmost > 30.0 - 1e-6, \
+                f"course {course}: fill does not reach right wall edge"
+
+    @pytest.mark.parametrize('W', [
+        4 * (2.32 + 0.11),   # exact multiple of stretcher spacing
+        2.32 + 0.11 + 0.5,   # single stretcher + small remainder
+        30.0,                  # real-world width
+    ])
+    def test_exact_multiples_generate_without_error(self, W):
+        bg = _make_bg('stretcher', W=W)
+        result = bg.generate()
+        assert len(result['bricks']) > 0
+
+
+class TestLeftQuoinFlemishBond:
+    """Flemish bond with left_quoin: uniform n and C_right across all courses."""
+
+    def _flemish_bricks_by_course(self, primary=True, W=30.0):
+        bg = _make_bg('flemish', primary=primary, W=W)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        return by_course
+
+    def test_no_fill_bricks_in_quoin_region_primary(self):
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        by_course = self._flemish_bricks_by_course(primary=True, W=30.0)
+        for course, bricks in by_course.items():
+            is_s = (course % 2 == 0)   # primary → S on even
+            quoin_w = S if is_s else H
+            for brick in bricks:
+                assert brick.u >= quoin_w - 1e-6, (
+                    f"primary course {course}: fill brick at u={brick.u:.4f} "
+                    f"inside quoin [0,{quoin_w:.3f}]"
+                )
+
+    def test_no_fill_bricks_in_quoin_region_return(self):
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        by_course = self._flemish_bricks_by_course(primary=False, W=30.0)
+        for course, bricks in by_course.items():
+            is_h = (course % 2 == 0)   # return → H on even
+            quoin_w = H if is_h else S
+            for brick in bricks:
+                assert brick.u >= quoin_w - 1e-6
+
+    def test_right_closer_formula(self):
+        """C_right = W - (n+1)(S+H+2m) holds for all courses."""
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        W = 30.0
+        by_course = self._flemish_bricks_by_course(primary=True, W=W)
+        min_closer = m * 2
+
+        # Derive n from brick count (n+1 of first type, n of second type per course)
+        # Find n from how many bricks appear (excluding the right closer)
+        for course, bricks in by_course.items():
+            non_closer = [b for b in bricks if b.brick_type != 'closer']
+            closer = [b for b in bricks if b.brick_type == 'closer']
+            # There should be exactly 1 right closer
+            assert len(closer) == 1, f"course {course}: expected 1 closer, got {len(closer)}"
+            C_right = closer[0].width
+            # Determine n from non-closer count: n+1 of first, n of second = 2n+1 total
+            total_non_closer = len(non_closer)
+            assert total_non_closer % 2 == 1, f"course {course}: expected odd brick count"
+            n = (total_non_closer - 1) // 2
+            expected_C = W - (n + 1) * (S + H + 2 * m)
+            # C_right includes TOPO_EPS
+            TOPO_EPS = m * 0.1
+            assert C_right == pytest.approx(expected_C + TOPO_EPS, abs=1e-6), \
+                f"course {course}: C_right={C_right:.6f} expected={expected_C+TOPO_EPS:.6f}"
+
+    def test_uniform_n_across_courses(self):
+        """n (brick count minus closer) is the same for all courses."""
+        by_course = self._flemish_bricks_by_course(primary=True, W=30.0)
+        n_values = set()
+        for course, bricks in by_course.items():
+            non_closer = [b for b in bricks if b.brick_type != 'closer']
+            n_values.add(len(non_closer))
+        assert len(n_values) == 1, f"n varies across courses: {n_values}"
+
+    def test_fill_sequence_even_course_primary(self):
+        """Primary face, even course: fill starts with H (after S quoin)."""
+        by_course = self._flemish_bricks_by_course(primary=True, W=30.0)
+        for course, bricks in by_course.items():
+            if course % 2 == 0:   # even: S quoin → fill leads with H
+                non_closer = [b for b in bricks if b.brick_type != 'closer']
+                assert non_closer[0].brick_type == 'header', \
+                    f"course {course}: first fill brick should be header"
+
+    def test_fill_sequence_odd_course_primary(self):
+        """Primary face, odd course: fill starts with S (after H quoin)."""
+        by_course = self._flemish_bricks_by_course(primary=True, W=30.0)
+        for course, bricks in by_course.items():
+            if course % 2 == 1:   # odd: H quoin → fill leads with S
+                non_closer = [b for b in bricks if b.brick_type != 'closer']
+                assert non_closer[0].brick_type == 'stretcher', \
+                    f"course {course}: first fill brick should be stretcher"
+
+    def test_return_face_parity_reversed(self):
+        """Return face (primary=False) has reversed course parity vs primary."""
+        by_course_a = self._flemish_bricks_by_course(primary=True,  W=30.0)
+        by_course_b = self._flemish_bricks_by_course(primary=False, W=30.0)
+        # Courses that primary leads with H, return should lead with S, and vice versa
+        for course in by_course_a:
+            if course not in by_course_b:
+                continue
+            a_first = [b for b in by_course_a[course] if b.brick_type != 'closer']
+            b_first = [b for b in by_course_b[course] if b.brick_type != 'closer']
+            assert a_first[0].brick_type != b_first[0].brick_type, \
+                f"course {course}: primary={a_first[0].brick_type} " \
+                f"return={b_first[0].brick_type} should differ"
+
+    @pytest.mark.parametrize('W', [
+        3 * (2.32 + 1.09 + 2 * 0.11),  # exact multiple of (S+H+2m)
+        2.32 + 1.09 + 2 * 0.11 + 0.5,  # single pair + small remainder
+        30.0,
+        20.0,
+        50.0,
+    ])
+    def test_exact_multiples_and_real_widths(self, W):
+        bg = _make_bg('flemish', W=W)
+        result = bg.generate()
+        assert len(result['bricks']) > 0
+
+    def test_right_closer_always_positive(self):
+        """C_right must be ≥ min_closer for valid layouts."""
+        W = 30.0
+        m = HO['mortar']
+        by_course = self._flemish_bricks_by_course(primary=True, W=W)
+        for course, bricks in by_course.items():
+            closers = [b for b in bricks if b.brick_type == 'closer']
+            for c in closers:
+                assert c.width >= m * 2 - 1e-6, \
+                    f"course {course}: closer width {c.width:.4f} below min_closer"
+
+
+class TestLeftQuoinCommonBond:
+    """Common bond with left_quoin: stretcher courses start from quoin offset."""
+
+    def test_stretcher_courses_no_bricks_in_quoin_region(self):
+        bg = _make_bg('common', primary=True, W=30.0)
+        result = bg.generate()
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        cbc = 5  # default
+        # Identify stretcher vs header courses: header every (cbc+1)th course
+        for b in result['bricks']:
+            is_header = (b.course % (cbc + 1)) == cbc
+            if is_header:
+                continue  # header courses get no quoin treatment
+            is_s = (b.course % 2 == 0)   # primary face parity
+            quoin_w = S if is_s else H
+            assert b.u >= quoin_w - 1e-6, (
+                f"stretcher course {b.course}: brick at u={b.u:.4f} "
+                f"inside quoin [0,{quoin_w}]"
+            )
+
+    def test_header_courses_tile_full_width(self):
+        """Header courses are unchanged — they should span from before 0 to past W."""
+        W = 30.0
+        bg = _make_bg('common', primary=True, W=W)
+        result = bg.generate()
+        cbc = 5
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course, bricks in by_course.items():
+            is_header = (course % (cbc + 1)) == cbc
+            if not is_header:
+                continue
+            leftmost  = min(b.u for b in bricks)
+            rightmost = max(b.u + b.width for b in bricks)
+            assert leftmost < 0.0, \
+                f"header course {course}: should start before 0, got {leftmost}"
+            assert rightmost > W, \
+                f"header course {course}: should extend past {W}, got {rightmost}"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

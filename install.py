@@ -29,6 +29,7 @@ GENERATORS = [
     "brick_generator",
     "clapboard_generator",
     "label_generator",
+    "quoin_generator",
     "radial_brick_generator",
     "roof_seam_generator",
     "shingle_generator",

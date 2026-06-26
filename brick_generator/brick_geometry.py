@@ -48,7 +48,9 @@ class BrickGeometry:
                  brick_width: float, brick_height: float, brick_depth: float,
                  mortar: float, bond_type: str = 'stretcher',
                  common_bond_count: int = 5,
-                 skin_depth: float = None):
+                 skin_depth: float = None,
+                 left_quoin: bool = False,
+                 left_quoin_primary: bool = True):
         """
         Initialize brick geometry generator.
 
@@ -62,6 +64,11 @@ class BrickGeometry:
             bond_type: 'stretcher', 'english', 'flemish', or 'common'
             common_bond_count: For common bond, number of stretcher courses between headers
             skin_depth: Rendered brick depth (mm) - defaults to brick_depth if not specified
+            left_quoin: True when a QuoinGeometry column occupies the left edge (u=0).
+                        Skips the left closer; fill begins at quoin_width + mortar.
+            left_quoin_primary: True = this is Face A (stretcher quoin on even courses).
+                                False = this is Face B (header-return quoin on even courses).
+                                Ignored when left_quoin=False.
         """
         self.u_length = u_length
         self.v_length = v_length
@@ -72,6 +79,8 @@ class BrickGeometry:
         self.bond_type = bond_type.lower()
         self.common_bond_count = common_bond_count
         self.skin_depth = skin_depth if skin_depth is not None else brick_depth
+        self.left_quoin = left_quoin
+        self.left_quoin_primary = left_quoin_primary
         
         # Validate inputs
         if any(x <= 0 for x in [u_length, v_length, brick_width, brick_height, brick_depth, mortar]):
@@ -94,6 +103,19 @@ class BrickGeometry:
         # Header width (for bonds that use headers)
         self.header_width = brick_depth
         self.stretcher_width = brick_width
+
+    def _quoin_fill_start(self, course: int) -> float:
+        """
+        When left_quoin=True, return the u-coordinate where fill begins for
+        this course (quoin_width + mortar). Returns 0.0 when left_quoin=False.
+        """
+        if not self.left_quoin:
+            return 0.0
+        # Primary face: stretcher quoin on even courses, header-return on odd.
+        # Return face: header-return on even, stretcher on odd.
+        this_face_is_stretcher = (course % 2 == 0) == self.left_quoin_primary
+        quoin_w = self.stretcher_width if this_face_is_stretcher else self.header_width
+        return quoin_w + self.mortar
 
     def _calculate_course_layout(self, wall_width: float, brick_width: float) -> Tuple[int, float]:
         """
@@ -187,31 +209,34 @@ class BrickGeometry:
         Stretcher (Running) Bond.
         Each course offset by half brick width.
         All bricks are stretchers.
+
+        With left_quoin=True the quoin column occupies [0, quoin_width]; fill
+        tiles from quoin_width + mortar rightward, overflowing the right edge
+        for OCCT to clip.
         """
         bricks = []
-        
+
         for course in range(self.num_courses):
             v = course * self.course_spacing_v
-            
-            # Offset alternating courses by half stretcher width
-            offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
-            
-            u = offset - self.stretcher_spacing_u  # Start before wall edge
-            
+
+            if self.left_quoin:
+                u = self._quoin_fill_start(course)
+            else:
+                offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
+                u = offset - self.stretcher_spacing_u  # Start before wall edge
+
             while u < self.u_length + self.stretcher_spacing_u:
-                brick = BrickDef(
-                    index=0,  # Will be filled in by generate()
-                    u=u,
-                    v=v,
+                bricks.append(BrickDef(
+                    index=0,
+                    u=u, v=v,
                     course=course,
                     brick_type='stretcher',
                     width=self.brick_width,
                     height=self.brick_height,
-                    depth=self.skin_depth
-                )
-                bricks.append(brick)
+                    depth=self.skin_depth,
+                ))
                 u += self.stretcher_spacing_u
-        
+
         return bricks
     
     def _generate_english_bond(self) -> List[BrickDef]:
@@ -297,281 +322,221 @@ class BrickGeometry:
                     bricks.append(brick)
 
             else:
-                # Stretcher course
-                # Layout: closer + mortar + stretcher + mortar + ... + stretcher + mortar + closer
-
-                u = -TOPO_EPS  # start slightly before left wall edge
-
-                # Left closer (if any)
-                if stretcher_closer > 0:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='closer',
-                        width=stretcher_closer,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
-                    u += stretcher_closer + self.mortar
-
-                # Full stretchers
-                for i in range(n_stretchers):
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='stretcher',
-                        width=self.stretcher_width,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
-                    u += self.stretcher_width + self.mortar
-
-                # Right closer (if any)
-                if stretcher_closer > 0:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='closer',
-                        width=stretcher_closer,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
+                # Stretcher course.
+                # With left_quoin: skip left closer; tile from quoin edge rightward.
+                if self.left_quoin:
+                    u = self._quoin_fill_start(course)
+                    while u < self.u_length + self.stretcher_spacing_u:
+                        bricks.append(BrickDef(
+                            index=0, u=u, v=v, course=course,
+                            brick_type='stretcher',
+                            width=self.stretcher_width,
+                            height=self.brick_height,
+                            depth=self.skin_depth,
+                        ))
+                        u += self.stretcher_spacing_u
+                else:
+                    u = -TOPO_EPS
+                    if stretcher_closer > 0:
+                        bricks.append(BrickDef(
+                            index=0, u=u, v=v, course=course,
+                            brick_type='closer', width=stretcher_closer,
+                            height=self.brick_height, depth=self.skin_depth,
+                        ))
+                        u += stretcher_closer + self.mortar
+                    for i in range(n_stretchers):
+                        bricks.append(BrickDef(
+                            index=0, u=u, v=v, course=course,
+                            brick_type='stretcher', width=self.stretcher_width,
+                            height=self.brick_height, depth=self.skin_depth,
+                        ))
+                        u += self.stretcher_width + self.mortar
+                    if stretcher_closer > 0:
+                        bricks.append(BrickDef(
+                            index=0, u=u, v=v, course=course,
+                            brick_type='closer', width=stretcher_closer,
+                            height=self.brick_height, depth=self.skin_depth,
+                        ))
 
         return bricks
     
     def _generate_flemish_bond(self) -> List[BrickDef]:
         """
-        Flemish Bond with proper queen closers.
+        Flemish Bond with queen closers.
 
-        Pattern:
-        - Even courses: C0 + S + H + S + H + ... + S + C0 (n+1 stretchers, n headers)
-        - Odd courses:  C1 + H + S + H + S + ... + H + C1 (n+1 headers, n stretchers)
+        Without left_quoin:
+          Even: C0 + S + H + S + ... + S + C0   (n+1 stretchers, n headers)
+          Odd:  C1 + H + S + H + ... + H + C1   (n+1 headers,   n stretchers)
+          C1 = C0 + (S - H) / 2  ensures both sum to W.
 
-        The closer widths differ between even and odd courses to ensure both
-        total to the same wall width while maintaining proper alignment:
-        C1 = C0 + (stretcher_width - header_width) / 2
-
-        This offset ensures headers center over stretchers in the course below.
+        With left_quoin:
+          The quoin column (external) occupies [0, quoin_width] on every course.
+          The fill starts at quoin_width + mortar with the brick type opposite the
+          quoin type for that course:
+            quoin=S → fill leads with H: H m S m H m ... + C_right
+            quoin=H → fill leads with S: S m H m S m ... + C_right
+          Algebraically, C_right = W - (n+1)(S + H + 2m) regardless of course
+          parity or which face is primary, so n and C_right are uniform.
         """
         bricks = []
-
         S = self.stretcher_width
         H = self.header_width
         m = self.mortar
         W = self.u_length
-
-        # Calculate n (number of headers in even course = number of stretchers in odd course)
-        # Even course: C0 + m + S + m + H + m + S + ... + S + m + C0
-        #            = 2*C0 + (n+1)*S + n*H + 2*(n+1)*m
-        # (there are n+1 stretchers, n headers, and mortar after each brick = 2*(n+1) mortars)
-        # Solve for n, trying to maximize n while keeping C0 reasonable
-
-        min_closer = m * 2  # Minimum practical closer width
-        n = 0
-        C0 = 0
-
-        # Find largest n that gives a valid C0
-        for test_n in range(100):
-            # 2*C0 + (n+1)*S + n*H + 2*(n+1)*m = W
-            # C0 = (W - (n+1)*S - n*H - 2*(n+1)*m) / 2
-            num_mortars = 2 * (test_n + 1)
-            test_C0 = (W - (test_n + 1) * S - test_n * H - num_mortars * m) / 2
-            if test_C0 >= min_closer:
-                n = test_n
-                C0 = test_C0
-            else:
-                break
-
-        # Odd course closer is offset
-        C1 = C0 + (S - H) / 2
-
-        # TOPO_EPS: small overflow on both sides prevents an OCCT segfault that
-        # occurs when brick faces are *exactly* coincident with the face_slab
-        # boundary during the common() Boolean operation.  Flemish/English bond
-        # geometry is designed to sum exactly to wall width, which triggers this
-        # OCCT edge case.  Adding 10% of the mortar joint (~0.011 mm at HO scale)
-        # to each closer pushes the course just past both wall edges so common()
-        # always sees clean non-coincident geometry to clip.
+        min_closer = m * 2
         TOPO_EPS = m * 0.1
-        C0 += TOPO_EPS
-        C1 += TOPO_EPS
 
-        for course in range(self.num_courses):
-            v = course * self.course_spacing_v
-            is_odd = (course % 2) == 1
-            u = -TOPO_EPS  # start slightly before left wall edge
+        if self.left_quoin:
+            # Quoin handles the left edge; only a right closer needed.
+            # C_right = W - (n+1)(S + H + 2m) — same for all courses.
+            n = 0
+            C_right = 0.0
+            for test_n in range(100):
+                test_C = W - (test_n + 1) * (S + H + 2 * m)
+                if test_C >= min_closer:
+                    n = test_n
+                    C_right = test_C
+                else:
+                    break
+            C_right += TOPO_EPS  # push right edge slightly past wall boundary
 
-            if is_odd:
-                # Odd course: C1 + H + S + H + S + ... + H + C1
-                # (n+1) headers, n stretchers
+            for course in range(self.num_courses):
+                v = course * self.course_spacing_v
+                # Primary face: S quoin on even → fill leads with H; H quoin on odd → S.
+                # Return face: reversed parity.
+                this_face_is_stretcher = (course % 2 == 0) == self.left_quoin_primary
+                if this_face_is_stretcher:
+                    u = S + m          # fill starts after stretcher quoin
+                    first_type = 'header'
+                    first_w, other_type, other_w = H, 'stretcher', S
+                else:
+                    u = H + m          # fill starts after header-return quoin
+                    first_type = 'stretcher'
+                    first_w, other_type, other_w = S, 'header', H
 
-                # Left closer
-                if C1 > 0:
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='closer',
-                        width=C1,
-                        height=self.brick_height,
-                        depth=self.skin_depth  # Same surface depth as stretchers
-                    )
-                    bricks.append(brick)
-                    u += C1 + m
-
-                # Alternating H + S pairs, ending with H
+                # Pattern: first_type (m other_type m first_type) * n  m  C_right
                 for i in range(n + 1):
-                    # Header
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='header',
-                        width=H,
-                        height=self.brick_height,
-                        depth=self.skin_depth  # Same surface depth for flat wall
-                    )
-                    bricks.append(brick)
-                    u += H + m
-
-                    # Stretcher (except after last header)
+                    bricks.append(BrickDef(0, u, v, course,
+                                           first_type, first_w,
+                                           self.brick_height, self.skin_depth))
+                    u += first_w + m
                     if i < n:
-                        brick = BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='stretcher',
-                            width=S,
-                            height=self.brick_height,
-                            depth=self.skin_depth
-                        )
-                        bricks.append(brick)
-                        u += S + m
+                        bricks.append(BrickDef(0, u, v, course,
+                                               other_type, other_w,
+                                               self.brick_height, self.skin_depth))
+                        u += other_w + m
 
-                # Right closer
-                if C1 > 0:
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='closer',
-                        width=C1,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
+                if C_right > 0:
+                    bricks.append(BrickDef(0, u, v, course,
+                                           'closer', C_right,
+                                           self.brick_height, self.skin_depth))
 
-            else:
-                # Even course: C0 + S + H + S + H + ... + S + C0
-                # (n+1) stretchers, n headers
+        else:
+            # Standard two-sided closer layout.
+            n = 0
+            C0 = 0.0
+            for test_n in range(100):
+                num_mortars = 2 * (test_n + 1)
+                test_C0 = (W - (test_n + 1) * S - test_n * H - num_mortars * m) / 2
+                if test_C0 >= min_closer:
+                    n = test_n
+                    C0 = test_C0
+                else:
+                    break
 
-                # Left closer
-                if C0 > 0:
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='closer',
-                        width=C0,
-                        height=self.brick_height,
-                        depth=self.skin_depth  # Stretcher depth
-                    )
-                    bricks.append(brick)
-                    u += C0 + m
+            C1 = C0 + (S - H) / 2
+            C0 += TOPO_EPS
+            C1 += TOPO_EPS
 
-                # Alternating S + H pairs, ending with S
-                for i in range(n + 1):
-                    # Stretcher
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='stretcher',
-                        width=S,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
-                    u += S + m
+            for course in range(self.num_courses):
+                v = course * self.course_spacing_v
+                is_odd = (course % 2) == 1
+                u = -TOPO_EPS
 
-                    # Header (except after last stretcher)
-                    if i < n:
-                        brick = BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='header',
-                            width=H,
-                            height=self.brick_height,
-                            depth=self.skin_depth
-                        )
-                        bricks.append(brick)
+                if is_odd:
+                    # C1 + H + S + H + ... + H + C1
+                    if C1 > 0:
+                        bricks.append(BrickDef(0, u, v, course, 'closer', C1,
+                                               self.brick_height, self.skin_depth))
+                        u += C1 + m
+                    for i in range(n + 1):
+                        bricks.append(BrickDef(0, u, v, course, 'header', H,
+                                               self.brick_height, self.skin_depth))
                         u += H + m
-
-                # Right closer
-                if C0 > 0:
-                    brick = BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='closer',
-                        width=C0,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
+                        if i < n:
+                            bricks.append(BrickDef(0, u, v, course, 'stretcher', S,
+                                                   self.brick_height, self.skin_depth))
+                            u += S + m
+                    if C1 > 0:
+                        bricks.append(BrickDef(0, u, v, course, 'closer', C1,
+                                               self.brick_height, self.skin_depth))
+                else:
+                    # C0 + S + H + S + ... + S + C0
+                    if C0 > 0:
+                        bricks.append(BrickDef(0, u, v, course, 'closer', C0,
+                                               self.brick_height, self.skin_depth))
+                        u += C0 + m
+                    for i in range(n + 1):
+                        bricks.append(BrickDef(0, u, v, course, 'stretcher', S,
+                                               self.brick_height, self.skin_depth))
+                        u += S + m
+                        if i < n:
+                            bricks.append(BrickDef(0, u, v, course, 'header', H,
+                                                   self.brick_height, self.skin_depth))
+                            u += H + m
+                    if C0 > 0:
+                        bricks.append(BrickDef(0, u, v, course, 'closer', C0,
+                                               self.brick_height, self.skin_depth))
 
         return bricks
     
     def _generate_common_bond(self) -> List[BrickDef]:
         """
-        Common Bond.
-        N stretcher courses followed by 1 header course, repeating.
-        N = self.common_bond_count
+        Common Bond: N stretcher courses then 1 header course, repeating.
+        N = self.common_bond_count.
+
+        With left_quoin: stretcher courses start from the quoin fill offset;
+        header courses run full-width (quoin treatment for header courses is
+        deferred to a future version).
         """
         bricks = []
         course = 0
-        
+
         while course < self.num_courses:
-            # Generate stretcher courses
+            # Stretcher courses
             for _ in range(self.common_bond_count):
                 if course >= self.num_courses:
                     break
-                
                 v = course * self.course_spacing_v
-                
-                # Offset alternating stretcher courses by half width
-                offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
-                u = offset - self.stretcher_spacing_u
-                
+                if self.left_quoin:
+                    u = self._quoin_fill_start(course)
+                else:
+                    offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
+                    u = offset - self.stretcher_spacing_u
                 while u < self.u_length + self.stretcher_spacing_u:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
+                    bricks.append(BrickDef(
+                        index=0, u=u, v=v, course=course,
                         brick_type='stretcher',
                         width=self.brick_width,
                         height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
+                        depth=self.skin_depth,
+                    ))
                     u += self.stretcher_spacing_u
-                
                 course += 1
-            
-            # Generate header course
+
+            # Header course — no quoin treatment (full-width tile-and-clip)
             if course < self.num_courses:
                 v = course * self.course_spacing_v
                 u = -self.header_spacing_u
-                
                 while u < self.u_length + self.header_spacing_u:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
+                    bricks.append(BrickDef(
+                        index=0, u=u, v=v, course=course,
                         brick_type='header',
                         width=self.brick_depth,
                         height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
+                        depth=self.skin_depth,
+                    ))
                     u += self.header_spacing_u
-                
                 course += 1
-        
+
         return bricks
