@@ -1,0 +1,114 @@
+"""
+Quoin Generator Macro v1.0.0
+
+Applies parametric quoin (interlocking corner brick) engraving to a BrickedWall.
+
+WORKFLOW:
+1. Apply the Brick Generator to your wall faces first.
+   On the resulting BrickedWall, enable LeftQuoin=True and set the fill
+   faces' BondPattern to reserve the quoin column.  (Optional but produces
+   the cleanest result — without it the fill bricks may overlap the column.)
+2. Select one or more corner edges on the BrickedWall.
+3. Run this macro.
+4. QuoinedWall appears with the quoin columns engraved on both faces.
+5. Adjust BondPattern, BrickWidth, etc. in the Properties panel to taste.
+   These must match the BrickedWall settings for mortar joints to align.
+   Toggle SwapFaces if the pattern appears offset by one course.
+
+Version History:
+- 1.0.0: Initial release — edge selection, auto-copies brick params from source.
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+
+from quoin_proxy import QuoinProxy, QuoinViewProxy, VERSION
+
+App.Console.PrintMessage(f"Quoin Generator v{VERSION}\n")
+
+
+def _copy_brick_params(dst, src):
+    """Copy matching brick properties from src (BrickedWall) into dst (QuoinedWall)."""
+    props = ['BrickWidth', 'BrickHeight', 'BrickDepth', 'Mortar', 'MortarDepth', 'BondPattern']
+    copied = []
+    for prop in props:
+        if hasattr(src, prop):
+            try:
+                setattr(dst, prop, getattr(src, prop))
+                copied.append(prop)
+            except Exception:
+                pass
+    return copied
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — select one or more corner edges on a BrickedWall.\n")
+        return
+
+    if not sel[0].HasSubObjects:
+        App.Console.PrintError(
+            "Select specific edges (not the whole object).\n"
+            "Ctrl+click corner edges in the 3D view, then run.\n")
+        return
+
+    sel_obj = sel[0].Object
+    edge_names = [s for s in sel[0].SubElementNames if s.startswith('Edge')]
+
+    if not edge_names:
+        App.Console.PrintError(
+            "No edges in selection — select the corner edge(s) on the BrickedWall,\n"
+            "not faces or vertices.\n")
+        return
+
+    App.Console.PrintMessage(
+        f"Quoin Generator v{VERSION}: {len(edge_names)} edge(s) on '{sel_obj.Label}'\n")
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("QuoinProject")
+
+    obj_label = sel_obj.Label
+
+    doc.openTransaction(f"quoin_generator: QuoinedWall_{obj_label}")
+    try:
+        obj = doc.addObject("Part::FeaturePython", f"QuoinedWall_{obj_label}")
+        QuoinProxy(obj)
+        QuoinViewProxy(obj.ViewObject)
+
+        QuoinProxy.set_defaults(obj)
+
+        copied = _copy_brick_params(obj, sel_obj)
+        if copied:
+            App.Console.PrintMessage(
+                f"  Copied from source: {', '.join(copied)}\n")
+        else:
+            App.Console.PrintWarning(
+                "  Source has no brick properties — using HO-scale defaults.\n"
+                "  Adjust BrickWidth, BondPattern, etc. to match your BrickedWall.\n")
+
+        obj.Source = sel_obj
+        obj.Corners = [(sel_obj, tuple(edge_names))]
+
+        try:
+            obj.ViewObject.ShapeColor = sel_obj.ViewObject.ShapeColor
+        except Exception:
+            pass
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric QuoinedWall_{obj_label} created.\n"
+        f"  Hide '{obj_label}' to see the result.\n"
+        f"  BrickWidth / BondPattern / etc. must match the BrickedWall settings.\n"
+        f"  Toggle SwapFaces if the quoin pattern appears offset by one course.\n\n")
+
+
+if __name__ == '__main__':
+    main()
