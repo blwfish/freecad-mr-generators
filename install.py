@@ -49,12 +49,28 @@ def find_freecad_paths():
 
     if system == "Darwin":
         base = home / "Library" / "Application Support" / "FreeCAD"
-        # Check v1-2 first (recent), fall back to plain FreeCAD dir
-        for candidate in [base / "v1-2", base]:
-            if (candidate / "Macro").exists():
-                return candidate / "Macro", candidate / "Mod"
-        # Neither exists yet — use v1-2
-        return base / "v1-2" / "Macro", base / "v1-2" / "Mod"
+        # Collect versioned subdirs (v<major>-<minor> pattern) that have a
+        # Macro directory, and pick the newest by version number.
+        def _ver_key(p):
+            parts = p.name.lstrip('v').split('-')
+            try:
+                return tuple(int(x) for x in parts)
+            except ValueError:
+                return (0,)
+
+        versioned = sorted(
+            [d for d in base.iterdir() if d.is_dir() and d.name.startswith('v')
+             and (d / "Macro").exists()],
+            key=_ver_key,
+            reverse=True,
+        ) if base.exists() else []
+
+        if versioned:
+            return versioned[0] / "Macro", versioned[0] / "Mod"
+        if (base / "Macro").exists():
+            return base / "Macro", base / "Mod"
+        # Nothing exists yet — default to the base dir
+        return base / "Macro", base / "Mod"
 
     if system == "Linux":
         for candidate in [
