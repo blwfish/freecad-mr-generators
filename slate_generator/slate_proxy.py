@@ -118,10 +118,11 @@ def _clip_shape(shape, clip_volumes):
 # ---------------------------------------------------------------------------
 
 def _generate_tiles_for_face(face, params):
-    """Generate flat slate tile solids for one roof face."""
+    """Generate slate tile solids for one roof face."""
     tile_width   = params['tile_width']
     tile_height  = params['tile_height']
     mat_thick    = params['material_thickness']
+    butt_thick   = params['butt_thickness']
     exposure     = params['exposure']
     stagger_pat  = params['stagger_pattern']
 
@@ -156,8 +157,27 @@ def _generate_tiles_for_face(face, params):
             top_pos  = origin + _sv(u_vec, u) + _sv(v_vec, v)
             butt_pos = top_pos + _sv(v_vec, -tile_height)
 
-            # All slate courses: flat rectangular box (no wedge)
-            tile = Part.makeBox(tile_width, tile_height, mat_thick)
+            if row == 0 or butt_thick <= mat_thick:
+                # Starter course or no wedge: flat box
+                tile = Part.makeBox(tile_width, tile_height, mat_thick)
+            else:
+                # Wedge cross-section: thick at butt, tapers to near-zero at head.
+                # Local space: X=u_vec, Y=v_vec (up-slope), Z=normal (outward).
+                # The butt sits elevated above the tile below; the head rests near
+                # the deck so the next tile above can sit on this one's face.
+                top_thick = butt_thick * 0.2
+                p0 = App.Vector(0, 0, 0)
+                p1 = App.Vector(0, 0, butt_thick)
+                p2 = App.Vector(0, tile_height, top_thick)
+                p3 = App.Vector(0, tile_height, 0)
+                profile = Part.Wire([
+                    Part.LineSegment(p0, p1).toShape(),
+                    Part.LineSegment(p1, p2).toShape(),
+                    Part.LineSegment(p2, p3).toShape(),
+                    Part.LineSegment(p3, p0).toShape(),
+                ])
+                tile = Part.Face(profile).extrude(App.Vector(tile_width, 0, 0))
+
             tile.Placement = App.Placement(butt_pos, rotation)
 
             if clip_volumes is not None:
@@ -201,6 +221,9 @@ class SlateProxy:
         if not hasattr(obj, 'Exposure'):
             obj.addProperty("App::PropertyLength", "Exposure", grp,
                             "Exposed portion per course")
+        if not hasattr(obj, 'ButtThickness'):
+            obj.addProperty("App::PropertyLength", "ButtThickness", grp,
+                            "Tile thickness at butt edge (0 = auto: 3× MaterialThickness)")
         if not hasattr(obj, 'StaggerPattern'):
             obj.addProperty("App::PropertyEnumeration", "StaggerPattern", grp,
                             "Horizontal stagger pattern")
@@ -215,7 +238,8 @@ class SlateProxy:
         p = params or {}
         obj.TileWidth         = p.get('tile_width',          2.0)
         obj.TileHeight        = p.get('tile_height',          2.5)
-        obj.MaterialThickness = p.get('material_thickness',   0.3)
+        obj.MaterialThickness = p.get('material_thickness',   0.2)
+        obj.ButtThickness     = p.get('butt_thickness',       0.0)
         obj.Exposure          = p.get('exposure',             1.2)
         obj.StaggerPattern    = p.get('stagger_pattern',     'half')
         obj.GeneratorVersion  = VERSION
@@ -224,11 +248,16 @@ class SlateProxy:
         if not obj.Sources:
             return
 
-        mat_thick = float(obj.MaterialThickness)
+        mat_thick  = float(obj.MaterialThickness)
+        butt_thick = float(obj.ButtThickness)
+        if butt_thick == 0:
+            butt_thick = mat_thick * 3
+
         params = {
             'tile_width':         float(obj.TileWidth),
             'tile_height':        float(obj.TileHeight),
             'material_thickness': mat_thick,
+            'butt_thickness':     butt_thick,
             'exposure':           float(obj.Exposure),
             'stagger_pattern':    str(obj.StaggerPattern),
         }
