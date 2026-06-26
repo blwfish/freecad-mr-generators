@@ -56,7 +56,12 @@ def _get_face_coordinate_system(face):
     v_vec  = App.Vector(*cs['v_vec'])
     normal = App.Vector(*cs['normal'])
 
-    # Prefer corner vertex (2 edges) at eave level as origin
+    # Prefer corner vertex (2 edges) at eave level as origin.
+    # Key by rounded coordinates — FreeCAD returns new wrapper objects on
+    # each Vertexes iteration, so object identity is not stable across loops.
+    def _vkey(v):
+        return (round(v.Point.x, 4), round(v.Point.y, 4), round(v.Point.z, 4))
+
     vertex_edge_count = {}
     for vertex in face.Vertexes:
         count = sum(
@@ -64,12 +69,12 @@ def _get_face_coordinate_system(face):
             if (edge.Vertexes[0].Point.distanceToPoint(vertex.Point) < 0.001 or
                 edge.Vertexes[1].Point.distanceToPoint(vertex.Point) < 0.001)
         )
-        vertex_edge_count[vertex] = count
+        vertex_edge_count[_vkey(vertex)] = count
 
     eave_z = cs['eave_ridge_info']['eave_z']
     corner_at_eave = [
         v for v in face.Vertexes
-        if vertex_edge_count[v] == 2 and abs(v.Point.z - eave_z) <= 0.1
+        if vertex_edge_count.get(_vkey(v), 0) == 2 and abs(v.Point.z - eave_z) <= 0.1
     ]
     if corner_at_eave:
         origin = min(corner_at_eave, key=lambda v: v.Point.dot(u_vec)).Point
