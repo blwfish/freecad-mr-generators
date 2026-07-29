@@ -147,7 +147,30 @@ the failure mode this rule exists to prevent.
 - FreeCAD MCP socket: auto-discovered via `~/.cache/freecad-mcp/instances/`
   (v5.8.0+); fall back to `select_freecad_instance(socket_path=…)` only
   if discovery fails.
-- AICopilot module deployed via `freecad-mcp/deploy.sh` to
-  `/Volumes/Files/claude/FreeCAD-prefs/v1-2/Mod/AICopilot/`.
+- AICopilot module deployed via `freecad-mcp/deploy.sh` to whichever
+  `FreeCAD-prefs/v<major>-<minor>/Mod/AICopilot/` matches the running
+  FreeCAD's version — `deploy.sh` auto-detects this (newest versioned
+  dir with a `Mod/` subdir), so don't hardcode a specific `vN-M` path;
+  it goes stale the next time FreeCAD's version bumps (bit us for weeks
+  after the 1.2 → 26.3 renumbering: every deploy silently landed in the
+  no-longer-read `v1-2`, 2026-07-29).
 - Clear `__pycache__/` after deploy — rsync preserves source mtimes, so
   stale `.pyc` files can shadow updated `.py` files.
+
+## Tool-use rule: prefer the primary MCP tool over execute_python
+
+Don't use `execute_python` as a substitute for a dedicated MCP tool method
+that already does the job (e.g. `Part.extrude()` via raw Python instead of
+the `part_operations`/`partdesign_operations` extrude operation). The
+primary methods carry validation, error handling, and thread-safety
+guarantees (GUI-thread dispatch, etc.) that ad-hoc `execute_python` calls
+don't.
+
+- If a primary method exists for what you're doing, use it.
+- If one doesn't exist but the operation is a real, recurring need (not a
+  one-off), that's a signal to consider *adding* a primary method to
+  freecad-mcp rather than reaching for `execute_python` as the permanent
+  path.
+- `execute_python` is for genuine one-offs and debugging (e.g. inspecting
+  state, printing something to the Python console) — cases where a
+  dedicated method shouldn't exist because the need is inherently ad hoc.
