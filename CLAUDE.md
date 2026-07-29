@@ -157,6 +157,21 @@ the failure mode this rule exists to prevent.
 - Clear `__pycache__/` after deploy — rsync preserves source mtimes, so
   stale `.pyc` files can shadow updated `.py` files.
 
+## Tool-use rule: don't use view_control(operation="screenshot")
+
+It captures the whole physical display via macOS `screencapture`, not
+FreeCAD's window specifically. Since the user has to bring another app
+(often Claude/the terminal) to the front to type to Claude, FreeCAD is
+essentially never the frontmost/visible window when the capture actually
+fires — it's also possible FreeCAD is on a different display/Space
+entirely. In practice this means the screenshot is essentially always
+useless (confirmed 2026-07-29: repeatedly captured the desktop wallpaper
+or whatever app was in front instead of FreeCAD). Don't reach for it for
+visual verification. If a real fix lands (targeting FreeCAD's window ID
+via `screencapture -l` instead of the whole display), this note should be
+revisited — but until then, skip it and ask the user to look at FreeCAD
+directly, or verify via other means (object listings, property reads).
+
 ## Tool-use rule: prefer the primary MCP tool over execute_python
 
 Don't use `execute_python` as a substitute for a dedicated MCP tool method
