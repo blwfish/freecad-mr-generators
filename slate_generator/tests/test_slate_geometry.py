@@ -12,6 +12,8 @@ from slate_geometry import (
     calculate_stagger_offset,
     calculate_layout,
     is_valid_clip_fragment,
+    is_top_course_complete,
+    calculate_fitted_exposure,
     # Shared via roof_geometry
     is_planar,
     calculate_face_bounds,
@@ -294,3 +296,91 @@ class TestClipFragmentValidity:
 
         assert is_valid_clip_fragment(tiny_sliver, full_volume) is False
         assert is_valid_clip_fragment(substantial, full_volume) is True
+
+
+# ---------------------------------------------------------------------------
+# Top-course completeness (HideIncompleteTopCourse)
+#
+# course_head_v is where a course's upper, up-slope edge lands in the face's
+# own V coordinate system; face_v_length is where the face's own top edge
+# (the ridge/hip line) sits in that same system. A course is "complete" only
+# if its head doesn't poke past that line.
+# ---------------------------------------------------------------------------
+
+class TestTopCourseCompleteness:
+
+    def test_head_well_below_ridge_complete(self):
+        assert is_top_course_complete(3.0, 5.0) is True
+
+    def test_head_well_above_ridge_incomplete(self):
+        assert is_top_course_complete(6.0, 5.0) is False
+
+    def test_head_exactly_at_ridge_boundary_complete(self):
+        """The boundary itself counts as complete (<=, not <) -- a course
+        whose head lands exactly on the ridge line needs no clipping."""
+        assert is_top_course_complete(5.0, 5.0) is True
+
+    def test_head_just_below_ridge_complete(self):
+        assert is_top_course_complete(5.0 - 1e-9, 5.0) is True
+
+    def test_head_just_above_ridge_incomplete(self):
+        assert is_top_course_complete(5.0 + 1e-9, 5.0) is False
+
+    def test_zero_face_v_length_degenerate(self):
+        """A degenerate (zero-height) face: only a course whose head is at
+        or below V=0 is complete -- i.e. none with a positive head."""
+        assert is_top_course_complete(0.0, 0.0) is True
+        assert is_top_course_complete(0.1, 0.0) is False
+
+
+# ---------------------------------------------------------------------------
+# Exposure racking (calculate_fitted_exposure)
+# ---------------------------------------------------------------------------
+
+class TestFittedExposure:
+
+    def test_exact_fit_unchanged(self):
+        """face_v_length already an exact multiple of nominal_exposure --
+        no adjustment needed, must round-trip unchanged."""
+        assert calculate_fitted_exposure(10.0, 2.0) == pytest.approx(2.0)
+
+    def test_real_incident_value(self):
+        """Pins the actual roof-face value from the 2026-07-29 session:
+        face_v_length=4.954624, nominal exposure=2.2 -> 2 courses fit
+        better than 3 (2.2521 rounds down to 2), so exposure opens up to
+        ~2.477 to reach the ridge exactly."""
+        adjusted = calculate_fitted_exposure(4.954624066797823, 2.2)
+        assert adjusted == pytest.approx(4.954624066797823 / 2)
+        assert adjusted == pytest.approx(2.477312033398912)
+
+    def test_half_course_boundary_rounds_to_even(self):
+        """face_v_length/nominal_exposure lands exactly on a .5 boundary
+        (5.0/2.0 = 2.5) -- pins Python's round-half-to-even behavior
+        (rounds to 2, not 3) rather than leaving it an undocumented
+        surprise."""
+        assert calculate_fitted_exposure(5.0, 2.0) == pytest.approx(2.5)
+
+    def test_tiny_face_clamps_to_one_course(self):
+        """A face shorter than half an exposure would naively round to
+        zero courses (division by zero) -- must clamp to at least 1."""
+        adjusted = calculate_fitted_exposure(0.5, 2.2)
+        assert adjusted == pytest.approx(0.5)
+
+    def test_many_courses_small_relative_adjustment(self):
+        """With many courses the racking adjustment should be a small
+        fraction of nominal_exposure, unlike the few-courses case."""
+        adjusted = calculate_fitted_exposure(100.3, 2.0)
+        assert adjusted == pytest.approx(100.3 / 50)  # round(50.15) == 50
+        assert abs(adjusted - 2.0) / 2.0 < 0.01  # within 1% of nominal
+
+    def test_zero_nominal_exposure_returns_unchanged(self):
+        assert calculate_fitted_exposure(10.0, 0.0) == 0.0
+
+    def test_negative_nominal_exposure_returns_unchanged(self):
+        assert calculate_fitted_exposure(10.0, -1.0) == -1.0
+
+    def test_zero_face_v_length_returns_nominal_unchanged(self):
+        assert calculate_fitted_exposure(0.0, 2.2) == pytest.approx(2.2)
+
+    def test_negative_face_v_length_returns_nominal_unchanged(self):
+        assert calculate_fitted_exposure(-1.0, 2.2) == pytest.approx(2.2)

@@ -40,7 +40,8 @@ __all__ = [
     # Slate-specific
     'validate_parameters', 'validate_stagger_pattern',
     'calculate_stagger_offset', 'calculate_layout',
-    'is_valid_clip_fragment',
+    'is_valid_clip_fragment', 'is_top_course_complete',
+    'calculate_fitted_exposure',
 ]
 
 
@@ -146,3 +147,57 @@ def is_valid_clip_fragment(fragment_volume: float, full_volume: float,
     if full_volume <= 0:
         return False
     return fragment_volume > full_volume * min_fraction
+
+
+def is_top_course_complete(course_head_v: float, face_v_length: float) -> bool:
+    """Return True if a course's head (its upper, up-slope edge, at
+    V=course_head_v in the face's own coordinate system) sits at or below
+    the face's own top edge (the ridge/hip line, at V=face_v_length) --
+    i.e. this course needs no clipping at the top boundary at all.
+
+    False means the ridge/hip line cuts through this course somewhere
+    between its butt and head, producing a partial fragment there --
+    anywhere from a normal-looking partial course down to the razor-thin
+    sliver is_valid_clip_fragment exists to catch. Used by the optional
+    HideIncompleteTopCourse proxy property to skip such a course entirely
+    (never generate it) rather than generate-then-clip-then-maybe-discard.
+    """
+    return course_head_v <= face_v_length
+
+
+def calculate_fitted_exposure(face_v_length: float, nominal_exposure: float) -> float:
+    """Adjust exposure so an integer number of courses exactly spans
+    face_v_length, instead of leaving a remainder that produces either a
+    gap (HideIncompleteTopCourse) or a clipped partial/sliver fragment at
+    the ridge/hip line.
+
+    This mirrors how a slater "racks" a course run: exposure (equivalently
+    headlap/overlap, since overlap = tile_height - exposure for a fixed
+    tile_height) is nudged uniformly across every course rather than
+    leaving one oddly-sized course at the top. For a face with many
+    courses the adjustment is a small fraction of nominal_exposure; for a
+    face with very few courses it can be a much larger fraction (a
+    2-course run has at most +/-25% to work with) -- that's an inherent
+    property of racking with few courses, not a bug, and matches the
+    constraint a real installer would face too.
+
+    Rounds to the NEAREST whole course count (ties round to even, per
+    Python's round()) rather than always up or down -- a real slater
+    picks whichever nearby count gives the smaller deviation from the
+    nominal exposure, and it's equally normal to end up very slightly
+    tighter or very slightly looser than asked for.
+
+    Degenerate inputs (nominal_exposure <= 0, face_v_length <= 0) return
+    nominal_exposure unchanged -- there's no meaningful "fit" to compute,
+    and returning the input keeps the caller's existing
+    validation/error path in control rather than this function silently
+    producing a nonsensical result.
+    """
+    if nominal_exposure <= 0 or face_v_length <= 0:
+        return nominal_exposure
+
+    num_courses = round(face_v_length / nominal_exposure)
+    if num_courses < 1:
+        num_courses = 1
+
+    return face_v_length / num_courses

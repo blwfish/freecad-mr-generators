@@ -28,6 +28,8 @@ from slate_geometry import (
     calculate_stagger_offset,
     get_roof_coordinate_system,
     is_valid_clip_fragment,
+    is_top_course_complete,
+    calculate_fitted_exposure,
 )
 
 
@@ -133,9 +135,16 @@ def _generate_tiles_for_face(face, params):
     butt_thick   = params['butt_thickness']
     exposure     = params['exposure']
     stagger_pat  = params['stagger_pattern']
+    hide_incomplete_top = params.get('hide_incomplete_top_course', False)
 
     origin, u_vec, v_vec, normal, u_length, v_length = \
         _get_face_coordinate_system(face)
+
+    # Rack the exposure so an integer number of courses spans exactly to
+    # the ridge/hip line -- the last course's head then lands exactly at
+    # v_length instead of leaving a remainder that produces a gap
+    # (HideIncompleteTopCourse) or a clipped partial/sliver fragment.
+    exposure = calculate_fitted_exposure(v_length, exposure)
 
     layout = calculate_layout(u_length, v_length, tile_width, exposure, stagger_pat)
     num_courses     = layout['num_courses']
@@ -157,10 +166,20 @@ def _generate_tiles_for_face(face, params):
 
     shapes = []
     for row in range(num_courses):
+        v = row * exposure - exposure  # one course below origin at row=0
+
+        # Optional: skip this course entirely (never generate it) rather
+        # than generate-then-clip-then-maybe-discard, if its head pokes
+        # past the face's own top edge (ridge/hip line at V=v_length).
+        # Rows increase v monotonically, so once this trips, every
+        # subsequent row would too -- but check explicitly rather than
+        # break, in case that assumption ever stops holding.
+        if hide_incomplete_top and not is_top_course_complete(v, v_length):
+            continue
+
         stagger = calculate_stagger_offset(row, stagger_pat, tile_width)
         for col in range(tiles_per_course):
             u = col * tile_width + stagger - max_stagger
-            v = row * exposure - exposure  # one course below origin at row=0
 
             top_pos  = origin + _sv(u_vec, u) + _sv(v_vec, v)
             butt_pos = top_pos + _sv(v_vec, -tile_height)
@@ -236,6 +255,11 @@ class SlateProxy:
             obj.addProperty("App::PropertyEnumeration", "StaggerPattern", grp,
                             "Horizontal stagger pattern")
             obj.StaggerPattern = ['half', 'third', 'none']
+        if not hasattr(obj, 'HideIncompleteTopCourse'):
+            obj.addProperty("App::PropertyBool", "HideIncompleteTopCourse", grp,
+                            "Skip the top course entirely if the ridge/hip "
+                            "line would cut through it, instead of showing "
+                            "a partial (possibly sliver) fragment there")
         if not hasattr(obj, 'GeneratorVersion'):
             obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
                             "Generator version (read-only)")
@@ -254,6 +278,7 @@ class SlateProxy:
         # so full double-lap (real-slate) coverage isn't needed on the model.
         obj.Exposure          = p.get('exposure',             2.2)
         obj.StaggerPattern    = p.get('stagger_pattern',     'half')
+        obj.HideIncompleteTopCourse = p.get('hide_incomplete_top_course', False)
         obj.GeneratorVersion  = VERSION
 
     def execute(self, obj):
@@ -272,6 +297,7 @@ class SlateProxy:
             'butt_thickness':     butt_thick,
             'exposure':           float(obj.Exposure),
             'stagger_pattern':    str(obj.StaggerPattern),
+            'hide_incomplete_top_course': bool(obj.HideIncompleteTopCourse),
         }
 
         valid, errors = validate_parameters(
@@ -303,6 +329,13 @@ class SlateProxy:
             return
 
         obj.Shape = Part.Compound(all_tiles)
+
+    def onDocumentRestored(self, obj):
+        """Backfill any properties added since this object was saved (e.g.
+        HideIncompleteTopCourse) -- _setup_properties' hasattr guards make
+        it safe to call again on an object that already has some/all of
+        these properties."""
+        self._setup_properties(obj)
 
     def dumps(self):
         return {"Type": self.Type}
