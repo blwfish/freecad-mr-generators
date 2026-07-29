@@ -27,6 +27,7 @@ from slate_geometry import (
     calculate_layout,
     calculate_stagger_offset,
     get_roof_coordinate_system,
+    is_valid_clip_fragment,
 )
 
 
@@ -100,13 +101,20 @@ def _build_clip_volumes(face):
 
 
 def _clip_shape(shape, clip_volumes):
-    """Clip *shape* against dual clip volumes. Returns clipped solid or None."""
+    """Clip *shape* against dual clip volumes. Returns clipped solid or None.
+
+    Survival is judged against the shape's own pre-clip volume (see
+    is_valid_clip_fragment) rather than a fixed absolute threshold, so a
+    razor-thin sliver at a ridge/hip boundary is discarded instead of
+    surviving as a stray fragment.
+    """
+    full_volume = shape.Volume
     for cv in clip_volumes:
         try:
             result = shape.common(cv)
             if result.ShapeType == 'Compound' and len(result.Solids) == 1:
                 result = result.Solids[0]
-            if result.Volume > 0.001:
+            if is_valid_clip_fragment(result.Volume, full_volume):
                 return result
         except Exception:
             continue
@@ -240,7 +248,11 @@ class SlateProxy:
         obj.TileHeight        = p.get('tile_height',          2.5)
         obj.MaterialThickness = p.get('material_thickness',   0.2)
         obj.ButtThickness     = p.get('butt_thickness',       0.0)
-        obj.Exposure          = p.get('exposure',             1.2)
+        # Exposure close to TileHeight (ratio ~1.14, was 1.2 -> ~2.08) gives
+        # single-thickness coverage with just enough overlap for the
+        # butt-shadow line -- these tiles sit on an already-solid roof face,
+        # so full double-lap (real-slate) coverage isn't needed on the model.
+        obj.Exposure          = p.get('exposure',             2.2)
         obj.StaggerPattern    = p.get('stagger_pattern',     'half')
         obj.GeneratorVersion  = VERSION
 

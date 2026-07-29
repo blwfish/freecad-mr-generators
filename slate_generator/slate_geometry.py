@@ -4,9 +4,11 @@ Slate Tile Geometry Library v1.0.0
 Pure Python geometry functions for slate tile generation.
 No FreeCAD dependencies — fully testable with pytest.
 
-Slate tiles differ from wood shingles in one key way: they are flat
-rectangles of uniform thickness (no wedge taper).  The shadow line at
-each course butt comes from the overlap geometry alone.
+Slate tiles are flat rectangles in cross-section (unlike wood shingles,
+which have their own tapered-wedge profile).  The proxy applies an
+optional butt-edge wedge (ButtThickness, default 3x MaterialThickness)
+on top of that flat rectangle so overlapping courses show a visible
+step at each butt line.
 
 Shared face-orientation and hip/valley analysis is imported from
 roof_geometry.py (in _shared/).
@@ -38,6 +40,7 @@ __all__ = [
     # Slate-specific
     'validate_parameters', 'validate_stagger_pattern',
     'calculate_stagger_offset', 'calculate_layout',
+    'is_valid_clip_fragment',
 ]
 
 
@@ -117,3 +120,29 @@ def calculate_layout(face_width: float, face_height: float,
         'total_width_needed':     total_width_needed,
         'total_tiles_before_trim': num_courses * tiles_per_course,
     }
+
+
+# ---------------------------------------------------------------------------
+# Clip-fragment survival
+# ---------------------------------------------------------------------------
+
+def is_valid_clip_fragment(fragment_volume: float, full_volume: float,
+                            min_fraction: float = 0.05) -> bool:
+    """Decide whether a clipped tile fragment is real geometry or a
+    razor-thin sliver that should be discarded.
+
+    The proxy over-generates courses (+3 beyond what's needed) to
+    guarantee full ridge/hip coverage, then clips each tile against the
+    roof face's boundary. A fixed absolute volume threshold (e.g. the
+    previous `> 0.001`) doesn't scale with tile size: on a real hip roof
+    (2026-07-29) it let 0.02 mm^3 slivers survive as stray fragments --
+    about 1% of a 1.8 mm^3 full tile -- visible as a spurious extra edge
+    right at the ridge/hip line. Scaling the threshold to a fraction of
+    the *same tile's own pre-clip volume* stays correct at any tile size.
+
+    full_volume <= 0 is degenerate (a null/zero-volume source shape) and
+    always returns False -- there's no meaningful fraction of nothing.
+    """
+    if full_volume <= 0:
+        return False
+    return fragment_volume > full_volume * min_fraction

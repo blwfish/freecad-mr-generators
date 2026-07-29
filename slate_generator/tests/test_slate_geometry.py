@@ -11,6 +11,7 @@ from slate_geometry import (
     validate_stagger_pattern,
     calculate_stagger_offset,
     calculate_layout,
+    is_valid_clip_fragment,
     # Shared via roof_geometry
     is_planar,
     calculate_face_bounds,
@@ -224,3 +225,72 @@ class TestBoundaryOverflowRegression:
             assert layout['max_stagger'] == pytest.approx(tile_w / 3)
         else:
             assert layout['max_stagger'] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Clip-fragment survival
+#
+# A fixed absolute volume threshold doesn't scale with tile size -- on a
+# real hip roof (2026-07-29) it let 0.02 mm^3 slivers survive as stray
+# fragments, ~1% of a 1.8 mm^3 full tile, visible as a spurious extra edge
+# right at the ridge/hip line. is_valid_clip_fragment fixes this by scaling
+# the threshold to a fraction of the fragment's own pre-clip volume.
+# ---------------------------------------------------------------------------
+
+class TestClipFragmentValidity:
+
+    def test_full_tile_survives(self):
+        """An unclipped tile (fragment_volume == full_volume) must survive."""
+        assert is_valid_clip_fragment(1.8, 1.8) is True
+
+    def test_real_sliver_from_2026_07_29_incident_rejected(self):
+        """Pins the exact real-world values that produced the visible
+        extra edge: a 0.02 mm^3 fragment of a 1.8 mm^3 tile (~1.1%)."""
+        assert is_valid_clip_fragment(0.0202, 1.8) is False
+
+    def test_at_threshold_boundary_rejected(self):
+        """Exactly at min_fraction * full_volume: the check is strict (>),
+        so the boundary value itself is rejected, not kept."""
+        full = 1.8
+        min_fraction = 0.05
+        assert is_valid_clip_fragment(full * min_fraction, full, min_fraction) is False
+
+    def test_just_below_threshold_rejected(self):
+        full = 1.8
+        min_fraction = 0.05
+        assert is_valid_clip_fragment(full * min_fraction - 1e-9, full, min_fraction) is False
+
+    def test_just_above_threshold_accepted(self):
+        full = 1.8
+        min_fraction = 0.05
+        assert is_valid_clip_fragment(full * min_fraction + 1e-9, full, min_fraction) is True
+
+    def test_zero_full_volume_rejected(self):
+        """A degenerate (null/zero-volume) source shape has no meaningful
+        fraction of nothing -- must not divide-by-zero or accept anything."""
+        assert is_valid_clip_fragment(0.5, 0.0) is False
+
+    def test_negative_full_volume_rejected(self):
+        """OCCT should never report a negative volume, but the function
+        must not misbehave (e.g. flip the inequality) if it ever does."""
+        assert is_valid_clip_fragment(0.5, -1.0) is False
+
+    def test_zero_fragment_volume_rejected(self):
+        assert is_valid_clip_fragment(0.0, 1.8) is False
+
+    @pytest.mark.parametrize('tile_width,tile_height,thickness', [
+        (2.0, 2.5, 0.2),      # HO-scale default
+        (0.5, 0.6, 0.05),     # small N-scale-ish tile
+        (10.0, 12.0, 1.0),    # large O-scale-ish tile
+    ])
+    def test_threshold_scales_with_tile_size(self, tile_width, tile_height, thickness):
+        """The whole point of fixing this as a fraction rather than an
+        absolute constant: a sliver that's proportionally tiny must be
+        rejected regardless of the tile's actual physical size, and a
+        proportionally substantial fragment must be kept."""
+        full_volume = tile_width * tile_height * thickness
+        tiny_sliver = full_volume * 0.01     # 1% -- same proportion as the real incident
+        substantial = full_volume * 0.5      # 50% -- half the tile clipped away, still real geometry
+
+        assert is_valid_clip_fragment(tiny_sliver, full_volume) is False
+        assert is_valid_clip_fragment(substantial, full_volume) is True
