@@ -37,6 +37,7 @@ All dimensions are in **millimetres**, at the real-world prototype scale you are
 | `roof_seam_generator` | two adjacent roof faces | Hip caps and valley flashing at the seam between two roof planes |
 | `shingle_generator` | roof faces | Wood shingles with butt-edge taper and stagger |
 | `slate_generator` | roof faces | Flat slate tiles with course overlap and stagger |
+| `slate_seam_generator` | two adjacent roof faces | Slate hip/ridge caps, bent to the seam's actual dihedral angle — valleys stay on `roof_seam_generator` |
 | `smart_trim_generator` | wall faces | Window and door trim — rectangular or beveled profile |
 | `standing_seam_generator` | roof faces | Standing-seam metal roofing panels |
 | `station_sign_generator` | *(none)* | Raised-letter station sign board for 3D printing |
@@ -88,7 +89,7 @@ python3 install.py --uninstall
 The general pattern is the same for every generator:
 
 1. **Build your structure** in FreeCAD—walls, roof planes, etc. Exact geometry; the generators work from whatever faces you give them.
-2. **Select faces.** Click a face in the 3D view. Hold **Ctrl** and click more faces to add them to the selection. For most siding generators, all selected faces should be from the same wall solid. For `roof_seam_generator`, select exactly two adjacent faces that share a ridge or valley edge.
+2. **Select faces.** Click a face in the 3D view. Hold **Ctrl** and click more faces to add them to the selection. For most siding generators, all selected faces should be from the same wall solid. For `roof_seam_generator` and `slate_seam_generator`, select exactly two adjacent faces that share a ridge or valley edge.
 3. **Run the macro.** Open **Tools → Macros**, select the generator, click **Execute**.
 4. **Adjust properties.** The generator object appears in the model tree. Click it to see its properties in the Properties panel (bottom-left). Change any value and press Enter—the geometry regenerates immediately.
 5. **Hide the original** if you want a clean view, or keep it visible for reference.
@@ -98,6 +99,7 @@ The general pattern is the same for every generator:
 - If the result looks wrong (shingles inside the roof, trim facing inward), the face normal may be inverted. Check with **Part → Check Geometry** or try selecting the face from a different angle.
 - For `smart_trim_generator`, use **SkipBottom** to suppress trim along the foundation line, and **PerimeterOnly** to ignore internal construction joints that shouldn't get trim.
 - The `roof_seam_generator` requires exactly two faces. Run it once per hip or valley seam.
+- `slate_seam_generator` only generates caps for hip/ridge seams (`SeamType='ridge'`) — for a valley, use `roof_seam_generator`'s flashing instead. Check the object's `SeamType`/`DihedralDegrees` properties (and the console output from the macro run) if no caps appear.
 
 ---
 

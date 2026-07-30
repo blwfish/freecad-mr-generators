@@ -1,0 +1,115 @@
+"""
+Slate Seam Cap Generator for FreeCAD v1.0.0
+
+Generates slate hip/ridge caps straddling the seam between two selected
+roof faces -- covering the residual gap/mismatch left where each face's
+own independent slate coursing meets. Bent to the seam's actual dihedral
+angle rather than a fixed, pitch-agnostic angle.
+
+Valleys are explicitly out of scope: real slate roofs use metal flashing
+in valleys, not slate caps -- use roof_seam_generator's valley flashing
+for that case instead. If the two selected faces form a valley (or the
+classifier can't tell), no geometry is generated; SeamType/DihedralDegrees
+on the resulting object explain why.
+
+WORKFLOW:
+1. Ctrl+click two adjacent slate-covered roof faces sharing a hip/ridge seam
+2. Run this macro
+3. Adjust CapWidth, CapLength, MaterialThickness, Exposure,
+   HideIncompleteEndCap in the Properties panel -- caps update live
+
+Requires: slate_seam_proxy.py, slate_seam_geometry.py in same directory
+          roof_geometry.py in _lib/ subdirectory or generators/_shared/
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+
+from slate_seam_proxy import SlateSeamProxy, SlateSeamViewProxy, VERSION
+
+GENERATOR_NAME = "slate_seam_generator"
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected -- Ctrl+click two adjacent roof faces "
+            "sharing a hip/ridge seam.\n")
+        return
+
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith('Face'):
+                face_entries.append((sel_obj.Object, sub))
+
+    if len(face_entries) != 2:
+        App.Console.PrintError(
+            f"Select exactly 2 adjacent roof faces (got {len(face_entries)}).\n"
+            "Ctrl+click two faces sharing a hip/ridge seam, then run this macro.\n")
+        return
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("SlateSeamProject")
+
+    App.Console.PrintMessage(
+        f"Slate Seam Generator v{VERSION}: 2 faces selected\n")
+
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("slate_seam_generator: SlateSeamCaps")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "SlateSeamCaps")
+        SlateSeamProxy(obj)
+        SlateSeamViewProxy(obj.ViewObject)
+        SlateSeamProxy.set_defaults(obj)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.35, 0.35, 0.40)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    seam_type = obj.SeamType
+    dihedral = obj.DihedralDegrees
+
+    if seam_type == 'ridge':
+        if obj.Shape.Solids:
+            App.Console.PrintMessage(
+                f"\n[OK] Parametric SlateSeamCaps created "
+                f"(dihedral {dihedral:.1f} deg).\n"
+                f"  Edit CapWidth, CapLength, Exposure, etc. in the "
+                f"Properties panel.\n\n")
+        else:
+            App.Console.PrintWarning(
+                f"\nSlateSeamCaps object created but no caps were generated "
+                f"(dihedral {dihedral:.1f} deg is likely too steep to fold "
+                f"-- see console output above).\n\n")
+    elif seam_type == 'valley':
+        App.Console.PrintWarning(
+            f"\nSelected faces form a VALLEY (dihedral {dihedral:.1f} deg), "
+            f"not a hip/ridge. Real slate roofs use metal flashing in "
+            f"valleys -- use roof_seam_generator's valley flashing instead. "
+            f"No cap geometry generated.\n\n")
+    elif seam_type == 'none':
+        App.Console.PrintError(
+            "\nNo shared edge found between the two selected faces -- "
+            "they must share a hip/ridge seam. No cap geometry generated.\n\n")
+    else:
+        App.Console.PrintWarning(
+            f"\nSeam classification is AMBIGUOUS (dihedral {dihedral:.1f} deg) "
+            f"-- could not confidently tell hip from valley. No cap "
+            f"geometry generated; verify the selected faces visually.\n\n")
+
+
+if __name__ == '__main__':
+    main()

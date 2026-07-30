@@ -34,6 +34,7 @@ GENERATORS = [
     "roof_seam_generator",
     "shingle_generator",
     "slate_generator",
+    "slate_seam_generator",
     "smart_trim_generator",
     "standing_seam_generator",
     "station_sign_generator",
