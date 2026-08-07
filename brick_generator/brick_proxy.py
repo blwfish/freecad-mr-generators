@@ -212,14 +212,32 @@ def _create_mortar_grid(face, params):
     if not segs:
         segs = [(0.0, u_length)]
 
+    # Quoin treatment applies to the true left/right edges of the whole face
+    # (u=0 / u=u_length), not to every bay-boundary segment — only the first
+    # segment can have a left quoin, only the last can have a right quoin.
+    left_quoin  = bool(params.get('left_quoin', False))
+    right_quoin = bool(params.get('right_quoin', False))
+    left_quoin_primary  = bool(params.get('left_quoin_primary', True))
+    right_quoin_primary = bool(params.get('right_quoin_primary', True))
+
     all_bricks = []
+    # Reservation ghosts (quoin_reserved): not real bricks, never rendered —
+    # exist only to keep the left_quoin/right_quoin zone out of the mortar
+    # cut below. Without them, "no brick present" reads as "all mortar" and
+    # the reserved zone gets hollowed out to mortar_depth before QuoinProxy
+    # ever gets a chance to carve real quoin bricks into flush material.
+    reservation_defs = []
     for seg_start, seg_end in segs:
         seg_w = seg_end - seg_start
+        seg_left_quoin  = left_quoin and (seg_start == segs[0][0])
+        seg_right_quoin = right_quoin and (seg_end == segs[-1][1])
         bg = BrickGeometry(
             u_length=seg_w, v_length=v_length,
             brick_width=brick_width, brick_height=gen_bh, brick_depth=gen_bd,
             mortar=mortar, bond_type=bond_type, common_bond_count=cbc,
             skin_depth=mortar_depth,
+            left_quoin=seg_left_quoin, left_quoin_primary=left_quoin_primary,
+            right_quoin=seg_right_quoin, right_quoin_primary=right_quoin_primary,
         )
         result = bg.generate()
         for bd in result['bricks']:
@@ -229,13 +247,22 @@ def _create_mortar_grid(face, params):
                 course=bd.course, brick_type=bd.brick_type,
                 width=bd.width, height=bd.height, depth=bd.depth,
             ))
+        if seg_left_quoin or seg_right_quoin:
+            for bd in bg.get_quoin_reservation_defs():
+                reservation_defs.append(BrickDef(
+                    index=len(reservation_defs),
+                    u=bd.u + seg_start, v=bd.v,
+                    course=bd.course, brick_type=bd.brick_type,
+                    width=bd.width, height=bd.height, depth=bd.depth,
+                ))
 
     # Face slab (extruded inward by mortar_depth)
     face_slab = face.extrude(_scale(normal, -mortar_depth))
 
-    # Brick shapes
+    # Brick shapes — real bricks plus reservation ghosts, both excluded from
+    # the mortar cut below (see reservation_defs comment above).
     brick_shapes = [_create_brick_from_def(bd, origin, u_vec, v_vec, normal)
-                    for bd in all_bricks]
+                    for bd in all_bricks + reservation_defs]
     if not brick_shapes:
         return face_slab  # no bricks → full slab (all mortar)
 
@@ -366,6 +393,28 @@ class BrickProxy:
         if not hasattr(obj, 'CommonBondCount'):
             obj.addProperty("App::PropertyInteger", "CommonBondCount", grp,
                             "Stretcher courses between header courses (common bond)")
+        if not hasattr(obj, 'LeftQuoin'):
+            obj.addProperty("App::PropertyBool", "LeftQuoin", grp,
+                            "A QuoinProxy column occupies the left edge (u=0); "
+                            "skip field fill there. Flemish bond only.")
+            obj.LeftQuoin = False
+        if not hasattr(obj, 'LeftQuoinPrimary'):
+            obj.addProperty("App::PropertyBool", "LeftQuoinPrimary", grp,
+                            "Left quoin Face A/B designation: True = stretcher "
+                            "quoin on even courses, False = header-return. "
+                            "Ignored when LeftQuoin=False.")
+            obj.LeftQuoinPrimary = True
+        if not hasattr(obj, 'RightQuoin'):
+            obj.addProperty("App::PropertyBool", "RightQuoin", grp,
+                            "A second QuoinProxy column occupies the right edge "
+                            "(u=u_length), for a wall spanning two quoin corners. "
+                            "Requires LeftQuoin=True and flemish bond.")
+            obj.RightQuoin = False
+        if not hasattr(obj, 'RightQuoinPrimary'):
+            obj.addProperty("App::PropertyBool", "RightQuoinPrimary", grp,
+                            "Right quoin Face A/B designation, same convention "
+                            "as LeftQuoinPrimary. Ignored when RightQuoin=False.")
+            obj.RightQuoinPrimary = True
         if not hasattr(obj, 'GeneratorVersion'):
             obj.addProperty(
                 "App::PropertyString", "GeneratorVersion", grp,
@@ -383,6 +432,10 @@ class BrickProxy:
         obj.SkinDepth        = p.get('material_thickness',  0.3)
         obj.MortarDepth      = p.get('mortar_depth',        0.06)
         obj.CommonBondCount  = int(p.get('common_bond_count', 5))
+        obj.LeftQuoin         = bool(p.get('left_quoin',          False))
+        obj.LeftQuoinPrimary  = bool(p.get('left_quoin_primary',  True))
+        obj.RightQuoin        = bool(p.get('right_quoin',         False))
+        obj.RightQuoinPrimary = bool(p.get('right_quoin_primary', True))
         obj.GeneratorVersion = VERSION
 
     def execute(self, obj):
@@ -427,6 +480,11 @@ class BrickProxy:
             'common_bond_count':  int(obj.CommonBondCount),
             'material_thickness': float(obj.SkinDepth),
             'mortar_depth':       float(obj.MortarDepth),
+            # getattr fallback: documents saved before these properties existed
+            'left_quoin':          bool(getattr(obj, 'LeftQuoin', False)),
+            'left_quoin_primary':  bool(getattr(obj, 'LeftQuoinPrimary', True)),
+            'right_quoin':         bool(getattr(obj, 'RightQuoin', False)),
+            'right_quoin_primary': bool(getattr(obj, 'RightQuoinPrimary', True)),
         }
 
         try:

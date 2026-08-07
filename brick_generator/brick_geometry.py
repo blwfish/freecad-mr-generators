@@ -50,7 +50,9 @@ class BrickGeometry:
                  common_bond_count: int = 5,
                  skin_depth: float = None,
                  left_quoin: bool = False,
-                 left_quoin_primary: bool = True):
+                 left_quoin_primary: bool = True,
+                 right_quoin: bool = False,
+                 right_quoin_primary: bool = True):
         """
         Initialize brick geometry generator.
 
@@ -69,6 +71,15 @@ class BrickGeometry:
             left_quoin_primary: True = this is Face A (stretcher quoin on even courses).
                                 False = this is Face B (header-return quoin on even courses).
                                 Ignored when left_quoin=False.
+            right_quoin: True when a second QuoinGeometry column occupies the right
+                        edge (u=u_length) — for a wall that spans between two quoin
+                        corners. Requires left_quoin=True and bond_type='flemish';
+                        the right closer is shrunk per-course to also clear the
+                        right quoin's reserved width instead of landing on the
+                        real wall edge.
+            right_quoin_primary: True = Face A at the right corner (stretcher quoin
+                                on even courses). False = Face B. Ignored when
+                                right_quoin=False.
         """
         self.u_length = u_length
         self.v_length = v_length
@@ -81,16 +92,24 @@ class BrickGeometry:
         self.skin_depth = skin_depth if skin_depth is not None else brick_depth
         self.left_quoin = left_quoin
         self.left_quoin_primary = left_quoin_primary
-        
+        self.right_quoin = right_quoin
+        self.right_quoin_primary = right_quoin_primary
+
         # Validate inputs
         if any(x <= 0 for x in [u_length, v_length, brick_width, brick_height, brick_depth, mortar]):
             raise ValueError("All dimensions must be positive")
-        
+
         if self.bond_type not in ['stretcher', 'english', 'flemish', 'common']:
             raise ValueError(f"Unknown bond type: {bond_type}")
-        
+
         if self.bond_type == 'common' and common_bond_count < 1:
             raise ValueError("common_bond_count must be at least 1")
+
+        if self.right_quoin and not self.left_quoin:
+            raise ValueError("right_quoin requires left_quoin=True (dual-quoin walls only)")
+
+        if self.right_quoin and self.bond_type != 'flemish':
+            raise ValueError("right_quoin is only implemented for flemish bond")
         
         # Pre-calculate spacing
         self.stretcher_spacing_u = brick_width + mortar
@@ -116,6 +135,67 @@ class BrickGeometry:
         this_face_is_stretcher = (course % 2 == 0) == self.left_quoin_primary
         quoin_w = self.stretcher_width if this_face_is_stretcher else self.header_width
         return quoin_w + self.mortar
+
+    def _quoin_fill_end(self, course: int) -> float:
+        """
+        When right_quoin=True, return the u-coordinate where fill must end
+        for this course (u_length - quoin_width - mortar). Returns u_length
+        when right_quoin=False.
+        """
+        if not self.right_quoin:
+            return self.u_length
+        this_face_is_stretcher = (course % 2 == 0) == self.right_quoin_primary
+        quoin_w = self.stretcher_width if this_face_is_stretcher else self.header_width
+        return self.u_length - quoin_w - self.mortar
+
+    def get_quoin_reservation_defs(self) -> List[BrickDef]:
+        """
+        One BrickDef per course per active quoin side, covering the
+        reserved-but-unfilled zone that left_quoin/right_quoin deliberately
+        leave blank ([0, _quoin_fill_start(course)) and/or
+        [_quoin_fill_end(course), u_length)).
+
+        These are not real bricks — brick_type is 'quoin_reserved'. They
+        exist so a consumer building a mortar-cut exclusion volume (e.g.
+        BrickProxy's mortar-grid construction) can keep this zone out of
+        the mortar cut entirely, leaving it flush at the skin-depth recess
+        plane instead of carved down to mortar depth like an ordinary gap
+        — ready for a later quoin-column engraving pass (QuoinProxy) to
+        carve its own, independent mortar joints into flush material.
+        Without this, the reserved zone would already read as "all mortar"
+        by the time QuoinProxy runs, and a boolean cut can only remove
+        material, never restore what BrickProxy's own mortar grid already
+        took away.
+
+        Only meaningful for flemish bond with left_quoin and/or right_quoin
+        active; returns [] otherwise (including for non-flemish bonds,
+        which don't support right_quoin and don't need this for left_quoin
+        either — their reserved zone is only ever adjacent to a real quoin
+        column that the caller is responsible for coordinating directly).
+        """
+        if not (self.left_quoin or self.right_quoin):
+            return []
+        m = self.mortar
+        W = self.u_length
+        TOPO_EPS = m * 0.1
+        defs = []
+        for course in range(self.num_courses):
+            v = course * self.course_spacing_v
+            if self.left_quoin:
+                boundary = self._quoin_fill_start(course)
+                defs.append(BrickDef(
+                    index=0, u=-TOPO_EPS, v=v, course=course,
+                    brick_type='quoin_reserved', width=boundary + TOPO_EPS,
+                    height=self.brick_height, depth=self.skin_depth,
+                ))
+            if self.right_quoin:
+                boundary = self._quoin_fill_end(course)
+                defs.append(BrickDef(
+                    index=0, u=boundary, v=v, course=course,
+                    brick_type='quoin_reserved', width=(W - boundary) + TOPO_EPS,
+                    height=self.brick_height, depth=self.skin_depth,
+                ))
+        return defs
 
     def _calculate_course_layout(self, wall_width: float, brick_width: float) -> Tuple[int, float]:
         """
@@ -369,7 +449,7 @@ class BrickGeometry:
           Odd:  C1 + H + S + H + ... + H + C1   (n+1 headers,   n stretchers)
           C1 = C0 + (S - H) / 2  ensures both sum to W.
 
-        With left_quoin:
+        With left_quoin only:
           The quoin column (external) occupies [0, quoin_width] on every course.
           The fill starts at quoin_width + mortar with the brick type opposite the
           quoin type for that course:
@@ -377,6 +457,16 @@ class BrickGeometry:
             quoin=H → fill leads with S: S m H m S m ... + C_right
           Algebraically, C_right = W - (n+1)(S + H + 2m) regardless of course
           parity or which face is primary, so n and C_right are uniform.
+
+        With left_quoin AND right_quoin (a wall spanning two quoin corners):
+          The alternating run itself is identical to the left_quoin-only case —
+          n is still chosen the same way, just with the search additionally
+          required to leave room for the LARGER of the two possible right-quoin
+          widths (max(S, H) + m), so it stays feasible for both course parities.
+          The right closer then shrinks per-course by the actual right quoin's
+          reserved width for that course (S or H, per right_quoin_primary),
+          landing exactly on the right quoin's edge instead of the real wall
+          edge. n stays uniform; only the closer width varies by course.
         """
         bricks = []
         S = self.stretcher_width
@@ -387,18 +477,37 @@ class BrickGeometry:
         TOPO_EPS = m * 0.1
 
         if self.left_quoin:
-            # Quoin handles the left edge; only a right closer needed.
-            # C_right = W - (n+1)(S + H + 2m) — same for all courses.
-            n = 0
-            C_right = 0.0
+            # Quoin handles the left edge; the right edge is either the real
+            # wall edge (right_quoin=False) or a second quoin column
+            # (right_quoin=True) — both are a single closer computed against
+            # a (possibly quoin-shrunk) right boundary.
+            n = None
+            base_C = None
+            worst_right_reserve = (max(S, H) + m) if self.right_quoin else 0.0
             for test_n in range(100):
                 test_C = W - (test_n + 1) * (S + H + 2 * m)
-                if test_C >= min_closer:
+                if (test_C - worst_right_reserve) >= min_closer:
                     n = test_n
-                    C_right = test_C
+                    base_C = test_C
                 else:
                     break
-            C_right += TOPO_EPS  # push right edge slightly past wall boundary
+
+            if n is None:
+                if self.right_quoin:
+                    # Unlike the left-quoin-only fallback below, an infeasible
+                    # fit here can't be papered over by overflow-clipping
+                    # against the real wall edge — the right boundary is an
+                    # internal quoin reservation, not a face edge. Fail loudly
+                    # instead of emitting a brick that overlaps the right quoin.
+                    raise ValueError(
+                        f"u_length={W:.4f} is too narrow for a flemish "
+                        f"dual-quoin fill (brick_width={S}, brick_depth={H}, "
+                        f"mortar={m}): no course fits even one brick between "
+                        f"both quoins.")
+                # Left-quoin-only: preserve pre-existing fallback (a single
+                # brick, relying on downstream overflow-clip against the real
+                # wall edge — same as the non-quoin generators' behavior).
+                n, base_C = 0, 0.0
 
             for course in range(self.num_courses):
                 v = course * self.course_spacing_v
@@ -425,6 +534,13 @@ class BrickGeometry:
                                                other_type, other_w,
                                                self.brick_height, self.skin_depth))
                         u += other_w + m
+
+                if self.right_quoin:
+                    right_is_stretcher = (course % 2 == 0) == self.right_quoin_primary
+                    R = S if right_is_stretcher else H
+                    C_right = base_C - R - m
+                else:
+                    C_right = base_C + TOPO_EPS  # push right edge slightly past wall boundary
 
                 if C_right > 0:
                     bricks.append(BrickDef(0, u, v, course,

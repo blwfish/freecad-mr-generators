@@ -11,9 +11,17 @@ Workflow:
   2. Apply QuoinProxy to the resulting BrickedWall, selecting the corner
      edge.  This engraves the quoin column into both adjacent faces.
 
-Selection: the Sources property accepts edge sub-elements (Edge1, etc.)
-from the source shape.  Exactly one edge per corner.  Each edge must be
-shared between exactly two faces (a non-manifold edge signals a problem).
+Selection: the Corners property accepts, per corner, either:
+  - one or more Edge sub-elements (Edge1, etc.) — the two adjacent faces
+    are auto-discovered from the edge. Works well on simple, unfragmented
+    geometry (e.g. a plain box corner) where the corner is one continuous
+    edge. Each edge must be shared between exactly two faces (a
+    non-manifold edge signals a problem).
+  - exactly two Face sub-elements in one Corners entry — used directly as
+    face_a/face_b, no edge lookup. Needed once Source has already been
+    through brick/mortar engraving: the true corner edge fragments into
+    many short segments whose locally-adjacent faces are tiny brick/mortar
+    fragments rather than the whole wall faces this proxy expects.
 
 Face A / Face B convention: the face with the lower numerical index is
 treated as Face A (primary: stretcher on even courses).  The other is
@@ -335,16 +343,40 @@ class QuoinProxy:
         working_shape = source_obj.Shape.copy()
         all_mortar_grids = []
 
-        # Collect unique edge indices from Corners selection
+        # Collect corner face-pairs from the Corners selection. Two ways to
+        # specify a corner:
+        #   - one or more Edge sub-elements: the classic path, each edge's
+        #     two adjacent faces are auto-discovered via
+        #     _find_adjacent_face_indices. Works well on simple, unfragmented
+        #     geometry (e.g. a plain box corner).
+        #   - exactly two Face sub-elements from one Corners entry: an
+        #     explicit face pair, used as-is with no edge lookup. Needed once
+        #     the source has already been through brick/mortar engraving —
+        #     the true corner edge fragments into many short segments whose
+        #     locally-adjacent faces are tiny brick/mortar fragments, not the
+        #     whole wall faces _get_face_coordinate_system expects.
         edge_indices = set()
+        explicit_face_pairs = []  # list of (fi_a, fi_b) tuples
         for link_obj, sub_names in obj.Corners:
             if link_obj is not source_obj:
                 App.Console.PrintWarning(
                     "QuoinProxy: Corners must be selected from the Source object.\n")
                 continue
-            for sub_name in sub_names:
-                if sub_name.startswith('Edge'):
+            face_names = [s for s in sub_names if s.startswith('Face')]
+            edge_names = [s for s in sub_names if s.startswith('Edge')]
+            if face_names and not edge_names:
+                if len(face_names) != 2:
+                    App.Console.PrintWarning(
+                        f"QuoinProxy: explicit face-pair corner needs exactly "
+                        f"2 Face sub-elements, got {len(face_names)}: {face_names}.\n")
+                    continue
+                explicit_face_pairs.append(
+                    tuple(int(n[4:]) - 1 for n in face_names))
+            else:
+                for sub_name in edge_names:
                     edge_indices.add(int(sub_name[4:]) - 1)
+
+        corner_face_pairs = []  # list of (fi_a, fi_b, label) for reporting
 
         for edge_idx in sorted(edge_indices):
             if edge_idx >= len(working_shape.Edges):
@@ -365,7 +397,20 @@ class QuoinProxy:
                     f"QuoinProxy: edge {edge_idx+1} shared by {len(face_indices)} "
                     f"faces; using first two.\n")
 
-            fi_a, fi_b = sorted(face_indices[:2])
+            corner_face_pairs.append(
+                (face_indices[0], face_indices[1], f"edge {edge_idx+1}"))
+
+        for fi_a, fi_b in explicit_face_pairs:
+            for fi in (fi_a, fi_b):
+                if fi >= len(working_shape.Faces):
+                    App.Console.PrintWarning(
+                        f"QuoinProxy: face index {fi} out of range.\n")
+                    break
+            else:
+                corner_face_pairs.append((fi_a, fi_b, f"faces {fi_a+1}/{fi_b+1}"))
+
+        for fi_a, fi_b, label in corner_face_pairs:
+            fi_a, fi_b = sorted((fi_a, fi_b))
             if swap:
                 fi_a, fi_b = fi_b, fi_a
 
@@ -417,7 +462,7 @@ class QuoinProxy:
         obj.Shape = result_shape
         obj.Placement = source_obj.Placement
         App.Console.PrintMessage(
-            f"✓ QuoinedWall updated ({len(edge_indices)} corner(s), "
+            f"✓ QuoinedWall updated ({len(corner_face_pairs)} corner(s), "
             f"{params['bond_type']} bond)\n")
 
     def dumps(self):

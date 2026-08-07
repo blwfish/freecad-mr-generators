@@ -971,5 +971,344 @@ class TestLeftQuoinCommonBond:
                 f"header course {course}: should extend past {W}, got {rightmost}"
 
 
+# =============================================================================
+# right_quoin (dual-quoin) feature tests — a wall spanning two quoin corners
+# =============================================================================
+
+def _make_dual_bg(left_primary=True, right_primary=True, W=27.628, **extra):
+    return BrickGeometry(
+        u_length=W, v_length=20.0,
+        left_quoin=True, left_quoin_primary=left_primary,
+        right_quoin=True, right_quoin_primary=right_primary,
+        bond_type='flemish', **HO, **extra,
+    )
+
+
+def _dual_narrow_threshold():
+    """Exact W below which no course fits even one brick between both quoins."""
+    S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+    min_closer = m * 2
+    return (S + H + 2 * m) + (max(S, H) + m) + min_closer
+
+
+class TestDualQuoinValidation:
+    """Constructor guards for right_quoin's preconditions."""
+
+    def test_right_quoin_without_left_quoin_raises(self):
+        with pytest.raises(ValueError, match='requires left_quoin'):
+            BrickGeometry(u_length=30, v_length=20, bond_type='flemish',
+                          right_quoin=True, **HO)
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'common'])
+    def test_right_quoin_non_flemish_raises(self, bond):
+        with pytest.raises(ValueError, match='only implemented for flemish'):
+            BrickGeometry(u_length=30, v_length=20, bond_type=bond,
+                          left_quoin=True, right_quoin=True, **HO)
+
+    @pytest.mark.parametrize('delta,should_raise', [
+        (-0.01, True),   # just below threshold: infeasible
+        (0.0,   False),  # exactly at threshold: feasible (>= min_closer)
+        (0.01,  False),  # just above threshold: feasible
+    ])
+    def test_narrow_wall_threshold(self, delta, should_raise):
+        W = _dual_narrow_threshold() + delta
+        bg = _make_dual_bg(W=W)
+        if should_raise:
+            with pytest.raises(ValueError, match='too narrow'):
+                bg.generate()
+        else:
+            result = bg.generate()
+            assert len(result['bricks']) > 0
+
+    def test_narrow_wall_error_names_the_offending_width(self):
+        W = _dual_narrow_threshold() - 1.0
+        with pytest.raises(ValueError, match=r'u_length=\d+\.\d+'):
+            _make_dual_bg(W=W).generate()
+
+
+class TestDualQuoinFillExclusion:
+    """Fill bricks must never enter either reserved quoin zone."""
+
+    @pytest.mark.parametrize('left_primary,right_primary', [
+        (True, True), (True, False), (False, True), (False, False),
+    ])
+    def test_no_fill_bricks_in_left_or_right_quoin_region(self, left_primary, right_primary):
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        W = 27.628
+        bg = _make_dual_bg(left_primary=left_primary, right_primary=right_primary, W=W)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+
+        for course, bricks in by_course.items():
+            left_is_s = (course % 2 == 0) == left_primary
+            left_boundary = S if left_is_s else H
+            right_is_s = (course % 2 == 0) == right_primary
+            right_w = S if right_is_s else H
+            right_boundary = W - right_w - m
+
+            for brick in bricks:
+                assert brick.u >= left_boundary - 1e-6, (
+                    f"course {course}: brick at u={brick.u:.4f} inside left "
+                    f"quoin region [0,{left_boundary:.3f}]"
+                )
+                assert brick.u + brick.width <= right_boundary + 1e-6, (
+                    f"course {course}: brick ends at {brick.u + brick.width:.4f} "
+                    f"past right quoin boundary {right_boundary:.3f}"
+                )
+
+    def test_no_overflow_past_real_wall_edge(self):
+        """Unlike the single-quoin case, dual-quoin fill must never reach W —
+        the right boundary is an internal reservation, not the real edge."""
+        W = 27.628
+        bg = _make_dual_bg(W=W)
+        result = bg.generate()
+        for b in result['bricks']:
+            assert b.u + b.width < W, (
+                f"course {b.course}: brick ends at {b.u + b.width:.4f}, "
+                f"at/past real wall edge {W} — should stop short for the quoin"
+            )
+
+
+class TestDualQuoinCloserFormula:
+    """The right closer shrinks per-course by the actual right-quoin width."""
+
+    def test_closer_formula_matches_right_parity(self):
+        S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
+        W = 27.628
+        bg = _make_dual_bg(left_primary=True, right_primary=False, W=W)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+
+        # base_C is uniform across courses (same search as left-quoin-only);
+        # derive it once from a course where we can identify n unambiguously.
+        min_closer = m * 2
+        n, base_C = None, None
+        for test_n in range(100):
+            test_C = W - (test_n + 1) * (S + H + 2 * m)
+            if (test_C - (max(S, H) + m)) >= min_closer:
+                n, base_C = test_n, test_C
+            else:
+                break
+        assert n is not None
+
+        for course, bricks in by_course.items():
+            closer = [b for b in bricks if b.brick_type == 'closer']
+            assert len(closer) == 1, f"course {course}: expected 1 closer"
+            right_is_s = (course % 2 == 0) == False  # right_primary=False
+            R = S if right_is_s else H
+            expected_C = base_C - R - m
+            assert closer[0].width == pytest.approx(expected_C, abs=1e-6), (
+                f"course {course}: closer={closer[0].width:.6f} "
+                f"expected={expected_C:.6f}"
+            )
+
+    def test_uniform_n_across_courses(self):
+        """n (brick count minus closer) is the same for all courses, even
+        though the closer width itself varies by course."""
+        bg = _make_dual_bg(left_primary=True, right_primary=False, W=27.628)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        n_values = {
+            len([b for b in bricks if b.brick_type != 'closer'])
+            for bricks in by_course.values()
+        }
+        assert len(n_values) == 1, f"n varies across courses: {n_values}"
+
+    def test_closer_width_varies_when_right_parity_differs_by_course(self):
+        """Adjacent courses reserve S vs H on the right → different closer widths."""
+        bg = _make_dual_bg(left_primary=True, right_primary=True, W=27.628)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        closer_widths = {
+            course: [b.width for b in bricks if b.brick_type == 'closer'][0]
+            for course, bricks in by_course.items()
+        }
+        assert closer_widths[0] != pytest.approx(closer_widths[1], abs=1e-6)
+
+
+class TestDualQuoinFillSequence:
+    """Leading brick type still matches the left quoin (right_quoin doesn't
+    disturb the already-tested left-edge behavior)."""
+
+    def test_fill_sequence_even_course_primary(self):
+        bg = _make_dual_bg(left_primary=True, right_primary=True, W=27.628)
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course, bricks in by_course.items():
+            if course % 2 == 0:
+                non_closer = sorted(
+                    (b for b in bricks if b.brick_type != 'closer'), key=lambda b: b.u)
+                assert non_closer[0].brick_type == 'header'
+
+    def test_right_parity_reversed_shifts_closer_not_fill_start(self):
+        """Flipping right_quoin_primary changes which type is reserved on the
+        right (and thus the closer width) without touching the fill's start."""
+        bg_a = _make_dual_bg(left_primary=True, right_primary=True, W=27.628)
+        bg_b = _make_dual_bg(left_primary=True, right_primary=False, W=27.628)
+        by_course_a, by_course_b = {}, {}
+        for b in bg_a.generate()['bricks']:
+            by_course_a.setdefault(b.course, []).append(b)
+        for b in bg_b.generate()['bricks']:
+            by_course_b.setdefault(b.course, []).append(b)
+
+        for course in by_course_a:
+            a_sorted = sorted(by_course_a[course], key=lambda b: b.u)
+            b_sorted = sorted(by_course_b[course], key=lambda b: b.u)
+            assert a_sorted[0].brick_type == b_sorted[0].brick_type == \
+                ('header' if course % 2 == 0 else 'stretcher')
+            a_closer = [b for b in a_sorted if b.brick_type == 'closer'][0]
+            b_closer = [b for b in b_sorted if b.brick_type == 'closer'][0]
+            assert a_closer.width != pytest.approx(b_closer.width, abs=1e-6)
+
+
+class TestDualQuoinRealWidths:
+    """Real-world width from the equipment_hut model's west wall (27.628mm),
+    plus exact-multiple / minimal-fit edge cases per the boundary-testing rule."""
+
+    @pytest.mark.parametrize('W', [
+        27.628,                          # actual model width (west wall)
+        3 * (2.32 + 1.09 + 2 * 0.11) + (max(2.32, 1.09) + 0.11) + 0.22,  # near-minimal fit
+        50.0,
+        _dual_narrow_threshold(),        # exact threshold — must not raise
+    ])
+    def test_generates_without_error(self, W):
+        bg = _make_dual_bg(W=W)
+        result = bg.generate()
+        assert len(result['bricks']) > 0
+
+    def test_downstream_no_zero_width_bricks(self):
+        """OCCT invariant: every emitted brick must have strictly positive width."""
+        bg = _make_dual_bg(W=27.628)
+        result = bg.generate()
+        for b in result['bricks']:
+            assert b.width > 1e-9, f"course {b.course}: zero/negative-width brick"
+
+
+# =============================================================================
+# get_quoin_reservation_defs — mortar-grid exclusion zone for BrickProxy
+# =============================================================================
+
+class TestQuoinReservationDefs:
+    """Reservation rectangles a proxy must exclude from its mortar-depth cut
+    so the quoin zone stays flush at skin_depth for a later QuoinProxy pass."""
+
+    def test_no_quoin_returns_empty(self):
+        bg = BrickGeometry(u_length=30, v_length=20, bond_type='stretcher', **HO)
+        assert bg.get_quoin_reservation_defs() == []
+
+    def test_left_only_one_per_course(self):
+        bg = _make_bg('flemish', primary=True, W=30.0)
+        defs = bg.get_quoin_reservation_defs()
+        assert len(defs) == bg.num_courses
+        for d in defs:
+            assert d.brick_type == 'quoin_reserved'
+
+    def test_left_only_matches_fill_start(self):
+        m = HO['mortar']
+        TOPO_EPS = m * 0.1
+        bg = _make_bg('flemish', primary=True, W=30.0)
+        defs = {d.course: d for d in bg.get_quoin_reservation_defs()}
+        for course, d in defs.items():
+            boundary = bg._quoin_fill_start(course)
+            assert d.u == pytest.approx(-TOPO_EPS, abs=1e-9)
+            assert d.u + d.width == pytest.approx(boundary, abs=1e-9)
+
+    def test_left_only_works_for_non_flemish_bonds(self):
+        """left_quoin is supported by stretcher/english/common too."""
+        for bond in ['stretcher', 'english', 'common']:
+            bg = _make_bg(bond, primary=True, W=30.0)
+            defs = bg.get_quoin_reservation_defs()
+            assert len(defs) == bg.num_courses, f"bond={bond}"
+
+    def test_dual_quoin_two_per_course(self):
+        bg = _make_dual_bg(left_primary=True, right_primary=False, W=27.628)
+        defs = bg.get_quoin_reservation_defs()
+        by_course = {}
+        for d in defs:
+            by_course.setdefault(d.course, []).append(d)
+        for course, ds in by_course.items():
+            assert len(ds) == 2, f"course {course}: expected left+right reservation"
+
+    def test_dual_quoin_right_matches_fill_end(self):
+        m = HO['mortar']
+        TOPO_EPS = m * 0.1
+        W = 27.628
+        bg = _make_dual_bg(left_primary=True, right_primary=False, W=W)
+        defs = bg.get_quoin_reservation_defs()
+        for d in defs:
+            if d.u < W / 2:
+                continue  # this is the left reservation
+            boundary = bg._quoin_fill_end(d.course)
+            assert d.u == pytest.approx(boundary, abs=1e-9)
+            assert d.u + d.width == pytest.approx(W + TOPO_EPS, abs=1e-9)
+
+    @pytest.mark.parametrize('left_primary,right_primary', [
+        (True, True), (True, False), (False, True), (False, False),
+    ])
+    def test_reservation_flush_against_adjacent_fill_edge(self, left_primary, right_primary):
+        """The reservation's inner boundary must exactly meet the nearest fill
+        brick's edge (no gap, no overlap) — NOT that the whole width is
+        gapless, since ordinary mortar joints *between* fill bricks are
+        expected and correctly left uncovered by either fill or reservation."""
+        W = 27.628
+        bg = _make_dual_bg(left_primary=left_primary, right_primary=right_primary, W=W)
+        fill = bg.generate()['bricks']
+        reservations = bg.get_quoin_reservation_defs()
+
+        fill_by_course = {}
+        for b in fill:
+            fill_by_course.setdefault(b.course, []).append((b.u, b.u + b.width))
+
+        for d in reservations:
+            spans = sorted(fill_by_course.get(d.course, []))
+            res_start, res_end = d.u, d.u + d.width
+            if res_start < W / 2:
+                # left reservation: its right edge must meet the first fill brick's left edge
+                assert spans, f"course {d.course}: no fill bricks to meet left reservation"
+                assert spans[0][0] == pytest.approx(res_end, abs=1e-6), (
+                    f"course {d.course}: left reservation ends at {res_end:.4f}, "
+                    f"first fill brick starts at {spans[0][0]:.4f}"
+                )
+            else:
+                # right reservation: its left edge must meet the last fill brick's right edge
+                assert spans, f"course {d.course}: no fill bricks to meet right reservation"
+                assert spans[-1][1] == pytest.approx(res_start, abs=1e-6), (
+                    f"course {d.course}: right reservation starts at {res_start:.4f}, "
+                    f"last fill brick ends at {spans[-1][1]:.4f}"
+                )
+
+    def test_reservations_do_not_overlap_fill_bricks(self):
+        """Reservation zones and real fill bricks must not double-cover any u range."""
+        W = 27.628
+        bg = _make_dual_bg(left_primary=True, right_primary=True, W=W)
+        fill = bg.generate()['bricks']
+        reservations = bg.get_quoin_reservation_defs()
+        by_course_fill = {}
+        for b in fill:
+            by_course_fill.setdefault(b.course, []).append((b.u, b.u + b.width))
+        for d in reservations:
+            for u0, u1 in by_course_fill.get(d.course, []):
+                overlap = min(u1, d.u + d.width) - max(u0, d.u)
+                assert overlap <= 1e-6, (
+                    f"course {d.course}: reservation [{d.u:.4f},{d.u+d.width:.4f}] "
+                    f"overlaps fill brick [{u0:.4f},{u1:.4f}] by {overlap:.4f}"
+                )
+
+    def test_downstream_no_zero_width_reservations(self):
+        bg = _make_dual_bg(W=27.628)
+        for d in bg.get_quoin_reservation_defs():
+            assert d.width > 1e-9, f"course {d.course}: zero/negative-width reservation"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
