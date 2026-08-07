@@ -1,0 +1,92 @@
+"""
+Parametric Standing-Seam Snow Guard Generator for FreeCAD v1.0.0
+
+Places a grid of clamp-and-fin snow guards on the real seam ribs of a
+standing-seam metal roof, every SeamStride'th rib. Fully parametric:
+change row/stride/panel/clamp/fin dimensions in the Properties panel and
+the guards regenerate automatically.
+
+WORKFLOW:
+1. Run standing_seam_generator on your roof face(s) first
+2. Ctrl+click the SAME roof faces
+3. Run this macro
+4. Set PanelWidth/SeamWidth/SeamHeight to match what you used for
+   StandingSeamPanels, then adjust SeamStride, NumRows, RowSpacing, etc.
+   in the Properties panel — guards update live
+
+HO scale defaults: PanelWidth=3.0mm, SeamWidth=0.4mm, SeamHeight=0.35mm
+(matching standing_seam_generator's own defaults), SeamStride=3,
+2 rows near the eave.
+
+Requires: standing_seam_snow_guard_proxy.py, standing_seam_snow_guard_geometry.py
+          in same directory; roof_geometry.py in _lib/ subdirectory or
+          generators/_shared/
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+
+from standing_seam_snow_guard_proxy import (
+    StandingSeamSnowGuardProxy, StandingSeamSnowGuardViewProxy, VERSION)
+
+GENERATOR_NAME = "standing_seam_snow_guard_generator"
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — Ctrl+click one or more standing-seam roof faces.\n")
+        return
+
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith('Face'):
+                face_entries.append((sel_obj.Object, sub))
+
+    if not face_entries:
+        App.Console.PrintError(
+            "No faces selected. Select faces (not whole objects).\n")
+        return
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("StandingSeamSnowGuardProject")
+
+    App.Console.PrintMessage(
+        f"Standing-Seam Snow Guard Generator v{VERSION}: "
+        f"{len(face_entries)} face(s) selected\n")
+
+    # Build LinkSubList grouped by object
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("standing_seam_snow_guard_generator: StandingSeamSnowGuards")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "StandingSeamSnowGuards")
+        StandingSeamSnowGuardProxy(obj)
+        StandingSeamSnowGuardViewProxy(obj.ViewObject)
+        StandingSeamSnowGuardProxy.set_defaults(obj)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.25, 0.25, 0.28)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric StandingSeamSnowGuards created.\n"
+        f"  Set PanelWidth/SeamWidth/SeamHeight to match your "
+        f"StandingSeamPanels, then edit SeamStride, NumRows, etc. "
+        f"in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()

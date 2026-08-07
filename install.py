@@ -38,6 +38,7 @@ GENERATORS = [
     "smart_trim_generator",
     "snow_guard_generator",
     "standing_seam_generator",
+    "standing_seam_snow_guard_generator",
     "station_sign_generator",
 ]
 

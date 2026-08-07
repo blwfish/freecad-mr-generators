@@ -20,9 +20,13 @@ No FreeCAD dependencies — fully testable with pytest.
 
 from typing import List, Tuple
 
+from roof_geometry import calculate_row_v_positions
+
 __all__ = [
-    'validate_parameters',
+    # Re-exported from roof_geometry
     'calculate_row_v_positions',
+    # Snow-guard specific
+    'validate_parameters',
     'calculate_row_u_positions',
     'calculate_grid_positions',
 ]
@@ -63,56 +67,6 @@ def validate_parameters(pad_width: float, pad_length: float, pad_thickness: floa
         errors.append(
             f"fin_thickness ({fin_thickness}) cannot exceed pad_width ({pad_width})")
     return len(errors) == 0, errors
-
-
-# ---------------------------------------------------------------------------
-# Row placement (up-slope axis, "v")
-# ---------------------------------------------------------------------------
-
-def calculate_row_v_positions(v_length: float, num_rows: int, first_row_offset: float,
-                               row_spacing: float, v_margin: float) -> List[float]:
-    """Return the up-slope (v) offset of each guard row, measured from the
-    eave (v=0).
-
-    Rows are evenly spaced starting at first_row_offset: row i sits at
-    first_row_offset + i * row_spacing. row_spacing is unused (and
-    unvalidated) when num_rows == 1.
-
-    v_margin is a REQUIRED positive safety margin (not a fixed epsilon):
-    every row must land within [v_margin, v_length - v_margin]. This is a
-    hard validation error, not a silent clamp/drop — a config that doesn't
-    fit the face is a configuration mistake the caller must fix (mirrors
-    calculate_course_v_positions in clapboard_generator/clapboard_geometry
-    .py, which raises rather than silently dropping courses that don't
-    fit). Keeping v_margin strictly positive also guarantees no row can
-    ever land exactly on the real face boundary (v=0 or v=v_length) --
-    the condition shared/boundary_assertions.assert_no_boundary_coincidence
-    exists to catch.
-
-    Raises ValueError if num_rows < 1, any input is out of range, or the
-    row grid doesn't fit within [v_margin, v_length - v_margin].
-    """
-    if num_rows < 1:
-        raise ValueError(f"num_rows must be >= 1, got {num_rows}")
-    if first_row_offset < 0:
-        raise ValueError(f"first_row_offset must be >= 0, got {first_row_offset}")
-    if num_rows > 1 and row_spacing <= 0:
-        raise ValueError(
-            f"row_spacing must be positive when num_rows > 1, got {row_spacing}")
-    if v_margin <= 0:
-        raise ValueError(f"v_margin must be positive, got {v_margin}")
-
-    positions = [first_row_offset + i * row_spacing for i in range(num_rows)]
-
-    lo, hi = v_margin, v_length - v_margin
-    eps = 1e-9
-    if positions[0] < lo - eps or positions[-1] > hi + eps:
-        raise ValueError(
-            f"row grid does not fit face: rows span [{positions[0]}, {positions[-1]}], "
-            f"but usable range is [{lo}, {hi}] (v_length={v_length}, v_margin={v_margin})"
-        )
-
-    return positions
 
 
 # ---------------------------------------------------------------------------

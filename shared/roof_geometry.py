@@ -29,6 +29,10 @@ Coursed-tile layout helpers (generic — no slate-specific content)
     is_valid_clip_fragment
     is_top_course_complete
     calculate_fitted_exposure
+
+Sparse-placement row layout (generic — no slate/shingle/standing-seam-
+specific content)
+    calculate_row_v_positions
 """
 
 import math
@@ -474,3 +478,62 @@ def calculate_fitted_exposure(face_v_length: float, nominal_exposure: float) -> 
         num_courses = 1
 
     return face_v_length / num_courses
+
+
+# ---------------------------------------------------------------------------
+# Sparse-placement row layout (generic — no slate/shingle/standing-seam-
+# specific content)
+#
+# Originally developed in snow_guard_generator/snow_guard_geometry.py
+# (2026-08-07) for staggered-grid snow guard placement; relocated here once
+# standing_seam_snow_guard_generator needed the identical "N rows up the
+# slope" math for seam-clamp placement -- a second genuine consumer, the
+# same bar this repo's other shared-promotion decisions use (contrast with
+# e.g. slate_seam_proxy.py's resolve_shared_edge, deliberately left
+# un-promoted because it still has only one consumer).
+# ---------------------------------------------------------------------------
+
+def calculate_row_v_positions(v_length: float, num_rows: int, first_row_offset: float,
+                               row_spacing: float, v_margin: float) -> List[float]:
+    """Return the up-slope (v) offset of each row of sparsely-placed
+    elements (e.g. snow guards), measured from the eave (v=0).
+
+    Rows are evenly spaced starting at first_row_offset: row i sits at
+    first_row_offset + i * row_spacing. row_spacing is unused (and
+    unvalidated) when num_rows == 1.
+
+    v_margin is a REQUIRED positive safety margin (not a fixed epsilon):
+    every row must land within [v_margin, v_length - v_margin]. This is a
+    hard validation error, not a silent clamp/drop — a config that doesn't
+    fit the face is a configuration mistake the caller must fix (mirrors
+    calculate_course_v_positions in clapboard_generator/clapboard_geometry
+    .py, which raises rather than silently dropping courses that don't
+    fit). Keeping v_margin strictly positive also guarantees no row can
+    ever land exactly on the real face boundary (v=0 or v=v_length) --
+    the condition shared/boundary_assertions.assert_no_boundary_coincidence
+    exists to catch.
+
+    Raises ValueError if num_rows < 1, any input is out of range, or the
+    row grid doesn't fit within [v_margin, v_length - v_margin].
+    """
+    if num_rows < 1:
+        raise ValueError(f"num_rows must be >= 1, got {num_rows}")
+    if first_row_offset < 0:
+        raise ValueError(f"first_row_offset must be >= 0, got {first_row_offset}")
+    if num_rows > 1 and row_spacing <= 0:
+        raise ValueError(
+            f"row_spacing must be positive when num_rows > 1, got {row_spacing}")
+    if v_margin <= 0:
+        raise ValueError(f"v_margin must be positive, got {v_margin}")
+
+    positions = [first_row_offset + i * row_spacing for i in range(num_rows)]
+
+    lo, hi = v_margin, v_length - v_margin
+    eps = 1e-9
+    if positions[0] < lo - eps or positions[-1] > hi + eps:
+        raise ValueError(
+            f"row grid does not fit face: rows span [{positions[0]}, {positions[-1]}], "
+            f"but usable range is [{lo}, {hi}] (v_length={v_length}, v_margin={v_margin})"
+        )
+
+    return positions
