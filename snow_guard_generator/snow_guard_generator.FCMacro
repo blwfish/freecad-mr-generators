@@ -1,0 +1,83 @@
+"""
+Parametric Snow Guard Generator for FreeCAD v1.0.0
+
+Places a staggered grid of pad-and-fin snow guards (ice/snow stops) on
+selected slate roof faces. Fully parametric: change row/spacing/pad/fin
+dimensions in the Properties panel and the guards regenerate automatically.
+
+WORKFLOW:
+1. Ctrl+click one or more slate roof faces
+2. Run this macro
+3. Adjust NumRows, GuardsPerRow, FirstRowOffset, RowSpacing, StaggerRows,
+   PadWidth/PadLength/PadThickness, FinHeight/FinBaseWidth/FinThickness
+   in the Properties panel — guards update live
+
+HO scale defaults: ~1.2mm pad, ~1.0mm fin, 2 staggered rows near the eave
+
+Requires: snow_guard_proxy.py, snow_guard_geometry.py in same directory
+          roof_geometry.py in _lib/ subdirectory or generators/_shared/
+"""
+
+import FreeCAD as App
+import FreeCADGui as Gui
+
+from snow_guard_proxy import SnowGuardProxy, SnowGuardViewProxy, VERSION
+
+GENERATOR_NAME = "snow_guard_generator"
+
+
+def main():
+    sel = Gui.Selection.getSelectionEx()
+    if not sel:
+        App.Console.PrintError(
+            "Nothing selected — Ctrl+click one or more slate roof faces.\n")
+        return
+
+    face_entries = []
+    for sel_obj in sel:
+        if not sel_obj.HasSubObjects:
+            continue
+        for sub in sel_obj.SubElementNames:
+            if sub.startswith('Face'):
+                face_entries.append((sel_obj.Object, sub))
+
+    if not face_entries:
+        App.Console.PrintError(
+            "No faces selected. Select faces (not whole objects).\n")
+        return
+
+    doc = App.ActiveDocument
+    if not doc:
+        doc = App.newDocument("SnowGuardProject")
+
+    App.Console.PrintMessage(
+        f"Snow Guard Generator v{VERSION}: {len(face_entries)} face(s) selected\n")
+
+    # Build LinkSubList grouped by object
+    link_map = {}
+    for obj, sub in face_entries:
+        link_map.setdefault(obj, []).append(sub)
+    link_sub = [(o, tuple(subs)) for o, subs in link_map.items()]
+
+    doc.openTransaction("snow_guard_generator: SnowGuards")
+    try:
+        obj = doc.addObject("Part::FeaturePython", "SnowGuards")
+        SnowGuardProxy(obj)
+        SnowGuardViewProxy(obj.ViewObject)
+        SnowGuardProxy.set_defaults(obj)
+        obj.Sources = link_sub
+        obj.ViewObject.ShapeColor = (0.25, 0.25, 0.28)
+
+        doc.recompute()
+        doc.commitTransaction()
+    except Exception:
+        doc.abortTransaction()
+        raise
+
+    App.Console.PrintMessage(
+        f"\n✓ Parametric SnowGuards created.\n"
+        f"  Edit NumRows, GuardsPerRow, etc. in the Properties panel.\n\n")
+
+
+if __name__ == '__main__':
+    main()

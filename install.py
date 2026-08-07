@@ -36,6 +36,7 @@ GENERATORS = [
     "slate_generator",
     "slate_seam_generator",
     "smart_trim_generator",
+    "snow_guard_generator",
     "standing_seam_generator",
     "station_sign_generator",
 ]
