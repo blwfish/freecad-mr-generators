@@ -240,7 +240,7 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
     return pieces[0] if len(pieces) == 1 else pieces[0].fuse(pieces[1:])
 
 
-def generate_clapboard_skin(face, clapboard_height=0.8, clapboard_thickness=0.2):
+def generate_clapboard_skin(face, clapboard_height=1.75, clapboard_thickness=0.2):
     """
     Generate clapboard siding for one face.
     Returns the clapboard skin shape (does not modify source object).
@@ -332,7 +332,7 @@ class ClapboardProxy:
     @staticmethod
     def set_defaults(obj, params=None):
         p = params or {}
-        obj.ClapboardHeight = p.get('clapboard_height', 0.8)
+        obj.ClapboardHeight = p.get('clapboard_height', 1.75)
         obj.ClapboardThickness = p.get('clapboard_thickness', 0.2)
         obj.GeneratorVersion = VERSION
 

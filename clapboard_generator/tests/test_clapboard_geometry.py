@@ -280,10 +280,10 @@ class TestHOScaleDefaults:
     """
 
     def test_ho_scale_clapboard_height(self):
-        """HO scale clapboard height ~0.8mm is reasonable"""
-        # Real clapboard ~100mm reveal, HO scale 1:87
-        # Expected: 100/87 ≈ 1.15mm
-        ho_reveal = 0.8
+        """HO scale clapboard height ~1.75mm is reasonable"""
+        # Real clapboard 6" reveal, HO scale 1:87
+        # Expected: 6" * 25.4 / 87 ≈ 1.75mm
+        ho_reveal = 1.75
         assert 0.5 < ho_reveal < 2.0
 
     def test_ho_scale_clapboard_thickness(self):
