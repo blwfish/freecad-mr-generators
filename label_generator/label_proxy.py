@@ -14,7 +14,6 @@ User-editable properties:
 
 import FreeCAD as App
 import Part
-import os
 import sys
 import math
 from pathlib import Path
@@ -26,6 +25,7 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from label_geometry import compute_font_size, build_frame_matrix
+from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
 
 VERSION = "1.0.0"
 GENERATOR_NAME = "label_generator"
@@ -41,15 +41,7 @@ _FONT_CANDIDATES = [
     "/Library/Fonts/Arial Unicode.ttf",
 ]
 
-
-def _find_default_font():
-    for path in _FONT_CANDIDATES:
-        if os.path.exists(path):
-            return path
-    return ""
-
-
-_DEFAULT_FONT = _find_default_font()
+_DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +118,14 @@ def _make_text_faces(text, font_path, size):
     Uses Part.makeWireString (the Part-module API).  Disconnected glyph parts
     (dot of 'i', 'j', etc.) are correctly handled as separate faces rather
     than incorrectly treated as holes.
+
+    *font_path* must already be resolved (see resolve_font_path()) -- this
+    function does not re-check existence, so an unresolved caller-supplied
+    path would silently pass through to Part.makeWireString here a second
+    time with no diagnostic, undoing the point of resolving it once.
     """
-    path = font_path if (font_path and os.path.exists(font_path)) else ""
     try:
-        wire_lists = Part.makeWireString(text, path, size, 0)
+        wire_lists = Part.makeWireString(text, font_path, size, 0)
     except Exception as exc:
         raise RuntimeError(f"Cannot create text wires for {text!r}: {exc}") from exc
 
@@ -209,7 +205,7 @@ class LabelProxy:
         height   = float(obj.Height)
         padding  = float(obj.Padding)
         rotation = float(obj.Rotation)   # degrees (App::PropertyAngle stores degrees)
-        font_path = str(obj.FontPath)
+        font_path = resolve_font_path(str(obj.FontPath), "LabelProxy")
         font_size = float(obj.FontSize)
         face_w    = float(obj.FaceWidth)
         face_h    = float(obj.FaceHeight)

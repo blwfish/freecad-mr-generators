@@ -19,7 +19,6 @@ This module must be importable by FreeCAD (installed alongside the macro).
 
 import FreeCAD as App
 import Part
-import os
 import sys
 from pathlib import Path
 from FreeCAD import Vector
@@ -32,10 +31,14 @@ for p in (str(_here), str(_here / '_lib')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
+
 # Default font: C&O station font alongside the macro; fall back to empty (system default)
-_DEFAULT_FONT = str(_here / "Station-font-AV-20-219.ttf")
-if not os.path.exists(_DEFAULT_FONT):
-    _DEFAULT_FONT = str(Path.home() / "Documents" / "FreeCAD-github" / "Station-font-AV-20-219.ttf")
+_FONT_CANDIDATES = [
+    str(_here / "Station-font-AV-20-219.ttf"),
+    str(Path.home() / "Documents" / "FreeCAD-github" / "Station-font-AV-20-219.ttf"),
+]
+_DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
 
 # HO-scale text height: 16" prototype → 1:87 → mm
 _TEXT_HEIGHT_HO = (16.0 / 87.0) * 25.4   # ≈ 4.67 mm
@@ -55,10 +58,12 @@ def _make_text_faces(text, font_path, height):
     Uses Part.makeWireString — the correct Part-module API.
     Part.makeShapeString was never a real Part function; it only appeared to work
     via a Draft fallback that silently created and discarded document objects.
+
+    *font_path* must already be resolved (see resolve_font_path()) -- this
+    function does not re-check existence.
     """
-    path = font_path if (font_path and os.path.exists(font_path)) else ""
     try:
-        wire_lists = Part.makeWireString(text, path, height, 0)
+        wire_lists = Part.makeWireString(text, font_path, height, 0)
     except Exception as exc:
         raise RuntimeError(f"Cannot create text wires for '{text}': {exc}") from exc
 
@@ -236,8 +241,7 @@ class StationSignProxy:
     def set_defaults(obj, params=None):
         p = params or {}
         obj.StationName       = p.get('station_name',       "Default")
-        obj.FontPath          = p.get('font_path',
-                                      _DEFAULT_FONT if os.path.exists(_DEFAULT_FONT) else "")
+        obj.FontPath          = p.get('font_path', _DEFAULT_FONT)
         obj.TextHeight        = p.get('text_height',        _TEXT_HEIGHT_HO)
         obj.MaterialThickness = p.get('material_thickness', 0.2)
         obj.BorderThickness   = p.get('border_thickness',   0.5)
@@ -248,10 +252,11 @@ class StationSignProxy:
         name = obj.StationName.strip()
         if not name:
             return
+        font_path = resolve_font_path(str(obj.FontPath), "StationSignProxy")
         try:
             shape, w, h = generate_sign_shape(
                 station_name  = name,
-                font_path     = obj.FontPath,
+                font_path     = font_path,
                 text_height   = float(obj.TextHeight),
                 mat_thick     = float(obj.MaterialThickness),
                 border_thick  = float(obj.BorderThickness),

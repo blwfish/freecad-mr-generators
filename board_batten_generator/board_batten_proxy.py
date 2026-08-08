@@ -21,6 +21,8 @@ for p in (str(_here), str(_here / '_lib')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from freecad_utils import resolve_sources_faces  # noqa: E402
+
 
 # =============================================================================
 # Geometry helpers
@@ -236,20 +238,14 @@ class BoardBattenProxy:
         bp  = float(obj.BattenProjection)
 
         skins = []
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face = link_obj.Shape.getElement(sub_name)
-                    skin = generate_board_batten_skin(face, bw, baw, bt, bp)
-                    skins.append(skin)
-                    App.Console.PrintMessage(f"  ✓ {link_obj.Label}/{sub_name}\n")
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"BoardBattenProxy: {link_obj.Label}/{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "BoardBattenProxy"):
+            try:
+                skin = generate_board_batten_skin(face, bw, baw, bt, bp)
+                skins.append(skin)
+                App.Console.PrintMessage(f"  ✓ {link_obj.Label}/{sub_name}\n")
+            except Exception as e:
+                App.Console.PrintError(
+                    f"BoardBattenProxy: {link_obj.Label}/{sub_name}: {e}\n")
 
         if not skins:
             return

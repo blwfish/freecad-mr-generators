@@ -34,6 +34,7 @@ from standing_seam_snow_guard_geometry import (
     calculate_seam_guard_positions,
 )
 from roof_geometry import get_roof_coordinate_system
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -313,16 +314,12 @@ class StandingSeamSnowGuardProxy:
             return
 
         all_guards = []
-        for link_obj, sub_names in obj.Sources:
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                face = link_obj.Shape.getElement(sub_name)
-                try:
-                    all_guards.extend(_generate_seam_guards(face, params))
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"  {link_obj.Label}.{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "StandingSeamSnowGuardGenerator"):
+            try:
+                all_guards.extend(_generate_seam_guards(face, params))
+            except Exception as e:
+                App.Console.PrintError(
+                    f"  {link_obj.Label}.{sub_name}: {e}\n")
 
         if not all_guards:
             App.Console.PrintWarning(

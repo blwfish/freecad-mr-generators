@@ -27,6 +27,7 @@ from standing_seam_geometry import (
     generate_panel_profile,
     get_roof_coordinate_system,
 )
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -243,16 +244,12 @@ class StandingSeamProxy:
             return
 
         all_panels = []
-        for link_obj, sub_names in obj.Sources:
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                face = link_obj.Shape.getElement(sub_name)
-                try:
-                    all_panels.extend(_generate_panels_for_face(face, params))
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"  {link_obj.Label}.{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "StandingSeamGenerator"):
+            try:
+                all_panels.extend(_generate_panels_for_face(face, params))
+            except Exception as e:
+                App.Console.PrintError(
+                    f"  {link_obj.Label}.{sub_name}: {e}\n")
 
         if not all_panels:
             App.Console.PrintWarning(

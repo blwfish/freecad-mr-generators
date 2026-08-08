@@ -5,9 +5,20 @@ Installed to: Macro/_lib/freecad_utils.py
 Imported by:  brick_generator_macro, radial_brick_generator_macro,
               clapboard_generator, board_batten_generator, bead_board_generator,
               shingle_generator, smart_trim_generator, station_sign_generator,
-              roof_seam_generator, slate_seam_generator
+              roof_seam_generator, slate_seam_generator, slate_generator,
+              snow_guard_generator, standing_seam_generator,
+              standing_seam_snow_guard_generator, label_generator
 
-Version: 1.4.1
+Version: 1.5.0
+  1.5.0: Add resolve_sources_faces() -- consolidates the obj.Sources ->
+         (face, link_obj, sub_name) resolution loop that was independently
+         copy-pasted into 8 proxies (5 of which had it wrong: getElement()
+         outside try/except, or -- smart_trim_proxy.py -- no guard at all).
+         Add resolve_font_path()/find_first_existing_path() -- consolidates
+         the font-path resolution duplicated in label_proxy.py and
+         station_sign_proxy.py, which both silently collapsed "FontPath
+         empty" and "FontPath doesn't exist" into the same behavior with no
+         signal to the user which case occurred.
   1.4.1: _closest_candidate's scoring formula extracted to
          roof_geometry.score_face_match/best_matching_candidate so it's
          pytest-testable without FreeCAD; this file now just extracts
@@ -29,7 +40,7 @@ Version: 1.4.1
 
 import os
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Assertion toggle
@@ -537,6 +548,186 @@ def resolve_shared_edge(face1, obj1, face2, obj2, doc=None):
             App.Console.PrintMessage(f"  section() failed: {e}\n")
 
     return None, face1, obj1, face2, obj2
+
+
+# ---------------------------------------------------------------------------
+# Sources resolution
+# ---------------------------------------------------------------------------
+# Extracted 2026-08-08 from 8 proxies that each independently reimplemented
+# "walk an App::PropertyLinkSubList named Sources, resolve each sub-element
+# name to a Part.Face" -- the same operation, copy-pasted 8 times. Only 3
+# copies (board_batten_proxy.py, roof_seam_proxy.py, slate_seam_proxy.py)
+# guarded getElement() in a per-entry try/except; the other 5 called it
+# unguarded, so a single stale sub_name (a normal occurrence after any
+# topology change elsewhere in the document, not a rare event) raised
+# uncaught and aborted resolution of every remaining Sources entry, not just
+# the affected one. smart_trim_proxy.py additionally had no hasattr(Shape)
+# guard and no Face-type filter at all. Consolidating so there is one
+# correct implementation instead of 8 that could (and had) drifted.
+
+def resolve_sources_faces(sources, caller_name):
+    """
+    Safely resolve an App::PropertyLinkSubList `Sources` value to a list of
+    validated (face, link_obj, sub_name) triples.
+
+    Each Sources entry is (link_obj, sub_names) where sub_names is a list of
+    sub-element names (e.g. "Face3"). For each sub_name:
+      - a link_obj with no Shape attribute (e.g. deleted/orphaned) is skipped
+      - a sub_name not starting with 'Face' (an Edge/Vertex selection) is
+        skipped
+      - link_obj.Shape.getElement(sub_name) is called inside a per-entry
+        try/except -- a stale sub_name raises there and is skipped WITHOUT
+        aborting resolution of the remaining entries
+
+    Every skip is counted; if any occurred, one summary PrintWarning is
+    emitted (in addition to the existing per-failure PrintError for
+    getElement() exceptions specifically) so partial data loss during batch
+    processing stays visible instead of disappearing silently.
+
+    Parameters
+    ----------
+    sources : list of (FreeCAD document object, list of str)
+        The value of an obj.Sources PropertyLinkSubList.
+    caller_name : str
+        Prefix used in per-entry and summary messages (e.g. "SlateGenerator").
+
+    Returns
+    -------
+    list of (Part.Face, owner_obj, str)
+        Resolved (face, link_obj, sub_name) triples, in Sources order.
+
+    Preconditions:
+        - sources: must be iterable of (link_obj, sub_names) pairs
+        - caller_name: must be a non-empty str
+
+    Postconditions:
+        - returned value is a list (possibly empty, never None)
+        - every element is a 3-tuple whose first item is a Part.Face
+          (ShapeType == "Face")
+    """
+    # --- Preconditions ---
+    _assert(isinstance(caller_name, str) and caller_name.strip(),
+            f"resolve_sources_faces: caller_name must be a non-empty str, "
+            f"got {caller_name!r}")
+
+    faces = []
+    skipped = 0
+    for link_obj, sub_names in sources:
+        if not hasattr(link_obj, 'Shape'):
+            skipped += len(sub_names)
+            continue
+        for sub_name in sub_names:
+            if not sub_name.startswith('Face'):
+                skipped += 1
+                continue
+            try:
+                face = link_obj.Shape.getElement(sub_name)
+            except Exception as e:
+                skipped += 1
+                App.Console.PrintError(
+                    f"{caller_name}: {link_obj.Label}/{sub_name}: {e}\n")
+                continue
+            faces.append((face, link_obj, sub_name))
+
+    if skipped:
+        App.Console.PrintWarning(
+            f"{caller_name}: skipped {skipped} unusable Sources "
+            f"entr{'y' if skipped == 1 else 'ies'}\n")
+
+    # --- Postconditions ---
+    _assert(isinstance(faces, list),
+            f"resolve_sources_faces: expected list result, got {type(faces).__name__!r}")
+    if _ASSERTIONS_ENABLED:
+        for face, _owner, _sub_name in faces:
+            _assert(face.ShapeType == "Face",
+                    f"resolve_sources_faces: expected ShapeType='Face', "
+                    f"got {face.ShapeType!r}")
+
+    return faces
+
+
+# ---------------------------------------------------------------------------
+# Font-path resolution
+# ---------------------------------------------------------------------------
+# Extracted 2026-08-08 from label_proxy.py and station_sign_proxy.py, which
+# each independently duplicated the same "does this font path actually
+# exist?" check inline in their _make_text_faces(), and each independently
+# collapsed three distinct cases -- FontPath unset, FontPath set but the
+# file doesn't exist, FontPath valid -- into passing "" to
+# Part.makeWireString (which silently falls back to its own system default
+# font) with no signal to the user which case occurred or that their chosen
+# font wasn't actually used.
+
+def find_first_existing_path(candidates):
+    """
+    Return the first path in *candidates* that exists on disk, or "" if
+    none do.
+
+    Used to build a fallback default font (or similar) path from a list of
+    per-platform/per-project candidates. Deliberately does not interpret or
+    rank *why* a candidate is preferred -- that ordering is the caller's own
+    config, not something this helper should encode.
+
+    Parameters
+    ----------
+    candidates : sequence of str
+
+    Returns
+    -------
+    str
+        The first existing path, or "" if none exist (including if
+        *candidates* is empty).
+    """
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
+def resolve_font_path(font_path, caller_name):
+    """
+    Resolve *font_path* (an obj.FontPath property value) for
+    Part.makeWireString, distinguishing *why* no usable font was found
+    instead of silently collapsing every failure case into the same "".
+
+    Parameters
+    ----------
+    font_path : str
+        The current obj.FontPath property value (may be empty/None).
+    caller_name : str
+        Prefix for the printed warning (e.g. "LabelProxy").
+
+    Returns
+    -------
+    str
+        *font_path* unchanged if it is a non-empty, existing file;
+        otherwise "" (Part.makeWireString falls back to its own system
+        default font in that case). A PrintWarning distinguishes "FontPath
+        is not set" from "FontPath does not exist" so a user whose chosen
+        font silently isn't being used can tell why, instead of the two
+        cases being indistinguishable console output (or no output at all).
+
+    Preconditions:
+        - caller_name: must be a non-empty str
+
+    Postconditions:
+        - returned value is a str (never None)
+    """
+    # --- Preconditions ---
+    _assert(isinstance(caller_name, str) and caller_name.strip(),
+            f"resolve_font_path: caller_name must be a non-empty str, "
+            f"got {caller_name!r}")
+
+    if not font_path:
+        App.Console.PrintWarning(
+            f"{caller_name}: FontPath is not set -- using system default font\n")
+        return ""
+    if not os.path.exists(font_path):
+        App.Console.PrintWarning(
+            f"{caller_name}: FontPath {font_path!r} does not exist -- "
+            f"using system default font\n")
+        return ""
+    return font_path
 
 
 # ---------------------------------------------------------------------------

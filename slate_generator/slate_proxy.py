@@ -31,6 +31,7 @@ from slate_geometry import (
     is_top_course_complete,
     calculate_fitted_exposure,
 )
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -313,16 +314,12 @@ class SlateProxy:
             return
 
         all_tiles = []
-        for link_obj, sub_names in obj.Sources:
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                face = link_obj.Shape.getElement(sub_name)
-                try:
-                    all_tiles.extend(_generate_tiles_for_face(face, params))
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"  {link_obj.Label}.{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "SlateGenerator"):
+            try:
+                all_tiles.extend(_generate_tiles_for_face(face, params))
+            except Exception as e:
+                App.Console.PrintError(
+                    f"  {link_obj.Label}.{sub_name}: {e}\n")
 
         if not all_tiles:
             App.Console.PrintWarning("SlateGenerator: no tiles generated\n")

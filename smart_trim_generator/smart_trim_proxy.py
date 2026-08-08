@@ -21,6 +21,7 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 import trim_geometry as tg
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # =============================================================================
@@ -302,12 +303,8 @@ class SmartTrimProxy:
             return
 
         # Resolve LinkSubList → (face, parent_shape, parent_obj) tuples
-        face_entries = []
-        for link_obj, sub_names in obj.Sources:
-            parent_shape = link_obj.Shape
-            for sub_name in sub_names:
-                face = link_obj.Shape.getElement(sub_name)
-                face_entries.append((face, parent_shape, link_obj))
+        face_entries = [(face, link_obj.Shape, link_obj) for face, link_obj, _sub_name
+                         in resolve_sources_faces(obj.Sources, "SmartTrimProxy")]
 
         if not face_entries:
             return

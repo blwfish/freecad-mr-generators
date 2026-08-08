@@ -34,7 +34,7 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from freecad_utils import find_shared_edge, resolve_shared_edge  # noqa: E402
+from freecad_utils import find_shared_edge, resolve_shared_edge, resolve_sources_faces  # noqa: E402
 
 
 # =============================================================================
@@ -626,19 +626,8 @@ class RoofSeamProxy:
             return
 
         # Flatten Sources → (face, link_obj) pairs
-        face_entries = []
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face = link_obj.Shape.getElement(sub_name)
-                    face_entries.append((face, link_obj))
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"RoofSeamProxy: {link_obj.Label}/{sub_name}: {e}\n")
+        face_entries = [(face, link_obj) for face, link_obj, _sub_name
+                         in resolve_sources_faces(obj.Sources, "RoofSeamProxy")]
 
         if len(face_entries) != 2:
             App.Console.PrintError(
