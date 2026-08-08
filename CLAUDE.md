@@ -8,10 +8,56 @@ structures (bricks, clapboards, shingles, etc.).  Each generator splits cleanly:
 - `<generator>_proxy.py` — FeaturePython proxy that consumes geometry output
   and builds OCCT solids via `Part`
 - `<generator>_generator.FCMacro` — the user-facing macro
-- `tests/test_*.py` — pytest suite that exercises `*_geometry.py` only
+- `tests/test_*.py` — pytest suite that exercises `*_geometry.py` under plain
+  `python3 -m pytest`; `*_proxy.py` logic that's genuinely worth covering
+  (not every proxy needs this) can also get real FreeCAD-backed tests — see
+  "Testing FreeCAD-dependent proxy code" below.
 
 Shared utilities live in `shared/` (roof coordinate system, boundary
 assertions, FreeCAD helpers).
+
+## Testing FreeCAD-dependent proxy code
+
+Don't assume `*_proxy.py` logic is untestable just because it needs
+`FreeCAD`/`Part` — a plain `python3 -m pytest` run can't import those (no
+GUI Python has them on sys.path), but FreeCAD ships a headless console
+binary, `FreeCADCmd`, that can: real document creation, real OCCT geometry,
+no display needed. Its pixi environment already has `pytest` installed.
+Confirmed working 2026-08-08 while closing a coverage gap in
+`shared/freecad_utils.py`'s face-unwrapping logic (previously untested
+854-line `roof_seam_proxy.py` code) — see
+`shared/tests/test_freecad_utils_integration.py` for a real example (13
+tests: legacy BaseObject/ShingleSkin/naming conventions, the modern
+`Sources` convention, depth-limit cutoff, end-to-end shared-edge
+resolution) and `shared/tests/run_freecad_tests.py` for the runner.
+
+How it works: `FreeCADCmd /abs/path/to/script.py` runs the script through
+FreeCAD's own embedded Python (currently 3.11, pixi-managed at
+`FC-clone/.pixi/envs/default/`) — `import FreeCAD`/`import Part` just work,
+and since `pytest` is already in that environment, the script can simply
+call `pytest.main([...])` itself (FreeCADCmd has no `-m pytest` flag; it
+only runs a single script). Two gotchas that cost real debugging time:
+- **Use an absolute path for the script argument.** A relative path
+  silently no-ops (FreeCAD exits 0 with zero output, no error) rather than
+  failing loudly.
+- **Don't gate the runner on `if __name__ == "__main__":`.** FreeCADCmd
+  does not set `__name__` to `"__main__"` for the script it runs, so that
+  guard silently skips the entire script the same way — exit 0, no output,
+  no error. Execute top-level, unconditionally.
+
+To keep these tests from ever crashing a plain `python3 -m pytest` run
+(forcing FreeCAD's `.so` onto a mismatched system Python `import` can
+segfault rather than raise, confirmed 2026-08-08), guard the whole test
+file with `App = pytest.importorskip("FreeCAD")` at module level — this
+skips the entire file as one unit under plain pytest (no `FreeCAD` on
+sys.path → clean `ModuleNotFoundError` → skip) and runs for real under
+`FreeCADCmd`.
+
+Use this for proxy logic that's complex enough to have hidden real bugs
+(like the face-unwrapping case) — not a blanket mandate to add FreeCAD
+integration tests to every proxy file; most are simple enough that manual
+live verification (per the brick/quoin and slate-seam sessions this same
+day) remains proportionate.
 
 ## Testing rule: proxy/geometry parity
 
