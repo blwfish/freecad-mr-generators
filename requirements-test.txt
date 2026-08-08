@@ -8,3 +8,4 @@
 pytest
 pytest-cov
 numpy   # ashlar_generator/ashlar_geometry.py and its tests
+scipy   # ashlar_generator/ashlar_geometry.py (scipy.spatial.Delaunay) and ashlar_proxy.py
