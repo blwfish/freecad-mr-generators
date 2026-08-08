@@ -28,6 +28,7 @@ from bead_board_geometry import (  # noqa: E402
     calculate_bead_positions,
     calculate_gap_positions,
 )
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # =============================================================================
@@ -239,20 +240,14 @@ class BeadBoardProxy:
             return
 
         skins = []
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face = link_obj.Shape.getElement(sub_name)
-                    skin = generate_bead_board_skin(face, spacing, depth, gap)
-                    skins.append(skin)
-                    App.Console.PrintMessage(f"  ✓ {link_obj.Label}/{sub_name}\n")
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"BeadBoardProxy: {link_obj.Label}/{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "BeadBoardProxy"):
+            try:
+                skin = generate_bead_board_skin(face, spacing, depth, gap)
+                skins.append(skin)
+                App.Console.PrintMessage(f"  ✓ {link_obj.Label}/{sub_name}\n")
+            except Exception as e:
+                App.Console.PrintError(
+                    f"BeadBoardProxy: {link_obj.Label}/{sub_name}: {e}\n")
 
         if not skins:
             return

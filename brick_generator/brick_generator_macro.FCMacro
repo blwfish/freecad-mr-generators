@@ -49,6 +49,20 @@ def main():
             "Ctrl+click faces in the 3D view, then run.\n")
         return
 
+    # BrickProxy.execute() only accepts faces from a single source object
+    # (unlike some sibling generators) -- silently using only sel[0] and
+    # dropping any additional selected objects gave no indication why the
+    # rest of a multi-object selection was ignored (full-review finding
+    # freecad-mr-generators-20260808-a0b9#25). Now this is loud instead.
+    if len(sel) > 1:
+        other_labels = [s.Object.Label for s in sel[1:]]
+        App.Console.PrintWarning(
+            f"Brick Generator: {len(sel)} objects selected, but only one "
+            f"object's faces can be bricked at a time -- using "
+            f"'{sel[0].Object.Label}'; ignoring face(s) on "
+            f"{', '.join(other_labels)}. Run again separately for each "
+            f"other object.\n")
+
     sel_obj = sel[0].Object
     sub_elements = [s for s in sel[0].SubElementNames if s.startswith('Face')]
     if not sub_elements:

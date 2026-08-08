@@ -308,6 +308,55 @@ class TestFillStartParity:
                 f"course {course}: QG fill_start={fs} vs BG fill_start={bg_start}"
 
 
+class TestMirrorToRightEdgeParity:
+    """mirror_to_right_edge()'s output (the right-quoin column) must agree
+    with BrickGeometry._quoin_fill_end() (the right-quoin boundary the
+    field fill actually stops at) -- the right-side analogue of
+    TestFillStartParity above. Previously unpinned: mirror_to_right_edge
+    and _quoin_fill_end are two independent implementations of the same
+    "where does the right quoin's inner edge fall" fact, and nothing
+    enforced they agree (full-review finding
+    freecad-mr-generators-20260808-a0b9#26). right_quoin is only valid
+    with bond_type='flemish' (BrickGeometry itself enforces this), so that
+    is the only bond tested here.
+
+    Each quoin brick's true (un-nudged) inner edge, after mirroring to a
+    wall of width W, is `mir.u - topo_eps` where `topo_eps = -orig.u`
+    (generate() always anchors the un-mirrored column at u=-topo_eps).
+    _quoin_fill_end already subtracts the mortar gap beyond the quoin
+    brick itself, so the comparable quantity is
+    `(mir.u - topo_eps) - mortar`.
+    """
+
+    W = 30.0
+
+    @pytest.mark.parametrize('face_key,right_quoin_primary', [
+        ('face_a_bricks', True),
+        ('face_b_bricks', False),
+    ])
+    def test_mirrored_inner_edge_matches_fill_end(self, face_key, right_quoin_primary):
+        qg = make_qg(wall_height=10.0, bond='flemish')
+        result = qg.generate()
+        bricks = result[face_key]
+        mirrored = mirror_to_right_edge(bricks, span=self.W)
+
+        bg = BrickGeometry(
+            u_length=self.W, v_length=10.0,
+            left_quoin=True, left_quoin_primary=True,
+            right_quoin=True, right_quoin_primary=right_quoin_primary,
+            **HO, bond_type='flemish',
+        )
+        for orig, mir in zip(bricks, mirrored):
+            topo_eps = -orig.u
+            true_inner_edge = mir.u - topo_eps
+            computed_fill_end = true_inner_edge - HO['mortar']
+            bg_fill_end = bg._quoin_fill_end(mir.course)
+            assert computed_fill_end == pytest.approx(bg_fill_end, abs=1e-9), (
+                f"course {mir.course}: mirror_to_right_edge implies fill_end="
+                f"{computed_fill_end} vs BrickGeometry._quoin_fill_end="
+                f"{bg_fill_end}")
+
+
 # ---------------------------------------------------------------------------
 # Metadata
 # ---------------------------------------------------------------------------

@@ -208,6 +208,32 @@ def generate_stone_surface(
     return points_2d, z_values, simplices
 
 
+def validate_parameters(n_cols: int, n_rows: int, stone_width: float,
+                         stone_height: float, joint_width: float) -> Tuple[bool, str]:
+    """Reject dimensions that would produce degenerate/negative geometry.
+
+    n_cols/n_rows <= 0 previously reached compute_wall_dimensions()
+    unguarded -- e.g. n_cols=0 makes width = 0*stone_width +
+    (0-1)*joint_width = -joint_width, a negative wall width flowing
+    straight into Part.makeBox with only a broad `except Part.OCCError`
+    to catch it (full-review finding
+    freecad-mr-generators-20260808-a0b9#24).
+
+    Returns (True, "") if valid, else (False, reason).
+    """
+    if n_cols <= 0:
+        return False, f"NCols must be >= 1, got {n_cols}"
+    if n_rows <= 0:
+        return False, f"NRows must be >= 1, got {n_rows}"
+    if stone_width <= 0:
+        return False, f"StoneWidth must be > 0, got {stone_width}"
+    if stone_height <= 0:
+        return False, f"StoneHeight must be > 0, got {stone_height}"
+    if joint_width < 0:
+        return False, f"JointWidth must be >= 0, got {joint_width}"
+    return True, ""
+
+
 def compute_stone_positions(
     n_cols: int,
     n_rows: int,

@@ -26,6 +26,7 @@ from clapboard_geometry import (  # noqa: E402
     calculate_course_v_positions,
     validate_parameters,
 )
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # =============================================================================
@@ -353,21 +354,15 @@ class ClapboardProxy:
             return
 
         skins = []
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face = link_obj.Shape.getElement(sub_name)
-                    skin = generate_clapboard_skin(face, h, t)
-                    skins.append(skin)
-                    App.Console.PrintMessage(
-                        f"  ✓ {link_obj.Label}/{sub_name}\n")
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"ClapboardProxy: {link_obj.Label}/{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "ClapboardProxy"):
+            try:
+                skin = generate_clapboard_skin(face, h, t)
+                skins.append(skin)
+                App.Console.PrintMessage(
+                    f"  ✓ {link_obj.Label}/{sub_name}\n")
+            except Exception as e:
+                App.Console.PrintError(
+                    f"ClapboardProxy: {link_obj.Label}/{sub_name}: {e}\n")
 
         if not skins:
             return
