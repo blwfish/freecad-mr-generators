@@ -26,6 +26,7 @@ from slate_geometry import (
     validate_stagger_pattern,
     calculate_layout,
     calculate_stagger_offset,
+    calculate_course_v_position,
     get_roof_coordinate_system,
     is_valid_clip_fragment,
     is_top_course_complete,
@@ -167,16 +168,28 @@ def _generate_tiles_for_face(face, params):
 
     shapes = []
     for row in range(num_courses):
-        v = row * exposure - exposure  # one course below origin at row=0
+        raw_v = calculate_course_v_position(row, exposure)
 
         # Optional: skip this course entirely (never generate it) rather
         # than generate-then-clip-then-maybe-discard, if its head pokes
         # past the face's own top edge (ridge/hip line at V=v_length).
         # Rows increase v monotonically, so once this trips, every
         # subsequent row would too -- but check explicitly rather than
-        # break, in case that assumption ever stops holding.
-        if hide_incomplete_top and not is_top_course_complete(v, v_length):
+        # break, in case that assumption ever stops holding. Uses the raw
+        # (un-nudged) position -- the boundary-safety nudge below must not
+        # change whether a course counts as "complete".
+        if hide_incomplete_top and not is_top_course_complete(raw_v, v_length):
             continue
+
+        # calculate_fitted_exposure() (above) deliberately makes an
+        # integer number of courses divide v_length exactly, so the top
+        # complete course's head can land EXACTLY on the ridge/hip
+        # boundary -- coincident with the same boundary _clip_shape()
+        # clips against below. calculate_course_v_position() nudges that
+        # one course's placement strictly past the boundary so it always
+        # overflows, never coincides (the OCCT crash class
+        # shared/boundary_assertions.py exists to prevent).
+        v = calculate_course_v_position(row, exposure, v_length)
 
         stagger = calculate_stagger_offset(row, stagger_pat, tile_width)
         for col in range(tiles_per_course):

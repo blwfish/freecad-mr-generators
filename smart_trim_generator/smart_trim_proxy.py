@@ -21,6 +21,7 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 import trim_geometry as tg
+from smart_trim_geometry import validate_trim_parameters  # noqa: E402
 from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
@@ -116,6 +117,10 @@ def generate_trim(face_entries, params, doc=None):
 
     # Build profile
     w, h = params['trim_width'], params['trim_height']
+    valid, errors = validate_trim_parameters(w, h)
+    if not valid:
+        raise ValueError(f"Invalid trim parameters: {'; '.join(errors)}")
+
     if params.get('trim_style') == 'beveled':
         profile = tg.create_beveled_profile(w, h, params.get('bevel_size', 0.5))
     else:
@@ -131,42 +136,49 @@ def generate_trim(face_entries, params, doc=None):
         outward_hint = None
         trim_offset = None
 
-        if parent_shape is not None:
-            original_face = face
-            face = _resolve_outward_face(face, parent_shape, doc=doc)
-
-            # Outward hint from document centroid
-            if doc is not None:
-                ref_center = _get_document_centroid(doc)
-                hint_vec = face.CenterOfMass - ref_center
-                if hint_vec.Length > 1e-6:
-                    outward_hint = hint_vec
-
-            # Wall offset for reversed faces
-            if (face is not original_face
-                    and face.CenterOfMass.distanceToPoint(
-                        original_face.CenterOfMass) < 0.01):
-                uv = face.Surface.parameter(face.CenterOfMass)
-                outward_normal = face.normalAt(uv[0], uv[1])
-                corners = _bbox_corners(parent_shape.BoundBox)
-                face_pos = face.CenterOfMass
-                max_proj = max(
-                    (c - face_pos).dot(outward_normal) for c in corners)
-                if max_proj > 0.01:
-                    trim_offset = outward_normal * max_proj
-
-        # Fix reversed faces (all-internal-270° heuristic)
-        analysis = tg.analyze_face_for_trim(face)
-        if (analysis['num_internal'] == analysis['num_corners']
-                and analysis['num_corners'] > 0):
-            avg_angle = (sum(c.angle for c in analysis['all_corners'])
-                         / len(analysis['all_corners']))
-            if 260 < avg_angle < 280:
-                face = face.reversed()
-                analysis = tg.analyze_face_for_trim(face)
-
-        # Generate trim segments
+        # Everything for this face lives in one try/except: previously
+        # _resolve_outward_face()/analyze_face_for_trim() below ran
+        # outside it, so an exception there (e.g. a non-planar or
+        # degenerate face breaking Surface.parameter/detect_corners)
+        # propagated out of the whole loop and aborted trim generation
+        # for every selected face, not just the offending one (full-review
+        # finding #25, 2026-08-08).
         try:
+            if parent_shape is not None:
+                original_face = face
+                face = _resolve_outward_face(face, parent_shape, doc=doc)
+
+                # Outward hint from document centroid
+                if doc is not None:
+                    ref_center = _get_document_centroid(doc)
+                    hint_vec = face.CenterOfMass - ref_center
+                    if hint_vec.Length > 1e-6:
+                        outward_hint = hint_vec
+
+                # Wall offset for reversed faces
+                if (face is not original_face
+                        and face.CenterOfMass.distanceToPoint(
+                            original_face.CenterOfMass) < 0.01):
+                    uv = face.Surface.parameter(face.CenterOfMass)
+                    outward_normal = face.normalAt(uv[0], uv[1])
+                    corners = _bbox_corners(parent_shape.BoundBox)
+                    face_pos = face.CenterOfMass
+                    max_proj = max(
+                        (c - face_pos).dot(outward_normal) for c in corners)
+                    if max_proj > 0.01:
+                        trim_offset = outward_normal * max_proj
+
+            # Fix reversed faces (all-internal-270° heuristic)
+            analysis = tg.analyze_face_for_trim(face)
+            if (analysis['num_internal'] == analysis['num_corners']
+                    and analysis['num_corners'] > 0):
+                avg_angle = (sum(c.angle for c in analysis['all_corners'])
+                             / len(analysis['all_corners']))
+                if 260 < avg_angle < 280:
+                    face = face.reversed()
+                    analysis = tg.analyze_face_for_trim(face)
+
+            # Generate trim segments
             pieces = tg.generate_trim_for_face(
                 face, profile,
                 outward_hint=outward_hint,
@@ -177,8 +189,18 @@ def generate_trim(face_entries, params, doc=None):
 
             # Filter to a single edge if requested (1-based index)
             only = params.get('only_edge', 0)
-            if only > 0 and only <= len(pieces):
-                pieces = [pieces[only - 1]]
+            if only > 0:
+                if only <= len(pieces):
+                    pieces = [pieces[only - 1]]
+                else:
+                    # Previously silently left `pieces` unfiltered (showing
+                    # every edge) instead of erroring or warning when
+                    # OnlyEdge pointed past the actual piece count -- e.g.
+                    # because skip_bottom/perimeter_only filtering produced
+                    # fewer pieces than expected (finding #37, 2026-08-08).
+                    App.Console.PrintWarning(
+                        f"  Face {i}: OnlyEdge={only} but only {len(pieces)} "
+                        f"trim piece(s) available -- showing all edges\n")
 
             if trim_offset is not None:
                 pieces = [p.translated(trim_offset) for p in pieces]

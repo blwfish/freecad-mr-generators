@@ -43,6 +43,7 @@ __all__ = [
     # Slate-specific
     'validate_parameters', 'validate_stagger_pattern',
     'calculate_stagger_offset', 'calculate_layout',
+    'calculate_course_v_position',
     'is_valid_clip_fragment', 'is_top_course_complete',
     'calculate_fitted_exposure',
 ]
@@ -94,6 +95,55 @@ def calculate_stagger_offset(row: int, pattern: str,
     elif pattern == 'third':
         return (row % 3) * (tile_width / 3.0)
     return 0.0
+
+
+def calculate_course_v_position(row: int, exposure: float,
+                                face_v_length: float = None,
+                                topo_eps: float = None) -> float:
+    """
+    Return the placement V-coordinate (course head, up-slope edge) for
+    *row*, one course below origin at row=0 -- extracted from
+    slate_proxy._generate_tiles_for_face's inline formula so the pipeline
+    that actually produces tile geometry is pytest-testable, per this
+    repo's established pattern (see clapboard_geometry.
+    calculate_course_v_positions, whose docstring this mirrors).
+
+    When *face_v_length* is given, the returned head position is nudged
+    strictly away from EITHER face boundary if it would otherwise land
+    within *topo_eps* of one:
+
+    - V=face_v_length (the ridge/hip line): when *exposure* is the output
+      of calculate_fitted_exposure(), an integer number of courses
+      divides face_v_length exactly, so the top complete course's head
+      lands EXACTLY there.
+    - V=0 (the eave): row=1's head lands at EXACTLY V=0 for *any*
+      exposure value, not just a fitted one -- an unconditional property
+      of this row-indexing formula (v = (row-1)*exposure), not specific
+      to calculate_fitted_exposure().
+
+    _build_clip_volumes() extrudes the *whole* face, so its side faces
+    trace every edge of the face -- both boundaries are equally at risk
+    of the OCCT coincident-face crash class shared/boundary_assertions.py
+    exists to prevent (see CLAUDE.md), not just the ridge/hip line.
+
+    Pass face_v_length=None (the default) to get the raw, un-nudged head
+    position -- needed by is_top_course_complete()'s own "at or below
+    face_v_length" test, which must see the true geometric position, not
+    a boundary-safety nudge.
+
+    topo_eps defaults to 0.1% of exposure, this repo's established
+    fraction-of-relevant-dimension convention (see board_batten_geometry.
+    TOPO_EPS, clapboard_geometry.calculate_course_v_positions).
+    """
+    v = row * exposure - exposure
+    if face_v_length is not None:
+        if topo_eps is None:
+            topo_eps = abs(exposure) * 0.001
+        if abs(v - face_v_length) < topo_eps:
+            v += topo_eps  # push strictly past the ridge/hip boundary
+        elif abs(v) < topo_eps:
+            v -= topo_eps  # push strictly past (below) the eave boundary
+    return v
 
 
 def calculate_layout(face_width: float, face_height: float,

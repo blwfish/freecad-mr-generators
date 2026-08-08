@@ -16,6 +16,75 @@ from standing_seam_snow_guard_geometry import (
     calculate_seam_guard_positions,
 )
 from boundary_assertions import assert_no_boundary_coincidence
+from standing_seam_geometry import calculate_panel_layout, generate_panel_profile
+
+
+# ---------------------------------------------------------------------------
+# Cross-module coupling (full-review finding #14, 2026-08-08)
+# ---------------------------------------------------------------------------
+# calculate_rib_u_positions() independently re-derives seam-rib centerlines
+# from an ASSUMED panel/seam layout ("real panels start flush with u=0,
+# seam at u = k*panel_width - seam_width/2") rather than consuming
+# standing_seam_geometry's actual layout functions -- by design, per that
+# function's own docstring (calculate_panel_layout answers a different
+# question: how many over-generated panels to build before clipping, not
+# where the real seams end up). Nothing coupled the two before this test;
+# a future change to either module's panel/seam placement formula would
+# silently desync guard placement from the real ribs with nothing to catch
+# it. This derives the REAL seam-rib centerline the same way
+# standing_seam_proxy._generate_panels_for_face actually places panels
+# (u_start = start_u + i*panel_width, seam at local u in
+# [panel_width-seam_width, panel_width] per generate_panel_profile) and
+# cross-checks it against calculate_rib_u_positions()'s independent
+# formula.
+
+def _real_seam_centers(u_length, panel_width, seam_width, seam_height=0.35,
+                        panel_thickness=0.15):
+    """Derive real seam-rib centerlines the way standing_seam_proxy.py
+    actually places panels -- ground truth for the coupling test below."""
+    layout = calculate_panel_layout(u_length, panel_width)
+    profile_pts = generate_panel_profile(
+        panel_width, seam_height, seam_width, panel_thickness)
+    # generate_panel_profile's seam spans local u in [flat_width, panel_width]
+    # (p3=(fw,sh) to p2=(pw,sh)) -- read directly from the profile rather
+    # than re-deriving flat_width, so this ground truth doesn't itself
+    # silently drift from generate_panel_profile's actual point order.
+    seam_u_local = [u for u, z in profile_pts if z == seam_height]
+    seam_lo, seam_hi = min(seam_u_local), max(seam_u_local)
+
+    centers = []
+    for i in range(layout['num_panels']):
+        u_start = layout['start_u'] + i * panel_width
+        centers.append(u_start + (seam_lo + seam_hi) / 2.0)
+    return centers
+
+
+class TestRibPositionMatchesRealPanelSeams:
+    """Pins that calculate_rib_u_positions()'s independently-derived
+    formula agrees with the real panel/seam layout standing_seam_proxy.py
+    actually produces, for every real seam rib (excluding the over-
+    generation padding panels calculate_rib_u_positions never returns
+    positions for, since those fall outside edge_margin by construction)."""
+
+    @pytest.mark.parametrize("u_length,panel_width,seam_width", [
+        (10.0, 3.0, 0.4),    # non-exact division
+        (12.0, 3.0, 0.4),    # exact division
+        (10.0, 2.32, 0.11),  # real HO-scale-ish values
+        (5.0, 1.5, 0.2),     # narrow face, few panels
+    ])
+    def test_rib_centers_subset_of_real_seam_centers(
+            self, u_length, panel_width, seam_width):
+        edge_margin = 0.5
+        real_centers = _real_seam_centers(u_length, panel_width, seam_width)
+        rib_centers = calculate_rib_u_positions(
+            u_length, panel_width, seam_width, edge_margin)
+
+        assert rib_centers, "expected at least one rib position for this face"
+        for rib_c in rib_centers:
+            assert any(abs(rib_c - real_c) < 1e-9 for real_c in real_centers), (
+                f"rib center {rib_c} does not match any real panel seam "
+                f"center {real_centers} -- calculate_rib_u_positions has "
+                f"desynced from the real panel/seam layout")
 
 
 # ---------------------------------------------------------------------------

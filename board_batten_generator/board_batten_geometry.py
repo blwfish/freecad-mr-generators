@@ -177,12 +177,24 @@ def calculate_board_positions(h_min: float, h_max: float, board_width: float,
     # layout fits the wall exactly (num_boards * board_width == h_max - h_min).
     # TOPO_EPS = 0.1% of board_width keeps the visual displacement well below
     # any practical scale yet large enough for OCCT's tolerance handling.
+    #
+    # Single-board case: positions[0] and positions[-1] are the SAME list
+    # slot. Two sequential assignments would silently overwrite each other
+    # (the second discards the first's overflow), leaving only one edge
+    # overflowed and reproducing the exact coincident-face condition this
+    # nudge exists to prevent (confirmed live 2026-08-08 -- see CLAUDE.md/
+    # full-review finding #35). Apply both adjustments in one assignment
+    # when there's only one board.
     if positions:
         TOPO_EPS = board_width * 0.001
-        s0, e0 = positions[0]
-        sN, eN = positions[-1]
-        positions[0]  = (s0 - TOPO_EPS, e0)
-        positions[-1] = (sN, eN + TOPO_EPS)
+        if len(positions) == 1:
+            s0, e0 = positions[0]
+            positions[0] = (s0 - TOPO_EPS, e0 + TOPO_EPS)
+        else:
+            s0, e0 = positions[0]
+            positions[0] = (s0 - TOPO_EPS, e0)
+            sN, eN = positions[-1]
+            positions[-1] = (sN, eN + TOPO_EPS)
 
     return positions
 

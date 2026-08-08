@@ -24,6 +24,19 @@ Shared face-orientation and hip/valley analysis imported from roof_geometry.py.
 import math
 from typing import Dict, List, Tuple
 
+# Default panel/seam dimensions (mm). Single source of truth for
+# standing_seam_proxy.py's own set_defaults() AND
+# standing_seam_snow_guard_generator/standing_seam_snow_guard_proxy.py's
+# defaults, which must visually match these -- standing_seam_snow_guard_
+# geometry.py independently re-derives rib centerlines from an assumed
+# panel/seam layout rather than reading the real one, so a snow guard's
+# ribs only land on the real seams if both proxies' defaults agree.
+# Previously these were copy-pasted literals in both proxy files with no
+# shared source of truth (full-review finding #13, 2026-08-08).
+DEFAULT_PANEL_WIDTH = 3.0
+DEFAULT_SEAM_WIDTH = 0.4
+DEFAULT_SEAM_HEIGHT = 0.35
+
 from roof_geometry import (
     is_planar,
     calculate_face_bounds,
@@ -35,6 +48,7 @@ from roof_geometry import (
     classify_roof_intersection,
     calculate_dihedral_angle,
     analyze_roof_intersection,
+    is_valid_clip_fragment,
 )
 
 __all__ = [
@@ -44,9 +58,11 @@ __all__ = [
     'calculate_across_roof_direction', 'get_roof_coordinate_system',
     'find_coincident_edges', 'classify_roof_intersection',
     'calculate_dihedral_angle', 'analyze_roof_intersection',
+    'is_valid_clip_fragment',
     # Standing-seam specific
     'validate_parameters', 'calculate_panel_layout',
     'generate_panel_profile',
+    'DEFAULT_PANEL_WIDTH', 'DEFAULT_SEAM_WIDTH', 'DEFAULT_SEAM_HEIGHT',
 ]
 
 

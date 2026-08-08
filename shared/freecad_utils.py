@@ -481,15 +481,15 @@ def resolve_base_face(face, obj, doc=None, _depth=0):
     candidates = []
     if 'Sources' in obj.PropertiesList:
         sources = obj.getPropertyByName('Sources') or []
-        for link_obj, sub_names in sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                idx = int(sub_name[4:]) - 1
-                if 0 <= idx < len(link_obj.Shape.Faces):
-                    candidates.append((link_obj.Shape.Faces[idx], link_obj))
+        # Delegates to resolve_sources_faces() -- this used to be a second,
+        # independently-coded implementation (int(sub_name[4:]) index
+        # arithmetic) of the same "Sources sub_name -> Face" operation
+        # every proxy's getElement(sub_name) idiom already handles, added
+        # by the very commit whose stated goal was consolidating this
+        # logic to one place (see the module-level "Roof-seam face
+        # resolution" changelog entry above). Single source of truth now.
+        candidates = [(face, link_obj) for face, link_obj, _sub_name
+                      in resolve_sources_faces(sources, 'resolve_base_face')]
 
     if candidates:
         best_face, best_owner = _closest_candidate(face, candidates)

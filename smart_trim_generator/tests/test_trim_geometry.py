@@ -3,11 +3,57 @@ Tests for pure-Python logic in trim_geometry.py.
 
 Functions that require FreeCAD (create_*_profile, compute_miter_bisector,
 detect_corners, generate_trim_for_face, etc.) are not covered here — they
-need a live FreeCAD environment.
+need a live FreeCAD environment. Exception: create_beveled_profile()'s
+bevel<width/height validation (full-review finding #26, 2026-08-08) raises
+before any FreeCAD import, so that specific error path IS testable here —
+see TestCreateBeveledProfileValidation below.
 """
 
 import pytest
-from trim_geometry import Corner, CornerType, classify_corner, filter_corners_for_trim
+from trim_geometry import (
+    Corner, CornerType, classify_corner, filter_corners_for_trim,
+    create_beveled_profile,
+)
+
+
+class TestCreateBeveledProfileValidation:
+    """
+    Pins the bevel<width/height contract (full-review finding #26): without
+    it, bevel >= height makes v3=(width,bevel) land at or above
+    v4=(width,height) in the intended winding order, silently producing a
+    self-intersecting/inverted polygon instead of erroring.
+    """
+
+    def test_bevel_equal_to_height_rejected(self):
+        with pytest.raises(ValueError, match="bevel"):
+            create_beveled_profile(width=2.0, height=1.0, bevel=1.0)
+
+    def test_bevel_just_above_height_rejected(self):
+        with pytest.raises(ValueError, match="bevel"):
+            create_beveled_profile(width=2.0, height=1.0, bevel=1.0 + 1e-9)
+
+    def test_bevel_just_below_height_accepted_by_validation(self):
+        # Validation only -- doesn't reach the FreeCAD-dependent geometry
+        # construction, so a bevel that passes validation but whose
+        # ValueError isn't raised confirms the boundary is where intended.
+        try:
+            create_beveled_profile(width=2.0, height=1.0, bevel=1.0 - 1e-6)
+        except ValueError:
+            pytest.fail("bevel just below height should pass validation")
+        except Exception:
+            pass  # FreeCAD-dependent code past validation is expected to fail here
+
+    def test_bevel_equal_to_width_rejected(self):
+        with pytest.raises(ValueError, match="bevel"):
+            create_beveled_profile(width=1.0, height=2.0, bevel=1.0)
+
+    def test_zero_bevel_rejected(self):
+        with pytest.raises(ValueError, match="bevel"):
+            create_beveled_profile(width=2.0, height=2.0, bevel=0.0)
+
+    def test_negative_bevel_rejected(self):
+        with pytest.raises(ValueError, match="bevel"):
+            create_beveled_profile(width=2.0, height=2.0, bevel=-0.5)
 
 
 def _make_corner(angle: float, corner_type: CornerType) -> Corner:

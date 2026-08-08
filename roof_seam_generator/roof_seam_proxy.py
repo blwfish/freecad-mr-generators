@@ -90,6 +90,16 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     half_width  = cap_width / 2.0
     taper       = angle_depth * mat_thick
 
+    if exposure <= 0:
+        # The cap-placement loop below advances by `t += exposure` each
+        # iteration; exposure<=0 makes t never reach edge_len, hanging
+        # FreeCAD's GUI thread at 100% CPU forever (confirmed live,
+        # 2026-08-08 -- see CLAUDE.md/full-review finding #02). Raising
+        # here is caught by execute()'s existing try/except, matching
+        # this repo's established validation pattern.
+        raise ValueError(
+            f"shingleExposure must be positive to generate hip caps, got {exposure}")
+
     # Edge geometry — orient eave (low Z) → apex (high Z)
     v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
     start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
@@ -343,6 +353,12 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
     mat_thick  = params.get('materialThickness', 0.3)
     exposure   = params.get('shingleExposure', cap_height)  # spacing along edge
 
+    if exposure <= 0:
+        # Same non-advancing-loop hang risk as generate_hip_caps -- see
+        # the comment there (CLAUDE.md/full-review finding #03).
+        raise ValueError(
+            f"shingleExposure must be positive to generate slate hip caps, got {exposure}")
+
     v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
     start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
     edge_vec = end_pt - start_pt
@@ -583,7 +599,10 @@ class RoofSeamProxy:
         if not hasattr(obj, 'HipCapWidth'):
             obj.addProperty(
                 "App::PropertyLength", "HipCapWidth", grp,
-                "Total cap width across seam (0 = auto = shingleWidth × 2)")
+                "Total cap width across seam (0 = auto: a fixed per-style "
+                "default x2 -- 7.0mm shingle, 4.0mm slate, 6.0mm metal -- "
+                "NOT derived from the adjacent roof faces' actual material "
+                "width)")
         if not hasattr(obj, 'AngleDepth'):
             obj.addProperty(
                 "App::PropertyFloat", "AngleDepth", grp,
@@ -650,7 +669,14 @@ class RoofSeamProxy:
         }
         if cap_width > 0:
             params['hipCapWidth'] = cap_width
-        # else: generate_hip_caps uses shingleWidth * 2 default
+        # else: 0 = auto -- generate_hip_caps/generate_slate_hip_caps/
+        # generate_metal_hip_strip each fall back to their own fixed
+        # per-style literal default x2 (7.0/4.0/6.0mm). This proxy never
+        # populates a 'shingleWidth'/'tileWidth'/'panelWidth' params key
+        # from the adjacent roof faces' actual material, so despite the
+        # naming, "auto" does NOT scale to real shingle/tile/panel width
+        # (full-review finding #12, 2026-08-08 -- see HipCapWidth's own
+        # tooltip, corrected to match this actual behavior).
         if flash_w > 0:
             params['valleyFlashingWidth'] = flash_w
 

@@ -35,6 +35,17 @@ from standing_seam_snow_guard_geometry import (
 )
 from roof_geometry import get_roof_coordinate_system
 from freecad_utils import resolve_sources_faces  # noqa: E402
+# Panel/seam defaults MUST match standing_seam_proxy.py's -- this module's
+# rib centerlines are independently re-derived from an assumed panel/seam
+# layout rather than reading the real one (see standing_seam_snow_guard_
+# geometry.calculate_rib_u_positions), so a snow guard only lands on the
+# real seam ribs if both proxies agree. Previously copy-pasted literals
+# with no shared source of truth (full-review finding #13, 2026-08-08).
+from standing_seam_geometry import (
+    DEFAULT_PANEL_WIDTH,
+    DEFAULT_SEAM_WIDTH,
+    DEFAULT_SEAM_HEIGHT,
+)  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +274,12 @@ class StandingSeamSnowGuardProxy:
     @staticmethod
     def set_defaults(obj, params=None):
         p = params or {}
-        # PanelWidth/SeamWidth/SeamHeight default to standing_seam_generator's
-        # own defaults, so a guard lands on a real rib out of the box.
-        obj.PanelWidth       = p.get('panel_width',        3.0)
-        obj.SeamWidth        = p.get('seam_width',         0.4)
-        obj.SeamHeight       = p.get('seam_height',        0.35)
+        # PanelWidth/SeamWidth/SeamHeight import standing_seam_geometry's
+        # DEFAULT_* constants (not a local copy) so a guard lands on a real
+        # rib out of the box and stays that way if those defaults change.
+        obj.PanelWidth       = p.get('panel_width',        DEFAULT_PANEL_WIDTH)
+        obj.SeamWidth        = p.get('seam_width',         DEFAULT_SEAM_WIDTH)
+        obj.SeamHeight       = p.get('seam_height',        DEFAULT_SEAM_HEIGHT)
         obj.SeamStride       = p.get('seam_stride',        3)
         obj.NumRows          = p.get('num_rows',           2)
         obj.FirstRowOffset   = p.get('first_row_offset',   3.0)

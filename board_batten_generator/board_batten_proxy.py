@@ -9,7 +9,6 @@ This module must be importable by FreeCAD (installed alongside the macro).
 
 import FreeCAD as App
 import Part
-import math
 import sys
 from pathlib import Path
 
@@ -22,6 +21,11 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from freecad_utils import resolve_sources_faces  # noqa: E402
+from board_batten_geometry import (
+    validate_parameters,
+    calculate_board_positions,
+    calculate_batten_positions,
+)  # noqa: E402
 
 
 # =============================================================================
@@ -95,6 +99,11 @@ def _make_rect_solid(h_start, h_end, v_min, v_max, thickness, offset_dir,
 def generate_board_batten_skin(face, board_width=7.0, batten_width=0.6,
                                board_thickness=0.2, batten_projection=0.12):
     """Generate board-and-batten siding for one face. Returns additive skin shape."""
+    valid, errors = validate_parameters(
+        board_width, batten_width, board_thickness, batten_projection)
+    if not valid:
+        raise ValueError(f"Invalid board-and-batten parameters: {'; '.join(errors)}")
+
     outer_wire, hole_wires = _face_wires(face)
     bbox = face.BoundBox
     vert_axis, horiz_axis, _ = _detect_orientation(bbox)
@@ -115,23 +124,23 @@ def generate_board_batten_skin(face, board_width=7.0, batten_width=0.6,
         v_min = bbox.YMin - 0.1
         v_max = bbox.YMax + 0.1
 
-    num_boards = int(math.ceil((h_max - h_min) / board_width))
-
-    # TOPO_EPS: outermost boards overflow the wall edges by 0.1% of board_width.
-    # Required to avoid an OCCT common() segfault when num_boards*board_width
-    # happens to land exactly on the face_slab boundary.  See
-    # shared/boundary_assertions.py for the invariant this enforces.
-    TOPO_EPS = board_width * 0.001
+    # Delegates to board_batten_geometry so this proxy and the
+    # pytest-verified math can never diverge (previously an inlined,
+    # independently-drifting copy -- see CLAUDE.md's "Testing rule:
+    # proxy/geometry parity" and full-review finding #07). This also
+    # fixes finding #35's single-board TOPO_EPS overwrite bug (previously
+    # dead code in the geometry module, now live). center_align=False
+    # preserves this proxy's existing shipped visual behavior
+    # (left-aligned boards) rather than silently switching to the
+    # geometry module's own center_align=True default, which would be a
+    # visible change for existing models.
+    board_positions = calculate_board_positions(
+        h_min, h_max, board_width, center_align=False)
+    batten_centers = calculate_batten_positions(board_positions)
 
     # Boards
     boards = []
-    for i in range(num_boards):
-        h_s = h_min + i * board_width
-        h_e = h_s + board_width
-        if i == 0:
-            h_s -= TOPO_EPS
-        if i == num_boards - 1:
-            h_e += TOPO_EPS
+    for i, (h_s, h_e) in enumerate(board_positions):
         try:
             boards.append(_make_rect_solid(h_s, h_e, v_min, v_max,
                                            board_thickness, None,
@@ -144,8 +153,7 @@ def generate_board_batten_skin(face, board_width=7.0, batten_width=0.6,
 
     # Battens at seams
     battens = []
-    for i in range(num_boards - 1):
-        h_seam = h_min + (i + 1) * board_width
+    for i, h_seam in enumerate(batten_centers):
         h_s = h_seam - batten_width / 2
         h_e = h_seam + batten_width / 2
         try:

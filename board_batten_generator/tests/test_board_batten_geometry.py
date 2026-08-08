@@ -3,6 +3,19 @@ Tests for board_batten_geometry.py
 
 These tests verify the pure-Python geometry functions work correctly
 without requiring FreeCAD to be installed.
+
+No TestBoardBattenProxyParity class here (contrast with e.g.
+shingle_generator/tests/test_shingle_geometry.py::TestShinglePositionProxyParity,
+this repo's model for the parity-test rule in CLAUDE.md): as of 2026-08-08
+(full-review finding #07), board_batten_proxy.generate_board_batten_skin()
+calls calculate_board_positions()/calculate_batten_positions() directly for
+every board/batten position and no longer inlines a duplicate copy of that
+arithmetic. There is exactly one source of truth for board/batten
+placement, so no parity test is required. (Previously the proxy DID inline
+a divergent copy -- always left-aligned, never calling this module at
+all -- which is exactly the anti-pattern that rule exists to catch; fixed
+by switching the proxy to call these functions with center_align=False,
+preserving its existing shipped visual behavior.)
 """
 
 import pytest
@@ -81,6 +94,46 @@ class TestValidateParameters:
         )
         assert is_valid is False
         assert any("batten_projection" in e for e in errors)
+
+    def test_zero_board_width_exact_boundary_rejected(self):
+        """board_width == 0.0 exactly (the <= 0 threshold value itself)."""
+        is_valid, errors = validate_parameters(
+            board_width=0.0, batten_width=0.6,
+            board_thickness=0.2, batten_projection=0.12)
+        assert is_valid is False
+        assert any("board_width" in e for e in errors)
+
+    def test_board_width_just_above_zero_accepted(self):
+        """board_width just above the <= 0 threshold should pass."""
+        is_valid, errors = validate_parameters(
+            board_width=1e-6, batten_width=1e-7,
+            board_thickness=0.2, batten_projection=0.12)
+        assert is_valid is True
+
+    def test_batten_width_equal_to_board_width_accepted(self):
+        """batten_width == board_width exactly -- the check is strict '>',
+        so equal widths must be accepted, not rejected."""
+        is_valid, errors = validate_parameters(
+            board_width=7.0, batten_width=7.0,
+            board_thickness=0.2, batten_projection=0.12)
+        assert is_valid is True
+        assert errors == []
+
+    def test_batten_width_just_above_board_width_rejected(self):
+        """batten_width infinitesimally larger than board_width should fail."""
+        is_valid, errors = validate_parameters(
+            board_width=7.0, batten_width=7.0 + 1e-9,
+            board_thickness=0.2, batten_projection=0.12)
+        assert is_valid is False
+
+    def test_batten_projection_equal_to_board_thickness_accepted(self):
+        """batten_projection == board_thickness exactly -- the check is
+        strict '>', so an exact match must be accepted, not rejected."""
+        is_valid, errors = validate_parameters(
+            board_width=7.0, batten_width=0.6,
+            board_thickness=0.2, batten_projection=0.2)
+        assert is_valid is True
+        assert errors == []
 
 
 class TestCalculateBoardCount:
@@ -323,6 +376,7 @@ class TestBoundaryOverflow:
         (0.0,  100.0, 5.0),
         (-10.0, 10.0, 4.0),   # negative h_min, exact fit
         (0.0,   8.0,  2.0),   # narrow wall, 4 boards exactly fit
+        (0.0,   5.0, 10.0),   # single-board minimum: board_width > wall_width
     ])
     def test_boards_overflow_wall_edges(self, h_min, h_max, board_width):
         positions = calculate_board_positions(
@@ -333,3 +387,79 @@ class TestBoundaryOverflow:
             get_extent=lambda p: p,  # positions are already (start, end) tuples
             label=f"board_width={board_width} wall=[{h_min},{h_max}]: ",
         )
+
+
+class TestSingleBoardOverflow:
+    """
+    Full-review finding #35 (2026-08-08): when there's exactly one board,
+    positions[0] and positions[-1] are the SAME list slot -- two sequential
+    TOPO_EPS assignments silently overwrote each other, leaving only the
+    end nudged and reproducing the exact coincident-face condition TOPO_EPS
+    exists to prevent. This is the CLAUDE.md-mandated single-unit-minimum
+    edge case that the original TestBoundaryOverflow parametrize list
+    didn't cover (now added above too).
+    """
+
+    @pytest.mark.parametrize('center_align', [True, False])
+    def test_single_board_overflows_both_edges(self, center_align):
+        positions = calculate_board_positions(
+            h_min=0.0, h_max=5.0, board_width=10.0, center_align=center_align)
+        assert len(positions) == 1
+        s, e = positions[0]
+        assert s < 0.0, f"start={s} does not overflow h_min=0.0 (the overwrite bug)"
+        assert e > 5.0, f"end={e} does not overflow h_max=5.0"
+
+
+class TestBoundaryFilterUnreachability:
+    """
+    Full-review finding #19 (mutation-testing pass, 2026-08-08): flipping
+    `board_end > h_min and board_start < h_max` to `>=`/`<=` still passes
+    the full test suite -- no existing test exercises a board landing
+    exactly on h_min/h_max.
+
+    Investigated further: this is NOT a reachable live bug. The center-
+    align offset is bounded to [0, board_width) by construction
+    (num_boards = ceil(wall_width/board_width) means the "slack"
+    num_boards*board_width - wall_width, and therefore offset = slack/2,
+    can never make a board's edge land exactly on a wall boundary --
+    algebraically this would require wall_width == (num_boards-2)*
+    board_width, which is inconsistent with num_boards itself being
+    ceil(wall_width/board_width)). Left-align's board 0 always starts
+    exactly at h_min (board_end > h_min is trivially true for board_width
+    > 0), and ceil()'s own definition guarantees the last board's start is
+    always strictly before h_max. No (h_min, h_max, board_width,
+    center_align) combination reaches equality through the public API --
+    the mutant is unkillable without first breaking this offset invariant.
+
+    This test pins the invariant itself (the thing that actually makes the
+    filter safe), so a future refactor of the offset/count math that
+    reintroduces a reachable exact-boundary case gets caught here instead
+    of silently reopening finding #19.
+    """
+
+    @pytest.mark.parametrize('h_min,h_max,board_width,center_align', [
+        (0.0, 50.0, 2.0, True), (0.0, 50.0, 2.0, False),
+        (0.0, 50.0, 1.5, True), (0.0, 50.0, 1.5, False),
+        (-10.0, 10.0, 4.0, True), (-10.0, 10.0, 4.0, False),
+        (0.0, 1.0, 7.0, True),    # single board, board_width > wall_width
+        (0.0, 1.0, 7.0, False),
+        (0.0, 0.001, 0.5, True),  # extreme narrow wall
+    ])
+    def test_natural_board_edges_never_exactly_hit_wall_boundary(
+            self, h_min, h_max, board_width, center_align):
+        wall_width = h_max - h_min
+        num_boards = calculate_board_count(wall_width, board_width)
+        if center_align:
+            offset = (num_boards * board_width - wall_width) / 2
+        else:
+            offset = 0.0
+        start_pos = h_min - offset
+        for i in range(num_boards):
+            board_start = start_pos + i * board_width
+            board_end = board_start + board_width
+            assert board_end != h_min, (
+                f"board {i} end lands exactly on h_min={h_min} -- "
+                f"the filter's > vs >= distinction would matter here")
+            assert board_start != h_max, (
+                f"board {i} start lands exactly on h_max={h_max} -- "
+                f"the filter's < vs <= distinction would matter here")

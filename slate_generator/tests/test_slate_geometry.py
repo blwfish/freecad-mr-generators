@@ -11,6 +11,7 @@ from slate_geometry import (
     validate_stagger_pattern,
     calculate_stagger_offset,
     calculate_layout,
+    calculate_course_v_position,
     is_valid_clip_fragment,
     is_top_course_complete,
     calculate_fitted_exposure,
@@ -23,6 +24,7 @@ from slate_geometry import (
     classify_roof_intersection,
     analyze_roof_intersection,
 )
+from boundary_assertions import assert_overflows_boundary, assert_no_boundary_coincidence
 
 
 # ---------------------------------------------------------------------------
@@ -193,12 +195,19 @@ class TestSharedGeometry:
 
 
 class TestBoundaryOverflowRegression:
-    """Regression guard for the slate layout's intentional overflow.
+    """Regression guard for calculate_layout()'s COURSE-COUNT overflow only.
 
     Mirrors the shingle generator's pattern: calculate_layout() adds +3 to
     both num_courses and tiles_per_course, and the macro starts placement
-    at -max_stagger.  The over-coverage is what keeps OCCT common() safe
-    against the coincident-face segfault demonstrated by Flemish bond.
+    at -max_stagger. This guarantees enough courses/tiles are generated to
+    cover the face with margin -- but does NOT by itself guarantee no
+    individual course's *geometric position* coincides with the ridge/hip
+    boundary. That's a separate concern (the fitted-exposure pipeline can
+    make an exact division happen even with plenty of course-count margin)
+    covered by TestCourseVPositionBoundarySafety below, which is the class
+    that actually exercises calculate_fitted_exposure() +
+    calculate_course_v_position() the way slate_proxy.py's real runtime
+    pipeline does.
     """
 
     @pytest.mark.parametrize('face_w,face_h,tile_w,exposure,stagger', [
@@ -227,6 +236,99 @@ class TestBoundaryOverflowRegression:
             assert layout['max_stagger'] == pytest.approx(tile_w / 3)
         else:
             assert layout['max_stagger'] == 0.0
+
+
+class TestCourseVPositionBoundarySafety:
+    """
+    Regression test for the exact-coincidence bug (full-review finding #01,
+    2026-08-08): calculate_fitted_exposure() deliberately makes an integer
+    number of courses divide face_v_length exactly (so there's no partial
+    top course), which means the top complete course's head can land
+    EXACTLY on the ridge/hip boundary -- coincident with the same boundary
+    slate_proxy._clip_shape() clips tiles against via shape.common(). That
+    crashes OCCT's BRep Boolean builder with no Python exception.
+
+    Unlike TestBoundaryOverflowRegression above (which only checks course
+    *count* with the raw nominal exposure), this class exercises the real
+    runtime pipeline: calculate_fitted_exposure() -> calculate_course_v_
+    position() -- the same two calls slate_proxy.py's execute() path makes.
+    """
+
+    @pytest.mark.parametrize('v_length,nominal_exposure', [
+        (4.954624066797823, 2.2),  # real pinned value that demonstrated the bug
+        (10.0, 2.0),                # exact 5-course division
+        (6.0, 2.0),                 # exact 3-course division
+        (2.2, 2.2),                 # single-course minimum, exact division
+        (7.3, 1.5),                 # NOT an exact division (sanity control)
+    ])
+    def test_no_course_head_coincides_with_ridge_boundary(self, v_length, nominal_exposure):
+        fitted = calculate_fitted_exposure(v_length, nominal_exposure)
+        num_courses = int(math.ceil(v_length / fitted)) + 3
+        heads = [calculate_course_v_position(row, fitted, v_length)
+                 for row in range(num_courses)]
+
+        assert_no_boundary_coincidence(
+            [(h - 1e-9, h) for h in heads], 0.0, v_length,
+            get_extent=lambda extent: extent,
+            label=f"v_length={v_length}, fitted_exposure={fitted}: ")
+
+    def test_exact_division_reproduces_original_bug_scenario(self):
+        # Pinned to the exact real-world values that demonstrated the bug.
+        # N=2 courses divide v_length exactly; the course whose head lands
+        # on v_length is the one where (row-1) == N, i.e. row == N+1 == 3.
+        v_length = 4.954624066797823
+        fitted = calculate_fitted_exposure(v_length, 2.2)
+        assert 2 * fitted == pytest.approx(v_length, abs=1e-9), (
+            "this test's premise (exact division) no longer holds -- "
+            "calculate_fitted_exposure's behavior changed")
+
+        nudged = calculate_course_v_position(3, fitted, v_length)
+        assert nudged > v_length, (
+            f"course head {nudged} does not strictly overflow ridge "
+            f"boundary {v_length} -- coincident-face OCCT crash risk"
+        )
+
+    def test_raw_position_unaffected_by_nudge(self):
+        # calculate_course_v_position(row, exposure) with no face_v_length
+        # must return the exact geometric position is_top_course_complete()
+        # needs -- the boundary-safety nudge must never leak into it.
+        v_length = 4.954624066797823
+        fitted = calculate_fitted_exposure(v_length, 2.2)
+        raw = calculate_course_v_position(3, fitted)
+        assert raw == pytest.approx(v_length, abs=1e-9)
+        assert is_top_course_complete(raw, v_length)
+
+    def test_row_one_head_coincides_with_eave_without_nudge(self):
+        # row=1's head lands at EXACTLY V=0 for ANY exposure value -- an
+        # unconditional property of the row-indexing formula, not specific
+        # to calculate_fitted_exposure(). Confirms the raw (un-nudged)
+        # value really does hit the eave boundary, and the nudged value
+        # does not.
+        exposure = 1.7  # arbitrary, not a fitted value
+        raw = calculate_course_v_position(1, exposure)
+        assert raw == pytest.approx(0.0, abs=1e-9)
+
+        nudged = calculate_course_v_position(1, exposure, face_v_length=50.0)
+        assert nudged < 0.0, (
+            f"course head {nudged} does not strictly overflow the eave "
+            f"boundary (V=0) -- coincident-face OCCT crash risk"
+        )
+
+    def test_full_course_run_overflows_ridge_boundary(self):
+        # Downstream-invariant check per CLAUDE.md Rule 2: the union of all
+        # generated courses' V-extents must strictly overflow v_length, not
+        # just each individual course avoiding exact coincidence.
+        v_length = 10.0
+        fitted = calculate_fitted_exposure(v_length, 2.0)
+        tile_height = 2.5
+        num_courses = int(math.ceil(v_length / fitted)) + 3
+        extents = [
+            (calculate_course_v_position(row, fitted, v_length) - tile_height,
+             calculate_course_v_position(row, fitted, v_length))
+            for row in range(num_courses)
+        ]
+        assert_overflows_boundary(
+            extents, 0.0, v_length, get_extent=lambda e: e, direction='right')
 
 
 # ---------------------------------------------------------------------------

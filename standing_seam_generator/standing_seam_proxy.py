@@ -26,6 +26,10 @@ from standing_seam_geometry import (
     calculate_panel_layout,
     generate_panel_profile,
     get_roof_coordinate_system,
+    is_valid_clip_fragment,
+    DEFAULT_PANEL_WIDTH,
+    DEFAULT_SEAM_WIDTH,
+    DEFAULT_SEAM_HEIGHT,
 )
 from freecad_utils import resolve_sources_faces  # noqa: E402
 
@@ -97,12 +101,24 @@ def _build_clip_volumes(face):
 
 
 def _clip_shape(shape, clip_volumes):
+    """Clip *shape* against dual clip volumes. Returns clipped solid or None.
+
+    Survival is judged against the shape's own pre-clip volume (see
+    is_valid_clip_fragment) rather than a fixed absolute threshold. A fixed
+    threshold doesn't scale with panel size -- shared/roof_geometry.py's
+    own docstring documents a real production incident where it let 0.02
+    mm^3 slivers survive as stray fragments (~1% of a 1.8mm^3 tile) on a
+    hip roof. slate_proxy.py and slate_seam_proxy.py were both updated to
+    the fraction-based fix; this file previously wasn't (full-review
+    finding #10, 2026-08-08).
+    """
+    full_volume = shape.Volume
     for cv in clip_volumes:
         try:
             result = shape.common(cv)
             if result.ShapeType == 'Compound' and len(result.Solids) == 1:
                 result = result.Solids[0]
-            if result.Volume > 0.001:
+            if is_valid_clip_fragment(result.Volume, full_volume):
                 return result
         except Exception:
             continue
@@ -218,9 +234,9 @@ class StandingSeamProxy:
     @staticmethod
     def set_defaults(obj, params=None):
         p = params or {}
-        obj.PanelWidth      = p.get('panel_width',      3.0)
-        obj.SeamHeight      = p.get('seam_height',      0.35)
-        obj.SeamWidth       = p.get('seam_width',       0.4)
+        obj.PanelWidth      = p.get('panel_width',      DEFAULT_PANEL_WIDTH)
+        obj.SeamHeight      = p.get('seam_height',      DEFAULT_SEAM_HEIGHT)
+        obj.SeamWidth       = p.get('seam_width',       DEFAULT_SEAM_WIDTH)
         obj.PanelThickness  = p.get('panel_thickness',  0.15)
         obj.GeneratorVersion = VERSION
 

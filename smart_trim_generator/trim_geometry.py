@@ -288,10 +288,23 @@ def create_beveled_profile(width: float, height: float, bevel: float):
         
     Returns:
         FreeCAD Wire representing the beveled profile
+
+    Raises:
+        ValueError: if bevel is not strictly between 0 and both width and
+            height. v3=(width, bevel) must sit strictly below v4=(width,
+            height) and v2=(width-bevel, 0) strictly right of v1=(0, 0)
+            for the intended winding order; bevel >= height or bevel >=
+            width silently produces a self-intersecting/inverted polygon
+            instead (full-review finding #26, 2026-08-08).
     """
+    if not (0 < bevel < width and 0 < bevel < height):
+        raise ValueError(
+            f"bevel ({bevel}) must be strictly between 0 and both "
+            f"width ({width}) and height ({height})")
+
     import Part
     import FreeCAD as App
-    
+
     # Beveled rectangle with 45° chamfer on outer edge
     v1 = App.Vector(0, 0, 0)
     v2 = App.Vector(width - bevel, 0, 0)
@@ -482,6 +495,17 @@ def classify_edge_direction(edge, vertical_axis: str = 'z',
     """
     Classify an edge as 'vertical', 'horizontal', or 'gable'.
 
+    Extracts the edge's tangent direction and delegates the actual
+    classification to smart_trim_geometry.classify_edge(). Previously this
+    function reimplemented the same angle math independently (a folded
+    abs(tangent-component)/acos formula, mathematically equivalent to but
+    separately maintained from classify_edge()'s explicit dual-range
+    check) -- two sources of truth for one semantic distinction, with no
+    test able to pin their equivalence since this FreeCAD-dependent copy
+    can't run under plain pytest (see CLAUDE.md's Syntactic-Semantic Seam
+    Rule; full-review finding #09, 2026-08-08). Now there is exactly one
+    classification implementation.
+
     Args:
         edge:          FreeCAD Edge
         vertical_axis: axis that represents "up" ('x', 'y', or 'z')
@@ -490,27 +514,12 @@ def classify_edge_direction(edge, vertical_axis: str = 'z',
     Returns:
         'vertical', 'horizontal', or 'gable'
     """
-    import math
+    from smart_trim_geometry import classify_edge as _classify_edge_tuple
 
     tangent = edge.tangentAt(edge.FirstParameter)
     tangent.normalize()
-
-    # Component along vertical axis
-    if vertical_axis == 'z':
-        vert_component = abs(tangent.z)
-    elif vertical_axis == 'y':
-        vert_component = abs(tangent.y)
-    else:
-        vert_component = abs(tangent.x)
-
-    angle_to_vert = math.degrees(math.acos(min(1.0, vert_component)))
-
-    if angle_to_vert < tolerance_deg:
-        return 'vertical'
-    elif abs(angle_to_vert - 90.0) < tolerance_deg:
-        return 'horizontal'
-    else:
-        return 'gable'
+    return _classify_edge_tuple(
+        (tangent.x, tangent.y, tangent.z), vertical_axis, tolerance_deg)
 
 
 def _is_perimeter_edge(edge, face_bbox, vertical_axis: str = 'z',
