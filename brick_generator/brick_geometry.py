@@ -148,55 +148,6 @@ class BrickGeometry:
         quoin_w = self.stretcher_width if this_face_is_stretcher else self.header_width
         return self.u_length - quoin_w - self.mortar
 
-    def get_quoin_reservation_defs(self) -> List[BrickDef]:
-        """
-        One BrickDef per course per active quoin side, covering the
-        reserved-but-unfilled zone that left_quoin/right_quoin deliberately
-        leave blank ([0, _quoin_fill_start(course)) and/or
-        [_quoin_fill_end(course), u_length)).
-
-        These are not real bricks — brick_type is 'quoin_reserved'. They
-        exist so a consumer building a mortar-cut exclusion volume (e.g.
-        BrickProxy's mortar-grid construction) can keep this zone out of
-        the mortar cut entirely, leaving it flush at the skin-depth recess
-        plane instead of carved down to mortar depth like an ordinary gap
-        — ready for a later quoin-column engraving pass (QuoinProxy) to
-        carve its own, independent mortar joints into flush material.
-        Without this, the reserved zone would already read as "all mortar"
-        by the time QuoinProxy runs, and a boolean cut can only remove
-        material, never restore what BrickProxy's own mortar grid already
-        took away.
-
-        Only meaningful for flemish bond with left_quoin and/or right_quoin
-        active; returns [] otherwise (including for non-flemish bonds,
-        which don't support right_quoin and don't need this for left_quoin
-        either — their reserved zone is only ever adjacent to a real quoin
-        column that the caller is responsible for coordinating directly).
-        """
-        if not (self.left_quoin or self.right_quoin):
-            return []
-        m = self.mortar
-        W = self.u_length
-        TOPO_EPS = m * 0.1
-        defs = []
-        for course in range(self.num_courses):
-            v = course * self.course_spacing_v
-            if self.left_quoin:
-                boundary = self._quoin_fill_start(course)
-                defs.append(BrickDef(
-                    index=0, u=-TOPO_EPS, v=v, course=course,
-                    brick_type='quoin_reserved', width=boundary + TOPO_EPS,
-                    height=self.brick_height, depth=self.skin_depth,
-                ))
-            if self.right_quoin:
-                boundary = self._quoin_fill_end(course)
-                defs.append(BrickDef(
-                    index=0, u=boundary, v=v, course=course,
-                    brick_type='quoin_reserved', width=(W - boundary) + TOPO_EPS,
-                    height=self.brick_height, depth=self.skin_depth,
-                ))
-        return defs
-
     def _calculate_course_layout(self, wall_width: float, brick_width: float) -> Tuple[int, float]:
         """
         Calculate how many whole bricks fit in a course and the closer width needed.

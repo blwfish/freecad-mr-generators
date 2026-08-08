@@ -1,5 +1,5 @@
 """
-Quoin Geometry Generator v1.0.0
+Quoin Geometry Generator v1.1.0
 
 Generates coordinated corner-column brick definitions for two adjacent
 wall faces meeting at a 90-degree exterior corner.
@@ -19,9 +19,17 @@ Usage:
     # Pass result['face_a_bricks'] to the proxy for Face A.
     # Pass result['face_a_fill_start'] to BrickGeometry(left_quoin=True,
     #     left_quoin_primary=True) so its fill begins after the quoin column.
+    # For a right-edge quoin (dual-quoin wall), mirror the same column:
+    #     mirror_to_right_edge(result['face_a_bricks'], span=u_length)
+
+Version History:
+- 1.1.0: Add mirror_to_right_edge() — lets BrickProxy place the same
+         deterministic column at a face's right edge (RightQuoin) without
+         reimplementing the topo_eps position math.
+- 1.0.0: Initial release.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import math
 import sys
@@ -149,3 +157,30 @@ class QuoinGeometry:
                 'mortar':       self.mortar,
             },
         }
+
+
+def mirror_to_right_edge(bricks: List[BrickDef], span: float) -> List[BrickDef]:
+    """
+    Mirror a left-anchored quoin column (as returned in generate()'s
+    face_a_bricks/face_b_bricks) to sit at the right edge of a face segment
+    `span` wide instead of the left edge.
+
+    generate() always anchors each brick at u=-topo_eps, i.e. it overlaps the
+    true left face edge (u=0) by topo_eps and its inner edge falls topo_eps
+    short of the nominal quoin width — the same coincident-boundary-avoidance
+    convention BrickGeometry uses elsewhere in this codebase. Mirroring keeps
+    that convention on the opposite side: the returned bricks overlap the
+    true right edge (u=span) by the same topo_eps, with everything else
+    (width, course, brick_type, v) unchanged.
+
+    Used by BrickProxy for RightQuoin (dual-quoin walls spanning two
+    corners) — the same deterministic column, just placed at the other end.
+    """
+    mirrored = []
+    for i, bd in enumerate(bricks):
+        topo_eps = -bd.u  # generate() always sets u = -topo_eps
+        mirrored.append(bd._replace(
+            index=i,
+            u=span - bd.width + topo_eps,
+        ))
+    return mirrored

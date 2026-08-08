@@ -8,7 +8,7 @@ no overlap between quoin column and fill, OCCT invariants.
 
 import math
 import pytest
-from quoin_geometry import QuoinGeometry
+from quoin_geometry import QuoinGeometry, mirror_to_right_edge
 from brick_geometry import BrickGeometry, BrickDef
 
 # HO-scale defaults used throughout
@@ -351,3 +351,92 @@ class TestRealWorldParams:
         qg = make_qg(wall_height=cs * 0.5)  # half a course — still generates
         result = qg.generate()
         assert result['num_courses'] >= 2   # always at least the +2 overhead
+
+
+# ---------------------------------------------------------------------------
+# mirror_to_right_edge — used by BrickProxy for RightQuoin (dual-quoin walls)
+# ---------------------------------------------------------------------------
+
+class TestMirrorToRightEdge:
+    def test_empty_input(self):
+        assert mirror_to_right_edge([], span=50.0) == []
+
+    def test_preserves_non_position_fields(self):
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        mirrored = mirror_to_right_edge(bricks, span=40.0)
+        assert len(mirrored) == len(bricks)
+        for orig, m in zip(bricks, mirrored):
+            assert m.course == orig.course
+            assert m.brick_type == orig.brick_type
+            assert m.width == orig.width
+            assert m.height == orig.height
+            assert m.depth == orig.depth
+            assert m.v == orig.v
+
+    def test_reindexes_from_zero(self):
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        mirrored = mirror_to_right_edge(bricks, span=40.0)
+        assert [m.index for m in mirrored] == list(range(len(mirrored)))
+
+    def test_outward_edge_overlaps_span_by_topo_eps(self):
+        """Mirrored brick's outer edge must land exactly topo_eps past the
+        true right face edge (span) — same convention generate() uses at
+        the true left edge (u=0), just reflected."""
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        span = 40.0
+        mirrored = mirror_to_right_edge(bricks, span=span)
+        for orig, m in zip(bricks, mirrored):
+            topo_eps = -orig.u
+            outward_edge = m.u + m.width
+            assert outward_edge == pytest.approx(span + topo_eps, abs=1e-9)
+
+    def test_inward_edge_exact_arithmetic(self):
+        """Pin the exact inward-edge formula: span - width + topo_eps."""
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        span = 40.0
+        mirrored = mirror_to_right_edge(bricks, span=span)
+        for orig, m in zip(bricks, mirrored):
+            topo_eps = -orig.u
+            assert m.u == pytest.approx(span - orig.width + topo_eps, abs=1e-9)
+
+    def test_span_exactly_equal_to_brick_width(self):
+        """Boundary: span == width leaves the inward edge at exactly
+        topo_eps (brick spans almost the entire segment)."""
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        course0 = bricks[0]  # even course -> stretcher, width = brick_width
+        span = course0.width
+        mirrored = mirror_to_right_edge([course0], span=span)[0]
+        topo_eps = -course0.u
+        assert mirrored.u == pytest.approx(topo_eps, abs=1e-9)
+
+    def test_span_smaller_than_brick_width_pinned(self):
+        """Ambiguous/infeasible input (span narrower than the quoin brick
+        itself) is not validated here — feasibility is BrickGeometry's job
+        (see right_quoin ValueError). Pin that this function still just
+        does the arithmetic, producing a negative inward edge."""
+        qg = make_qg(wall_height=20.0, bond='flemish')
+        course0 = qg.generate()['face_a_bricks'][0]
+        span = course0.width / 2.0
+        mirrored = mirror_to_right_edge([course0], span=span)[0]
+        topo_eps = -course0.u
+        assert mirrored.u == pytest.approx(span - course0.width + topo_eps, abs=1e-9)
+        assert mirrored.u < 0
+
+    def test_course_parity_alternation_survives_mirror(self):
+        """Even courses are stretcher-width on face_a, odd are header-width
+        — mirroring must not disturb which width landed on which course."""
+        qg = make_qg(wall_height=30.0, bond='flemish')
+        bricks = qg.generate()['face_a_bricks']
+        mirrored = mirror_to_right_edge(bricks, span=50.0)
+        for orig, m in zip(bricks, mirrored):
+            if orig.course % 2 == 0:
+                assert m.width == pytest.approx(HO['brick_width'], abs=1e-9)
+                assert m.brick_type == 'stretcher'
+            else:
+                assert m.width == pytest.approx(HO['brick_depth'], abs=1e-9)
+                assert m.brick_type == 'header'

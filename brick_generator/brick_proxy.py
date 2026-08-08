@@ -10,6 +10,49 @@ ARCHITECTURAL CHANGE from v5.x:
   and sets obj.Shape to the result.  The source object is unchanged.
   Hide the source wall and use the parametric BrickedWall output instead.
 
+QUOIN CORNERS (LeftQuoin / RightQuoin):
+  Set LeftQuoin=True (and RightQuoin=True for a wall spanning two corners)
+  on a face BEFORE generating it — the real interlocking corner column is
+  computed via quoin_geometry.QuoinGeometry and merged directly into that
+  face's own mortar cut, in the same pass as the field fill. There is no
+  separate quoin-engraving step or object to run afterward.
+
+  Two ways to assign LeftQuoin/RightQuoin, matching two different modeling
+  habits:
+
+  1. One BrickedWall per face (LeftQuoin/LeftQuoinPrimary as plain object
+     properties). Each face at a corner is generated independently — you do
+     not need both faces selected together, and they can be generated in
+     either order or in separate sessions. The two sides interlock
+     correctly as long as BrickWidth/Height/Depth/Mortar/BondPattern match
+     on both faces (set by hand; there is no live link between the two
+     BrickedWall objects) and exactly one has LeftQuoinPrimary=True.
+
+  2. One BrickedWall covering multiple faces at once (e.g. all four walls
+     of a building selected into a single Sources list, as this project's
+     models typically do). A single LeftQuoin/LeftQuoinPrimary pair can't
+     express "this face is primary at its left corner but secondary at its
+     right corner" for more than one face — so use the four per-face
+     override properties instead: LeftQuoinPrimaryFaces,
+     LeftQuoinSecondaryFaces, RightQuoinPrimaryFaces,
+     RightQuoinSecondaryFaces. Put a Sources face into whichever override
+     list matches its role at that corner; a face absent from all four
+     falls back to the plain LeftQuoin/RightQuoin/*Primary booleans
+     unchanged (so existing documents with empty override lists are
+     unaffected).
+
+  Either way, QuoinGeometry needs no reference to the sibling face's actual
+  geometry — only wall height, brick dimensions, and which side is primary,
+  all known before the sibling face is generated.
+
+  (v6.0/v6.1 predecessor: LeftQuoin used to leave a blank flush-recessed
+  "reservation" column for a separate QuoinProxy pass to engrave later —
+  see quoin_generator/. That two-pass design is superseded: it required a
+  second full-shape OCCT boolean cut against the whole (by-then heavily
+  fragmented) BrickedWall even in the correctly-planned case. quoin_proxy.py
+  is still around only as a touch-up path for pre-existing walls that were
+  fully bricked without ever setting LeftQuoin/RightQuoin.)
+
 This module must be importable by FreeCAD (installed alongside the macro).
 """
 
@@ -19,11 +62,11 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "6.0.0"
+VERSION = "6.2.0"
 GENERATOR_NAME = "brick_generator"
 
 _here = Path(__file__).parent
-for p in (str(_here), str(_here / '_lib')):
+for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'quoin_generator')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -34,6 +77,12 @@ except ImportError:
     _bg = None
     BrickGeometry = None
     BrickDef = None
+
+try:
+    from quoin_geometry import QuoinGeometry, mirror_to_right_edge
+except ImportError:
+    QuoinGeometry = None
+    mirror_to_right_edge = None
 
 
 # =============================================================================
@@ -172,6 +221,62 @@ def _create_brick_from_def(brick_def, origin, u_vec, v_vec, normal):
     return Part.Solid(Part.Shell(faces))
 
 
+def _face_index_set(link_sub_list, link_obj):
+    """Face indices (0-based) referencing link_obj within a PropertyLinkSubList."""
+    indices = set()
+    for entry_obj, sub_names in link_sub_list:
+        if entry_obj is not link_obj:
+            continue
+        for sub_name in sub_names:
+            if sub_name.startswith('Face'):
+                indices.add(int(sub_name[4:]) - 1)
+    return indices
+
+
+def _resolve_quoin_flags(obj, link_obj):
+    """
+    Build a face_idx -> (left_quoin, left_quoin_primary, right_quoin,
+    right_quoin_primary) resolver, honoring the four per-face override
+    properties ahead of the plain object-level LeftQuoin/RightQuoin/*Primary
+    booleans. A face not present in any override list falls back to the
+    plain booleans unchanged — this keeps every pre-existing document
+    (which has empty override lists) behaving exactly as before.
+    """
+    left_primary    = _face_index_set(getattr(obj, 'LeftQuoinPrimaryFaces', []), link_obj)
+    left_secondary  = _face_index_set(getattr(obj, 'LeftQuoinSecondaryFaces', []), link_obj)
+    right_primary   = _face_index_set(getattr(obj, 'RightQuoinPrimaryFaces', []), link_obj)
+    right_secondary = _face_index_set(getattr(obj, 'RightQuoinSecondaryFaces', []), link_obj)
+
+    for side, primary_set, secondary_set in (
+        ('Left', left_primary, left_secondary),
+        ('Right', right_primary, right_secondary),
+    ):
+        both = primary_set & secondary_set
+        if both:
+            App.Console.PrintWarning(
+                f"BrickProxy: Face(s) {sorted(i + 1 for i in both)} listed in "
+                f"both {side}QuoinPrimaryFaces and {side}QuoinSecondaryFaces; "
+                f"treating as Primary.\n")
+
+    default_left_quoin     = bool(getattr(obj, 'LeftQuoin', False))
+    default_left_primary   = bool(getattr(obj, 'LeftQuoinPrimary', True))
+    default_right_quoin    = bool(getattr(obj, 'RightQuoin', False))
+    default_right_primary  = bool(getattr(obj, 'RightQuoinPrimary', True))
+
+    def resolve(face_idx):
+        if face_idx in left_primary or face_idx in left_secondary:
+            left_quoin, left_primary_flag = True, (face_idx in left_primary)
+        else:
+            left_quoin, left_primary_flag = default_left_quoin, default_left_primary
+        if face_idx in right_primary or face_idx in right_secondary:
+            right_quoin, right_primary_flag = True, (face_idx in right_primary)
+        else:
+            right_quoin, right_primary_flag = default_right_quoin, default_right_primary
+        return left_quoin, left_primary_flag, right_quoin, right_primary_flag
+
+    return resolve
+
+
 def _create_mortar_grid(face, params):
     """
     Create the mortar grid for one face: face_slab minus brick shapes.
@@ -221,12 +326,16 @@ def _create_mortar_grid(face, params):
     right_quoin_primary = bool(params.get('right_quoin_primary', True))
 
     all_bricks = []
-    # Reservation ghosts (quoin_reserved): not real bricks, never rendered —
-    # exist only to keep the left_quoin/right_quoin zone out of the mortar
-    # cut below. Without them, "no brick present" reads as "all mortar" and
-    # the reserved zone gets hollowed out to mortar_depth before QuoinProxy
-    # ever gets a chance to carve real quoin bricks into flush material.
-    reservation_defs = []
+    # Real quoin-column bricks, computed by QuoinGeometry and merged directly
+    # into the field-brick list before the single cut below — the corner
+    # column is carved in the same pass as the field fill, not reserved now
+    # and engraved later by a second QuoinProxy boolean against the whole
+    # (by-then heavily-fragmented) wall shape. QuoinGeometry is a pure
+    # function of wall height / brick dims / which side is primary, so this
+    # face's half of the corner needs no reference to the adjacent face —
+    # the two interlock as long as brick params match and exactly one side
+    # is primary.
+    quoin_defs = []
     for seg_start, seg_end in segs:
         seg_w = seg_end - seg_start
         seg_left_quoin  = left_quoin and (seg_start == segs[0][0])
@@ -248,21 +357,42 @@ def _create_mortar_grid(face, params):
                 width=bd.width, height=bd.height, depth=bd.depth,
             ))
         if seg_left_quoin or seg_right_quoin:
-            for bd in bg.get_quoin_reservation_defs():
-                reservation_defs.append(BrickDef(
-                    index=len(reservation_defs),
-                    u=bd.u + seg_start, v=bd.v,
-                    course=bd.course, brick_type=bd.brick_type,
-                    width=bd.width, height=bd.height, depth=bd.depth,
-                ))
+            if QuoinGeometry is None:
+                raise ImportError(
+                    "quoin_geometry module not found — cannot generate the "
+                    "LeftQuoin/RightQuoin corner column.")
+            qg = QuoinGeometry(
+                wall_height=v_length, brick_width=brick_width,
+                brick_height=gen_bh, brick_depth=gen_bd, mortar=mortar,
+                bond_type=bond_type, skin_depth=mortar_depth,
+            )
+            qresult = qg.generate()
+            if seg_left_quoin:
+                side = qresult['face_a_bricks'] if left_quoin_primary else qresult['face_b_bricks']
+                for bd in side:
+                    quoin_defs.append(BrickDef(
+                        index=len(quoin_defs),
+                        u=bd.u + seg_start, v=bd.v,
+                        course=bd.course, brick_type=bd.brick_type,
+                        width=bd.width, height=bd.height, depth=bd.depth,
+                    ))
+            if seg_right_quoin:
+                side = qresult['face_a_bricks'] if right_quoin_primary else qresult['face_b_bricks']
+                for bd in mirror_to_right_edge(side, span=seg_w):
+                    quoin_defs.append(BrickDef(
+                        index=len(quoin_defs),
+                        u=bd.u + seg_start, v=bd.v,
+                        course=bd.course, brick_type=bd.brick_type,
+                        width=bd.width, height=bd.height, depth=bd.depth,
+                    ))
 
     # Face slab (extruded inward by mortar_depth)
     face_slab = face.extrude(_scale(normal, -mortar_depth))
 
-    # Brick shapes — real bricks plus reservation ghosts, both excluded from
-    # the mortar cut below (see reservation_defs comment above).
+    # Brick shapes — field bricks plus real quoin-column bricks, all
+    # excluded from the mortar cut below (see quoin_defs comment above).
     brick_shapes = [_create_brick_from_def(bd, origin, u_vec, v_vec, normal)
-                    for bd in all_bricks + reservation_defs]
+                    for bd in all_bricks + quoin_defs]
     if not brick_shapes:
         return face_slab  # no bricks → full slab (all mortar)
 
@@ -395,26 +525,59 @@ class BrickProxy:
                             "Stretcher courses between header courses (common bond)")
         if not hasattr(obj, 'LeftQuoin'):
             obj.addProperty("App::PropertyBool", "LeftQuoin", grp,
-                            "A QuoinProxy column occupies the left edge (u=0); "
-                            "skip field fill there. Flemish bond only.")
+                            "Engrave a real interlocking quoin column at the "
+                            "left edge (u=0) in this same pass; field fill "
+                            "starts after it. Set independently on each of "
+                            "the two faces meeting at the corner (must share "
+                            "matching brick params + opposite Primary). "
+                            "Supported on all bond types; english/common "
+                            "bond header courses do not yet respect the "
+                            "reservation (see brick_geometry docstring).")
             obj.LeftQuoin = False
         if not hasattr(obj, 'LeftQuoinPrimary'):
             obj.addProperty("App::PropertyBool", "LeftQuoinPrimary", grp,
                             "Left quoin Face A/B designation: True = stretcher "
                             "quoin on even courses, False = header-return. "
-                            "Ignored when LeftQuoin=False.")
+                            "Exactly one of the two faces at a corner should "
+                            "be True. Ignored when LeftQuoin=False.")
             obj.LeftQuoinPrimary = True
         if not hasattr(obj, 'RightQuoin'):
             obj.addProperty("App::PropertyBool", "RightQuoin", grp,
-                            "A second QuoinProxy column occupies the right edge "
-                            "(u=u_length), for a wall spanning two quoin corners. "
-                            "Requires LeftQuoin=True and flemish bond.")
+                            "A second real quoin column at the right edge "
+                            "(u=u_length), for a wall spanning two quoin "
+                            "corners. Requires LeftQuoin=True and flemish "
+                            "bond.")
             obj.RightQuoin = False
         if not hasattr(obj, 'RightQuoinPrimary'):
             obj.addProperty("App::PropertyBool", "RightQuoinPrimary", grp,
                             "Right quoin Face A/B designation, same convention "
                             "as LeftQuoinPrimary. Ignored when RightQuoin=False.")
             obj.RightQuoinPrimary = True
+        if not hasattr(obj, 'LeftQuoinPrimaryFaces'):
+            obj.addProperty(
+                "App::PropertyLinkSubList", "LeftQuoinPrimaryFaces", grp,
+                "Per-face override for a multi-face Sources list: these "
+                "faces get a LEFT quoin (u=0) as the PRIMARY side, regardless "
+                "of LeftQuoin/LeftQuoinPrimary above. Needed when different "
+                "faces in the same BrickedWall meet different corners and "
+                "must take opposite roles. A face not listed in any of the "
+                "four *QuoinFaces override lists falls back to the plain "
+                "LeftQuoin/RightQuoin/*Primary booleans.")
+        if not hasattr(obj, 'LeftQuoinSecondaryFaces'):
+            obj.addProperty(
+                "App::PropertyLinkSubList", "LeftQuoinSecondaryFaces", grp,
+                "Per-face override: these faces get a LEFT quoin (u=0) as "
+                "the SECONDARY side. See LeftQuoinPrimaryFaces.")
+        if not hasattr(obj, 'RightQuoinPrimaryFaces'):
+            obj.addProperty(
+                "App::PropertyLinkSubList", "RightQuoinPrimaryFaces", grp,
+                "Per-face override: these faces get a RIGHT quoin "
+                "(u=u_length) as the PRIMARY side. See LeftQuoinPrimaryFaces.")
+        if not hasattr(obj, 'RightQuoinSecondaryFaces'):
+            obj.addProperty(
+                "App::PropertyLinkSubList", "RightQuoinSecondaryFaces", grp,
+                "Per-face override: these faces get a RIGHT quoin "
+                "(u=u_length) as the SECONDARY side. See LeftQuoinPrimaryFaces.")
         if not hasattr(obj, 'GeneratorVersion'):
             obj.addProperty(
                 "App::PropertyString", "GeneratorVersion", grp,
@@ -469,7 +632,8 @@ class BrickProxy:
                 "BrickProxy: all selected faces must be from the same object.\n")
             return
 
-        link_obj, face_indices = list(source_map.values())[0]
+        link_obj, orig_face_indices = list(source_map.values())[0]
+        resolve_quoin = _resolve_quoin_flags(obj, link_obj)
 
         params = {
             'brick_width':        float(obj.BrickWidth),
@@ -480,29 +644,38 @@ class BrickProxy:
             'common_bond_count':  int(obj.CommonBondCount),
             'material_thickness': float(obj.SkinDepth),
             'mortar_depth':       float(obj.MortarDepth),
-            # getattr fallback: documents saved before these properties existed
-            'left_quoin':          bool(getattr(obj, 'LeftQuoin', False)),
-            'left_quoin_primary':  bool(getattr(obj, 'LeftQuoinPrimary', True)),
-            'right_quoin':         bool(getattr(obj, 'RightQuoin', False)),
-            'right_quoin_primary': bool(getattr(obj, 'RightQuoinPrimary', True)),
         }
 
         try:
             # Work on a copy of the source shape (non-destructive)
             working_shape = link_obj.Shape.copy()
 
-            # Step 1: Recess selected faces
+            # Step 1: Recess selected faces. _recess_shape returns new indices
+            # in the same order as orig_face_indices, so new_face_indices[i]
+            # is where orig_face_indices[i] ended up — quoin overrides are
+            # keyed by the ORIGINAL index (as referenced in Sources / the
+            # *QuoinFaces properties), so both are needed together below.
             skin_depth = params['material_thickness']
-            working_shape, face_indices = _recess_shape(working_shape, face_indices, skin_depth)
+            working_shape, new_face_indices = _recess_shape(
+                working_shape, orig_face_indices, skin_depth)
 
-            # Step 2: Build mortar grids for each face
+            # Step 2: Build mortar grids for each face, with per-face quoin
+            # flags resolved from the *QuoinFaces override properties (falling
+            # back to the plain LeftQuoin/RightQuoin/*Primary booleans).
             mortar_grids = []
-            for idx in face_indices:
+            for orig_idx, idx in zip(orig_face_indices, new_face_indices):
                 if idx >= len(working_shape.Faces):
                     continue
                 face = working_shape.Faces[idx]
+                left_quoin, left_quoin_primary, right_quoin, right_quoin_primary = \
+                    resolve_quoin(orig_idx)
+                face_params = dict(params)
+                face_params['left_quoin']          = left_quoin
+                face_params['left_quoin_primary']  = left_quoin_primary
+                face_params['right_quoin']         = right_quoin
+                face_params['right_quoin_primary'] = right_quoin_primary
                 try:
-                    grid = _create_mortar_grid(face, params)
+                    grid = _create_mortar_grid(face, face_params)
                     mortar_grids.append(grid)
                 except Exception as e:
                     App.Console.PrintError(f"  BrickProxy face {idx}: {e}\n")
@@ -526,7 +699,7 @@ class BrickProxy:
             obj.Shape = result
             obj.Placement = link_obj.Placement
             App.Console.PrintMessage(
-                f"✓ BrickedWall updated ({len(face_indices)} face(s), "
+                f"✓ BrickedWall updated ({len(orig_face_indices)} face(s), "
                 f"{params['bond_type']} bond)\n")
 
         except Exception as e:

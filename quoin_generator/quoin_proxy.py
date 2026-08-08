@@ -1,6 +1,14 @@
 """
 QuoinProxy — FeaturePython proxy for parametric brick quoin columns.
 
+SUPERSEDED for new walls: as of brick_proxy.py v6.1.0, BrickProxy generates
+the real quoin column itself (via quoin_geometry.QuoinGeometry) in the same
+cut as the field fill when LeftQuoin/RightQuoin=True — this second pass is
+no longer part of the normal workflow. QuoinProxy remains only as a
+touch-up path for walls that were already fully bricked without ever
+setting LeftQuoin/RightQuoin (see the fragmentation caveat below, which
+applies just as much here as it did before).
+
 Applies to two adjacent wall faces that share a corner edge.  When used
 alongside BrickProxy (with left_quoin=True on the fill faces), produces
 correctly interlocking corner brickwork.

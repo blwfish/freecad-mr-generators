@@ -156,6 +156,17 @@ the failure mode this rule exists to prevent.
   no-longer-read `v1-2`, 2026-07-29).
 - Clear `__pycache__/` after deploy — rsync preserves source mtimes, so
   stale `.pyc` files can shadow updated `.py` files.
+- After `install.py`, a long-running FreeCAD process can still serve stale
+  code even with `__pycache__/` cleared and the right file on disk — if a
+  library module (e.g. `quoin_geometry.py`) was already `import`ed earlier
+  in that session, Python's `sys.modules` cache holds the old module object
+  and a fresh `import` is a no-op. `reload_modules` (the MCP tool) only
+  reloads AICopilot's own registered handler modules, not these generator
+  library files. Fix: from `execute_python`, `sys.modules.pop(name, None)`
+  for every affected module *before* re-importing (or just restart FreeCAD).
+  Confirmed 2026-08-07: `brick_proxy.py`'s `try/except ImportError` around
+  `from quoin_geometry import ...` silently degraded to `None` this way,
+  with no visible error, after editing `quoin_geometry.py` mid-session.
 
 ## Tool-use rule: don't use view_control(operation="screenshot")
 

@@ -1,21 +1,43 @@
 """
-Quoin Generator Macro v1.0.0
+Quoin Generator Macro v1.1.0
+
+SUPERSEDED for new walls: as of brick_proxy.py v6.1.0, setting
+LeftQuoin/RightQuoin=True on BrickProxy generates the real corner column
+directly, in the same cut as the field fill — no second pass needed. This
+macro is now only useful as a touch-up path for a wall that was already
+fully bricked WITHOUT ever setting LeftQuoin/RightQuoin (so there is no
+reserved column to hand off). Because that wall's corner is already
+fragmented into per-brick faces, edge selection will not work reliably
+there either (see selection modes below) — regenerating the affected face
+with LeftQuoin=True is the more reliable fix when it's affordable.
 
 Applies parametric quoin (interlocking corner brick) engraving to a BrickedWall.
 
 WORKFLOW:
-1. Apply the Brick Generator to your wall faces first.
-   On the resulting BrickedWall, enable LeftQuoin=True and set the fill
-   faces' BondPattern to reserve the quoin column.  (Optional but produces
-   the cleanest result — without it the fill bricks may overlap the column.)
-2. Select one or more corner edges on the BrickedWall.
-3. Run this macro.
-4. QuoinedWall appears with the quoin columns engraved on both faces.
-5. Adjust BondPattern, BrickWidth, etc. in the Properties panel to taste.
+1. Before running Brick Generator on the two faces that meet at a corner,
+   enable LeftQuoin=True (and RightQuoin=True if that face has a quoin at
+   both ends) so the corner column is reserved instead of bricked over.
+   This is REQUIRED, not optional: once a face is fully bricked, the
+   reserved column no longer exists as a selectable whole face — see
+   selection modes below.
+2. Select the two reserved-column Faces on the BrickedWall (Ctrl+click
+   both), one corner's worth at a time, and run this macro.
+   - Alternative: select the corner Edge(s) instead. This only works
+     reliably on unfragmented geometry (e.g. quoining a bare wall corner
+     before any brick fill exists nearby) — on a wall that already has
+     mortar engraved into it, the corner edge is chopped into many tiny
+     segments bordered by brick-sized face fragments, not the whole wall
+     face, and the quoin column will only partially engrave. Prefer the
+     Face-pair selection above whenever Source has already been bricked.
+3. QuoinedWall appears with the quoin columns engraved on both faces.
+4. Adjust BondPattern, BrickWidth, etc. in the Properties panel to taste.
    These must match the BrickedWall settings for mortar joints to align.
    Toggle SwapFaces if the pattern appears offset by one course.
+5. Repeat per corner (each run handles one corner).
 
 Version History:
+- 1.1.0: Support explicit 2-Face corner selection (bypasses edge→face
+         lookup, which breaks on already-bricked/mortar-fragmented walls).
 - 1.0.0: Initial release — edge selection, auto-copies brick params from source.
 """
 
@@ -45,26 +67,49 @@ def main():
     sel = Gui.Selection.getSelectionEx()
     if not sel:
         App.Console.PrintError(
-            "Nothing selected — select one or more corner edges on a BrickedWall.\n")
+            "Nothing selected — select the two reserved-column faces (or the\n"
+            "corner edge) on a BrickedWall.\n")
         return
 
     if not sel[0].HasSubObjects:
         App.Console.PrintError(
-            "Select specific edges (not the whole object).\n"
-            "Ctrl+click corner edges in the 3D view, then run.\n")
+            "Select specific faces or edges (not the whole object).\n"
+            "Ctrl+click the two reserved-column faces (or the corner edge)\n"
+            "in the 3D view, then run.\n")
         return
 
     sel_obj = sel[0].Object
-    edge_names = [s for s in sel[0].SubElementNames if s.startswith('Edge')]
+    sub_names = sel[0].SubElementNames
+    face_names = [s for s in sub_names if s.startswith('Face')]
+    edge_names = [s for s in sub_names if s.startswith('Edge')]
 
-    if not edge_names:
+    if face_names and edge_names:
         App.Console.PrintError(
-            "No edges in selection — select the corner edge(s) on the BrickedWall,\n"
-            "not faces or vertices.\n")
+            "Selection mixes faces and edges — pick one mode: either the\n"
+            "two reserved-column faces, or the corner edge(s), not both.\n")
+        return
+
+    if face_names:
+        if len(face_names) != 2:
+            App.Console.PrintError(
+                f"Face selection must be exactly two faces (one quoin corner);\n"
+                f"got {len(face_names)}: {face_names}.\n"
+                f"Select the two reserved-column faces for one corner and run\n"
+                f"once per corner.\n")
+            return
+        corners_entry = (sel_obj, tuple(face_names))
+        corner_desc = f"faces {face_names[0]}/{face_names[1]}"
+    elif edge_names:
+        corners_entry = (sel_obj, tuple(edge_names))
+        corner_desc = f"{len(edge_names)} edge(s)"
+    else:
+        App.Console.PrintError(
+            "No faces or edges in selection — select the corner edge(s) or\n"
+            "the two reserved-column faces on the BrickedWall.\n")
         return
 
     App.Console.PrintMessage(
-        f"Quoin Generator v{VERSION}: {len(edge_names)} edge(s) on '{sel_obj.Label}'\n")
+        f"Quoin Generator v{VERSION}: {corner_desc} on '{sel_obj.Label}'\n")
 
     doc = App.ActiveDocument
     if not doc:
@@ -90,7 +135,7 @@ def main():
                 "  Adjust BrickWidth, BondPattern, etc. to match your BrickedWall.\n")
 
         obj.Source = sel_obj
-        obj.Corners = [(sel_obj, tuple(edge_names))]
+        obj.Corners = [corners_entry]
 
         try:
             obj.ViewObject.ShapeColor = sel_obj.ViewObject.ShapeColor
