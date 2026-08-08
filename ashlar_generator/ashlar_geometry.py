@@ -1,5 +1,5 @@
 """
-Ashlar Geometry Library v1.0.0
+Ashlar Geometry Library v1.0.1
 
 Pure Python geometry functions for ashlar stone surface generation.
 No FreeCAD imports — importable by pytest.
@@ -9,14 +9,66 @@ points, apply fracture-plane Z displacement to simulate quarried stone
 texture, then Delaunay-triangulate the result.  The proxy extrudes the
 resulting triangulated shell backward to produce a printable solid.
 
-Requires: numpy, scipy
+Requires: numpy, scipy -- unlike every other generator in this repo,
+which is deliberately dependency-free (see e.g. clapboard_geometry.py's
+"No FreeCAD dependencies" convention). Reimplementing perturbed-grid
+math and Delaunay triangulation in pure Python was considered and
+rejected: numpy's vectorized array math is straightforward to replace,
+but a hand-rolled Delaunay triangulation is a well-known source of
+numerical-robustness bugs (degenerate/collinear point handling
+especially) that isn't worth the risk for what scipy already solves
+correctly. Instead, the import is deferred and failure is reported
+clearly rather than crashing this module (and therefore ashlar_proxy.py,
+which imports it) at load time with a raw traceback -- see
+_require_numpy_scipy() below (v1.0.1, 2026-08-08).
+
+Version History:
+- 1.0.1: numpy/scipy import failure no longer crashes this module at
+         import time (previously an unconditional top-level import --
+         since install.py just copies .py files with no dependency
+         installation step for end users, anyone without numpy/scipy in
+         their FreeCAD's Python environment got a raw ModuleNotFoundError
+         instead of this generator's own intended "scipy not available"
+         message, which itself was dead code: ashlar_proxy.py's `from
+         ashlar_geometry import ...` failed before that check could ever
+         run).
+- 1.0.0: Initial release
 """
 
-import numpy as np
-from scipy.spatial import Delaunay
+from __future__ import annotations
+
 from typing import List, Tuple
 
-VERSION = "1.0.0"
+try:
+    import numpy as np
+    from scipy.spatial import Delaunay
+    _NUMPY_SCIPY_OK = True
+    _IMPORT_ERROR = None
+except ImportError as _exc:
+    np = None
+    Delaunay = None
+    _NUMPY_SCIPY_OK = False
+    _IMPORT_ERROR = _exc
+
+VERSION = "1.0.1"
+
+
+def _require_numpy_scipy():
+    """Raise a clear, actionable ImportError if numpy/scipy aren't
+    available, instead of letting a bare `np.something` AttributeError
+    (np is None) surface deep inside a function's body."""
+    if not _NUMPY_SCIPY_OK:
+        raise ImportError(
+            "ashlar_generator requires numpy and scipy, which are not "
+            f"installed in this Python environment ({_IMPORT_ERROR}). "
+            "Every other generator in this repo works without them -- "
+            "only ashlar_generator's Delaunay-triangulated stone texture "
+            "needs them. To fix: install them into the SAME Python "
+            "environment FreeCAD itself uses (not your system Python) -- "
+            "e.g. `<path to FreeCAD's own python> -m pip install numpy "
+            "scipy`, or via FreeCAD's own package/addon manager if it "
+            "offers one for your platform."
+        )
 
 
 def generate_perturbed_grid(
@@ -34,6 +86,7 @@ def generate_perturbed_grid(
 
     Returns np.ndarray shape (N, 2).
     """
+    _require_numpy_scipy()
     rng = np.random.default_rng(seed)
     nx = int(width / avg_spacing) + 1
     ny = int(height / avg_spacing) + 1
@@ -79,6 +132,7 @@ def compute_fracture_z_values(
 
     Returns np.ndarray shape (N,).
     """
+    _require_numpy_scipy()
     rng = np.random.default_rng(seed)
     n_points = len(points_2d)
     min_z, max_z = displacement_range
@@ -143,6 +197,7 @@ def generate_stone_surface(
       z_values   — (N,)    Z = fracture displacement + z_offset
       simplices  — (M, 3)  Delaunay triangle vertex indices
     """
+    _require_numpy_scipy()
     points_2d = generate_perturbed_grid(width, height, avg_spacing, randomness, seed)
     z_raw = compute_fracture_z_values(
         points_2d, width, height, displacement_range, n_fractures, edge_taper,
