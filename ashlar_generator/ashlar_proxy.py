@@ -28,13 +28,28 @@ from ashlar_geometry import (
     generate_stone_surface,
     compute_stone_positions,
     compute_wall_dimensions,
+    _NUMPY_SCIPY_OK,
+    _IMPORT_ERROR,
 )
 
-try:
-    from scipy.spatial import Delaunay as _Delaunay  # noqa: F401 – verify importable
-    _SCIPY_OK = True
-except ImportError:
-    _SCIPY_OK = False
+# Previously this file re-checked scipy importability independently
+# (`try: from scipy.spatial import Delaunay ... except ImportError:`) --
+# dead code, since `from ashlar_geometry import (...)` above would have
+# already raised ImportError and aborted this whole module before that
+# check could ever run, back when ashlar_geometry.py imported numpy/
+# scipy unconditionally at its own module level. Now that
+# ashlar_geometry.py defers and reports that failure itself (v1.0.1,
+# 2026-08-08), this file just reads its single source of truth instead
+# of maintaining a second, easily-diverging copy of the same check.
+_SCIPY_OK = _NUMPY_SCIPY_OK
+
+if not _SCIPY_OK:
+    App.Console.PrintWarning(
+        f"ashlar_proxy: numpy/scipy not available ({_IMPORT_ERROR}) -- "
+        "AshlarWall objects can be created but will not generate geometry "
+        "until these are installed in FreeCAD's own Python environment. "
+        "Every other generator in this repo works without them.\n"
+    )
 
 
 # =============================================================================
@@ -156,8 +171,13 @@ class AshlarProxy:
 
     def execute(self, obj):
         if not _SCIPY_OK:
+            # Full explanation + fix instructions already printed once at
+            # module load; this reinforces it at the moment generation
+            # actually needed numpy/scipy, for anyone who missed that.
             App.Console.PrintError(
-                "AshlarProxy: scipy not available — cannot generate geometry.\n"
+                f"AshlarProxy: numpy/scipy not available ({_IMPORT_ERROR}) "
+                "-- cannot generate geometry. See the warning printed when "
+                "this generator loaded for how to fix.\n"
             )
             return
 

@@ -13,7 +13,15 @@ Covers:
 
 import math
 import pytest
-import numpy as np
+
+# Skips this whole file cleanly (not a collection ERROR) when numpy/scipy
+# aren't installed, matching this repo's FreeCAD-gated test convention
+# (see shared/tests/test_freecad_utils_integration.py) -- ashlar_geometry
+# itself now degrades the same way (v1.0.1, 2026-08-08) rather than
+# crashing at import time, but these tests genuinely need numpy to make
+# their own assertions, so there's nothing to test without it either way.
+np = pytest.importorskip("numpy")
+pytest.importorskip("scipy")
 
 from ashlar_geometry import (
     generate_perturbed_grid,
@@ -367,3 +375,52 @@ class TestComputeWallDimensions:
         assert max_y == pytest.approx(d['height'] + TOPO_EPS, abs=1e-6)
         assert min_x == pytest.approx(-TOPO_EPS, abs=1e-6)
         assert min_y == pytest.approx(-TOPO_EPS, abs=1e-6)
+
+
+class TestMissingNumpyScipyGuard:
+    """
+    Regression test for the actual bug that prompted this module's
+    deferred-import rewrite (2026-08-08): previously an unconditional
+    top-level `import numpy` / `from scipy.spatial import Delaunay`
+    meant anyone without those installed in FreeCAD's own Python
+    environment (install.py has no dependency-installation step for end
+    users -- it just copies .py files) got a raw ModuleNotFoundError
+    crashing this entire module's import, rather than the generator's own
+    intended clean error message.
+
+    Simulates "not installed" via monkeypatch rather than actually
+    uninstalling numpy/scipy, so this runs in the normal dev/CI
+    environment where they ARE present.
+    """
+
+    def test_generate_perturbed_grid_raises_clear_error(self, monkeypatch):
+        import ashlar_geometry
+        monkeypatch.setattr(ashlar_geometry, "_NUMPY_SCIPY_OK", False)
+        with pytest.raises(ImportError, match="numpy and scipy"):
+            ashlar_geometry.generate_perturbed_grid(10.0, 10.0, 1.0)
+
+    def test_compute_fracture_z_values_raises_clear_error(self, monkeypatch):
+        import ashlar_geometry
+        monkeypatch.setattr(ashlar_geometry, "_NUMPY_SCIPY_OK", False)
+        with pytest.raises(ImportError, match="numpy and scipy"):
+            ashlar_geometry.compute_fracture_z_values([(0.0, 0.0)], 10.0, 10.0)
+
+    def test_generate_stone_surface_raises_clear_error(self, monkeypatch):
+        import ashlar_geometry
+        monkeypatch.setattr(ashlar_geometry, "_NUMPY_SCIPY_OK", False)
+        with pytest.raises(ImportError, match="numpy and scipy"):
+            ashlar_geometry.generate_stone_surface(10.0, 10.0)
+
+    def test_compute_stone_positions_unaffected_by_missing_deps(self, monkeypatch):
+        # Pure-Python functions must keep working regardless -- they never
+        # needed numpy/scipy in the first place.
+        import ashlar_geometry
+        monkeypatch.setattr(ashlar_geometry, "_NUMPY_SCIPY_OK", False)
+        positions = ashlar_geometry.compute_stone_positions(2, 2, 7.0, 5.25, 0.3)
+        assert len(positions) == 4
+
+    def test_compute_wall_dimensions_unaffected_by_missing_deps(self, monkeypatch):
+        import ashlar_geometry
+        monkeypatch.setattr(ashlar_geometry, "_NUMPY_SCIPY_OK", False)
+        dims = ashlar_geometry.compute_wall_dimensions(2, 2, 7.0, 5.25, 0.3)
+        assert dims['width'] > 0 and dims['height'] > 0
