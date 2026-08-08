@@ -44,6 +44,33 @@ _FONT_CANDIDATES = [
 ]
 _DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
 
+# This generator was designed around a specific prototype font that isn't
+# free/bundled -- unlike label_generator's system-font fallbacks, "any
+# font will do" isn't really true for period-correct C&O lettering, so a
+# silent substitution is actively misleading rather than just imprecise.
+# Printed once at load (below) and again from execute() whenever
+# generation actually needs the font and it's still missing, so a user
+# who skips past the first message still gets told why their sign looks
+# wrong or didn't generate at all.
+_FONT_HELP = (
+    "StationSignProxy: the C&O prototype font 'Station-font-AV-20-219.ttf' "
+    "was not found. This font is NOT included with this generator -- it's "
+    "sold by the Chesapeake & Ohio Historical Society (COHS, cohs.org) for "
+    "a nominal fee (~$9 as of 2026).\n"
+    "  To use the real C&O lettering: buy/download the font from COHS and "
+    "place the .ttf file at either of:\n"
+    f"      {_FONT_CANDIDATES[0]}\n"
+    f"      {_FONT_CANDIDATES[1]}\n"
+    "  To use a substitute instead: set the FontPath property on your "
+    "StationSign object to any .ttf font file you already have -- the "
+    "sign will generate correctly, just without period-correct lettering.\n"
+    "  Without either, sign generation may fail or fall back to whatever "
+    "system default font FreeCAD finds."
+)
+
+if not _DEFAULT_FONT:
+    App.Console.PrintWarning(_FONT_HELP + "\n")
+
 # HO-scale text height: 16" prototype → 1:87 → mm
 _TEXT_HEIGHT_HO = (16.0 / 87.0) * 25.4   # ≈ 4.67 mm
 
@@ -239,6 +266,12 @@ class StationSignProxy:
         if not name:
             return
         font_path = resolve_font_path(str(obj.FontPath), "StationSignProxy")
+        if not font_path:
+            # Reinforces the load-time warning at the moment generation
+            # actually needs the font -- a user who skipped past that
+            # message still gets told why their sign looks wrong (or
+            # didn't generate) the moment they see the result.
+            App.Console.PrintWarning(_FONT_HELP + "\n")
         had_shape = obj.Shape is not None and not obj.Shape.isNull()
         try:
             shape, w, h = generate_sign_shape(
