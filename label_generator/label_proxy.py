@@ -202,6 +202,8 @@ class LabelProxy:
         if not text:
             return
 
+        had_shape = obj.Shape is not None and not obj.Shape.isNull()
+
         height   = float(obj.Height)
         padding  = float(obj.Padding)
         rotation = float(obj.Rotation)   # degrees (App::PropertyAngle stores degrees)
@@ -268,6 +270,18 @@ class LabelProxy:
             )
         except Exception as exc:
             App.Console.PrintError(f"LabelProxy '{text}': {exc}\n")
+            if not had_shape:
+                # No prior successful Shape to fall back to -- without
+                # this, the object is silently invisible in the 3D view
+                # with only this console message as the signal (full-
+                # review finding #31, 2026-08-08). Re-raising lets
+                # FreeCAD's own recompute error handling mark the object
+                # with its standard visible error indicator (red icon +
+                # tooltip in the tree) instead of failing completely
+                # silently. A prior successful Shape (had_shape=True) is
+                # preserved as-is -- still stale, but visibly showing
+                # *something* rather than nothing.
+                raise
 
     def dumps(self):
         return {"Type": self.Type}

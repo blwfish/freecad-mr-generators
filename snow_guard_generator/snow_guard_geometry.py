@@ -27,6 +27,7 @@ __all__ = [
     'calculate_row_v_positions',
     # Snow-guard specific
     'validate_parameters',
+    'validate_margins_cover_footprint',
     'calculate_row_u_positions',
     'calculate_grid_positions',
 ]
@@ -66,6 +67,35 @@ def validate_parameters(pad_width: float, pad_length: float, pad_thickness: floa
     if fin_thickness > 0 and pad_width > 0 and fin_thickness > pad_width:
         errors.append(
             f"fin_thickness ({fin_thickness}) cannot exceed pad_width ({pad_width})")
+    return len(errors) == 0, errors
+
+
+def validate_margins_cover_footprint(edge_margin: float, v_margin: float,
+                                      pad_width: float, pad_length: float
+                                      ) -> Tuple[bool, List[str]]:
+    """Validate that edge_margin/v_margin are large enough to contain the
+    guard's own pad footprint.
+
+    calculate_row_u_positions/calculate_row_v_positions only validate a
+    guard's bare CENTER position against [margin, length-margin] -- they
+    have no visibility into the pad's half-width/half-length, since the
+    proxy computes the corner offset (center - half_pad) separately,
+    after position calculation. Whenever half_pad_u > edge_margin or
+    half_pad_v > v_margin, the guard's solid physically overhangs the
+    real face boundary despite the center passing its own check (full-
+    review finding #28, 2026-08-08).
+    """
+    errors = []
+    half_pad_u = pad_width / 2.0
+    half_pad_v = pad_length / 2.0
+    if edge_margin < half_pad_u:
+        errors.append(
+            f"edge_margin ({edge_margin}) must be at least pad_width/2 "
+            f"({half_pad_u}) or the guard's pad overhangs the rake edge")
+    if v_margin < half_pad_v:
+        errors.append(
+            f"v_margin ({v_margin}) must be at least pad_length/2 "
+            f"({half_pad_v}) or the guard's pad overhangs the eave/ridge edge")
     return len(errors) == 0, errors
 
 

@@ -27,6 +27,7 @@ for _p in (str(_here), str(_here / '_lib')):
 
 from snow_guard_geometry import (
     validate_parameters,
+    validate_margins_cover_footprint,
     calculate_grid_positions,
 )
 from roof_geometry import get_roof_coordinate_system
@@ -279,6 +280,13 @@ class SnowGuardProxy:
             params['fin_height'], params['fin_base_width'], params['fin_thickness'])
         if not valid:
             App.Console.PrintError(f"SnowGuardGenerator: invalid parameters: {errors}\n")
+            return
+
+        valid, errors = validate_margins_cover_footprint(
+            params['edge_margin'], params['v_margin'],
+            params['pad_width'], params['pad_length'])
+        if not valid:
+            App.Console.PrintError(f"SnowGuardGenerator: invalid margins: {errors}\n")
             return
 
         all_guards = []

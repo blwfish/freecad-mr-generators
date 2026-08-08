@@ -31,6 +31,7 @@ for _p in (str(_here), str(_here / '_lib')):
 
 from standing_seam_snow_guard_geometry import (
     validate_parameters,
+    validate_margins_cover_footprint,
     calculate_seam_guard_positions,
 )
 from roof_geometry import get_roof_coordinate_system
@@ -323,6 +324,14 @@ class StandingSeamSnowGuardProxy:
         if not valid:
             App.Console.PrintError(
                 f"StandingSeamSnowGuardGenerator: invalid parameters: {errors}\n")
+            return
+
+        valid, errors = validate_margins_cover_footprint(
+            params['edge_margin'], params['v_margin'],
+            params['clamp_width'], params['clamp_length'])
+        if not valid:
+            App.Console.PrintError(
+                f"StandingSeamSnowGuardGenerator: invalid margins: {errors}\n")
             return
 
         all_guards = []

@@ -12,6 +12,7 @@ import pytest
 
 from standing_seam_snow_guard_geometry import (
     validate_parameters,
+    validate_margins_cover_footprint,
     calculate_rib_u_positions,
     calculate_seam_guard_positions,
 )
@@ -138,6 +139,40 @@ class TestParameterValidation:
             fin_height=1.0, fin_base_width=fin_base_width, fin_thickness=0.6,
             panel_width=3.0)
         assert valid == expect_valid
+
+
+# ---------------------------------------------------------------------------
+# validate_margins_cover_footprint (full-review finding #28, 2026-08-08)
+# ---------------------------------------------------------------------------
+
+class TestMarginsCoverFootprint:
+
+    def test_margins_exactly_equal_to_half_footprint_valid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.5, v_margin=0.6, clamp_width=1.0, clamp_length=1.2)
+        assert valid
+        assert errors == []
+
+    def test_edge_margin_just_below_half_clamp_width_invalid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.5 - 1e-6, v_margin=0.6, clamp_width=1.0, clamp_length=1.2)
+        assert not valid
+        assert any("edge_margin" in e for e in errors)
+
+    def test_v_margin_just_below_half_clamp_length_invalid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.5, v_margin=0.6 - 1e-6, clamp_width=1.0, clamp_length=1.2)
+        assert not valid
+        assert any("v_margin" in e for e in errors)
+
+    def test_default_properties_are_self_consistent(self):
+        # Pins the actual shipped defaults (standing_seam_snow_guard_proxy.
+        # set_defaults): EdgeMargin=3.0, VMargin=2.0, ClampWidth=1.0,
+        # ClampLength=1.2 -- a regression here means the out-of-the-box
+        # defaults would themselves fail validation.
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=3.0, v_margin=2.0, clamp_width=1.0, clamp_length=1.2)
+        assert valid, f"shipped defaults fail their own margin validation: {errors}"
 
 
 # ---------------------------------------------------------------------------

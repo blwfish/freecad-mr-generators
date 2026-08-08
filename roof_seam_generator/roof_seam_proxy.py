@@ -35,6 +35,7 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
         sys.path.insert(0, p)
 
 from freecad_utils import find_shared_edge, resolve_shared_edge, resolve_sources_faces  # noqa: E402
+from roof_geometry import classify_roof_intersection  # noqa: E402
 
 
 # =============================================================================
@@ -57,17 +58,36 @@ def _make_rotation_matrix(x_axis, y_axis, z_axis):
 
 
 def classify_seam(face1, face2, shared_edge):
-    """Classify seam as 'hip' or 'valley' using Z coordinate analysis."""
-    edge_verts = [v.Point for v in shared_edge.Vertexes]
-    edge_max_z = max(p.z for p in edge_verts)
-    shared_pts = {(round(p.x, 2), round(p.y, 2), round(p.z, 2)) for p in edge_verts}
-    non_shared_z = [
-        v.Point.z for face in (face1, face2) for v in face.Vertexes
-        if (round(v.Point.x, 2), round(v.Point.y, 2), round(v.Point.z, 2)) not in shared_pts
-    ]
-    if not non_shared_z:
+    """Classify seam as 'hip' or 'valley'.
+
+    Delegates to shared/roof_geometry.classify_roof_intersection() -- the
+    dihedral-angle-based classifier slate_generator, standing_seam_
+    generator, and slate_seam_generator all already use -- instead of an
+    independently-maintained Z-coordinate-average heuristic with no
+    'ambiguous' outcome of its own. Previously this was the one generator
+    in the repo NOT using the shared classifier despite roof_geometry.py's
+    own module docstring claiming hip/valley-detection code "lives in
+    exactly one place" (full-review finding #21, 2026-08-08).
+
+    Falls back to 'hip' (with a printed warning) on the shared
+    classifier's own 'ambiguous' result, preserving this function's
+    previous binary (no-third-option) contract for callers.
+    """
+    face1_verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face1.Vertexes]
+    face2_verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face2.Vertexes]
+    e0, e1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
+    shared_edge_tuple = ((e0.x, e0.y, e0.z), (e1.x, e1.y, e1.z))
+
+    result = classify_roof_intersection(face1_verts, face2_verts, shared_edge_tuple)
+    classification = result['classification']
+    if classification == 'ridge':
         return 'hip'
-    return 'valley' if sum(non_shared_z) / len(non_shared_z) > edge_max_z else 'hip'
+    if classification == 'valley':
+        return 'valley'
+    App.Console.PrintWarning(
+        f"  Seam classification ambiguous "
+        f"({result.get('reason', 'unknown')}) -- defaulting to hip\n")
+    return 'hip'
 
 
 # =============================================================================
@@ -479,12 +499,30 @@ def generate_valley_flashing(shared_edge, face1, face2, params):
     edge_len = edge_vec.Length
     edge_dir = edge_vec * (1.0 / edge_len)
 
+    # Normalize both face normals to a consistent outward (+Z) orientation
+    # before summing, matching generate_hip_caps/generate_metal_hip_strip
+    # in this same file -- this function previously used raw normals, so a
+    # locally-inverted Face.Orientation flag (a real, previously-confirmed
+    # failure mode on Part::MultiFuse outputs, see freecad_utils.score_
+    # face_match's docstring) could silently misplace the flashing (full-
+    # review finding #20, 2026-08-08).
     n1 = _face_normal_at_center(face1)
     n2 = _face_normal_at_center(face2)
-    bisector_raw = n1 + n2
+    n1_out = n1 * -1.0 if n1.z < 0 else App.Vector(n1.x, n1.y, n1.z)
+    n2_out = n2 * -1.0 if n2.z < 0 else App.Vector(n2.x, n2.y, n2.z)
+    bisector_raw = n1_out + n2_out
+    if bisector_raw.Length < 1e-9:
+        raise ValueError(
+            "Cannot compute valley flashing bisector: face normals are "
+            "near-opposite (nearly coplanar faces meeting at a near-180 "
+            "degree angle)")
     bisector = bisector_raw * (1.0 / bisector_raw.Length)
 
     wd_raw = edge_dir.cross(bisector)
+    if wd_raw.Length < 1e-9:
+        raise ValueError(
+            "Cannot compute valley flashing width direction: the shared "
+            "edge is parallel to the bisector plane's normal")
     width_dir = wd_raw * (1.0 / wd_raw.Length)
 
     corner = start_pt - width_dir * (flash_width / 2.0)

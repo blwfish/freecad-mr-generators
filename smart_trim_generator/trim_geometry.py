@@ -612,12 +612,17 @@ def apply_miter_cut_at_corner(solid, corner: Corner, face_normal,
     cut_wire = Part.makePolygon([p1, p2, p3, p4, p1])
     cut_face = Part.Face(cut_wire)
 
-    # keep_point tells makeHalfSpace which side to materialise
-    kd = App.Vector(keep_direction)
-    kd.normalize()
-    keep_point = corner_pos + kd * 1.0
-
+    # keep_point tells makeHalfSpace which side to materialise. Vector.
+    # normalize() raises Base.FreeCADError on a zero-length vector (it does
+    # NOT silently no-op) -- discovered 2026-08-08 writing this function's
+    # first real test coverage (full-review finding #27). Moved inside the
+    # try/except below, alongside every other failure this function is
+    # documented to fall back to the original solid for.
     try:
+        kd = App.Vector(keep_direction)
+        kd.normalize()
+        keep_point = corner_pos + kd * 1.0
+
         half_space = cut_face.makeHalfSpace(keep_point)
         result = solid.common(half_space)
         # Guard against degenerate result

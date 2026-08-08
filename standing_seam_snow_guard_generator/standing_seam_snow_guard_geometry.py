@@ -34,6 +34,7 @@ __all__ = [
     'calculate_row_v_positions',
     # Standing-seam-snow-guard specific
     'validate_parameters',
+    'validate_margins_cover_footprint',
     'calculate_rib_u_positions',
     'calculate_seam_guard_positions',
 ]
@@ -79,6 +80,35 @@ def validate_parameters(clamp_width: float, clamp_length: float, clamp_thickness
     if clamp_width > 0 and panel_width > 0 and clamp_width >= panel_width:
         errors.append(
             f"clamp_width ({clamp_width}) must be less than panel_width ({panel_width})")
+    return len(errors) == 0, errors
+
+
+def validate_margins_cover_footprint(edge_margin: float, v_margin: float,
+                                      clamp_width: float, clamp_length: float
+                                      ) -> Tuple[bool, List[str]]:
+    """Validate that edge_margin/v_margin are large enough to contain the
+    guard's own clamp footprint. Same rationale as snow_guard_geometry.
+    validate_margins_cover_footprint (clamp_width/clamp_length here play
+    the role pad_width/pad_length play there) -- calculate_rib_u_positions
+    /calculate_row_v_positions only validate a guard's bare CENTER
+    position against [margin, length-margin], with no visibility into the
+    clamp's half-width/half-length that standing_seam_snow_guard_proxy.py
+    subtracts separately when placing the guard's corner. Whenever
+    half_clamp_u > edge_margin or half_clamp_v > v_margin, the guard
+    physically overhangs the real face boundary despite the center
+    passing its own check (full-review finding #28, 2026-08-08).
+    """
+    errors = []
+    half_clamp_u = clamp_width / 2.0
+    half_clamp_v = clamp_length / 2.0
+    if edge_margin < half_clamp_u:
+        errors.append(
+            f"edge_margin ({edge_margin}) must be at least clamp_width/2 "
+            f"({half_clamp_u}) or the guard's clamp overhangs the rake edge")
+    if v_margin < half_clamp_v:
+        errors.append(
+            f"v_margin ({v_margin}) must be at least clamp_length/2 "
+            f"({half_clamp_v}) or the guard's clamp overhangs the eave/ridge edge")
     return len(errors) == 0, errors
 
 

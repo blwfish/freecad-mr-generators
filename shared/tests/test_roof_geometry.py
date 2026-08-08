@@ -13,7 +13,9 @@ orientation-agnostic (abs(dot)) behavior, and empty input.
 import math
 import pytest
 
-from roof_geometry import score_face_match, best_matching_candidate
+from roof_geometry import (
+    score_face_match, best_matching_candidate, calculate_across_roof_direction,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -127,3 +129,118 @@ class TestBestMatchingCandidate:
         payload = (object(), 42)
         result = best_matching_candidate((0, 0, 1), [(0.0, (0, 0, 1), payload)])
         assert result is payload
+
+
+# ---------------------------------------------------------------------------
+# calculate_across_roof_direction
+#
+# Full-review finding #33 (2026-08-08): never directly unit-tested before
+# (only imported transitively, and only by an out-of-scope test file).
+# Covers both paths (real eave-edge direction vs. cross-product fallback),
+# the abs_y >= abs_x sign-convention branch both ways, and the internal
+# > 0.001 thresholds at/below/above.
+# ---------------------------------------------------------------------------
+
+class TestCalculateAcrossRoofDirection:
+
+    # -- eave-vertices path: sign-convention branches --------------------
+
+    def test_eave_edge_along_x_normalizes_to_positive_x(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)])
+        assert result == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_eave_edge_along_x_reversed_order_same_result(self):
+        # Sign convention must depend only on the edge's geometric
+        # direction, not which vertex happened to be listed first.
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(10.0, 0.0, 0.0), (0.0, 0.0, 0.0)])
+        assert result == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_eave_edge_along_y_normalizes_to_positive_y(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(1, 0, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(0.0, 0.0, 0.0), (0.0, 10.0, 0.0)])
+        assert result == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+    def test_eave_edge_along_y_reversed_order_same_result(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(1, 0, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(0.0, 10.0, 0.0), (0.0, 0.0, 0.0)])
+        assert result == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
+
+    def test_diagonal_edge_at_exact_abs_x_equals_abs_y_takes_y_branch(self):
+        # abs_y >= abs_x is `>=`, so an exact tie must take the y-sign
+        # branch, not the x-sign branch -- pin which one at the threshold.
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 0, 1), face_normal=(1, 0, 0),
+            eave_vertices=[(0.0, 0.0, 0.0), (-1.0, -1.0, 0.0)])
+        # u = (-0.7071, -0.7071, 0); abs_y(0.7071) >= abs_x(0.7071) -> True
+        # -> y-branch flips on u[1] < 0 -> both components flip sign.
+        assert result == pytest.approx(
+            (1 / math.sqrt(2), 1 / math.sqrt(2), 0.0), abs=1e-9)
+
+    # -- eave-vertices path: falls through to fallback on degenerate input --
+
+    def test_fewer_than_two_eave_vertices_falls_back(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(0.0, 0.0, 0.0)])
+        # Fallback cross product of face_normal x upslope = (0,0,1)x(0,1,0) = (-1,0,0)
+        assert result == pytest.approx((-1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_none_eave_vertices_falls_back(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=None)
+        assert result == pytest.approx((-1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_empty_eave_vertices_falls_back(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=[])
+        assert result == pytest.approx((-1.0, 0.0, 0.0), abs=1e-9)
+
+    @pytest.mark.parametrize("dx,falls_back", [
+        (0.0009, True),    # below threshold
+        (0.001, True),     # at threshold -- strict '>' required to use eave path
+        (0.0011, False),   # just above threshold -- eave path used
+    ])
+    def test_max_eave_distance_threshold(self, dx, falls_back):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=[(0.0, 0.0, 0.0), (dx, 0.0, 0.0)])
+        if falls_back:
+            # Fallback cross product: (0,0,1) x (0,1,0) = (-1,0,0)
+            assert result == pytest.approx((-1.0, 0.0, 0.0), abs=1e-9)
+        else:
+            assert result == pytest.approx((1.0, 0.0, 0.0), abs=1e-9)
+
+    # -- cross-product fallback path ---------------------------------------
+
+    def test_fallback_cross_product_normal_case(self):
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 1, 0), face_normal=(0, 0, 1),
+            eave_vertices=None)
+        # (0,0,1) x (0,1,0) = (0*0-1*1, 1*0-0*0, 0*1-0*0) = (-1, 0, 0)
+        assert result == pytest.approx((-1.0, 0.0, 0.0), abs=1e-9)
+
+    def test_fallback_parallel_normal_and_upslope_returns_default(self):
+        # face_normal parallel to upslope -> cross product is the zero
+        # vector -> degenerate; function returns the documented (1,0,0)
+        # default rather than dividing by zero.
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 0, 1), face_normal=(0, 0, 1),
+            eave_vertices=None)
+        assert result == (1, 0, 0)
+
+    def test_fallback_near_parallel_at_length_threshold_returns_default(self):
+        # A tiny non-zero cross product (length just below the 0.001
+        # threshold) must still hit the degenerate-fallback branch, not
+        # attempt to normalize a near-zero vector.
+        result = calculate_across_roof_direction(
+            vertices=[], upslope=(0, 0.0005, 1.0), face_normal=(0, 0, 1),
+            eave_vertices=None)
+        assert result == (1, 0, 0)

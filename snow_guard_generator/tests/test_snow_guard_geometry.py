@@ -17,6 +17,7 @@ import pytest
 
 from snow_guard_geometry import (
     validate_parameters,
+    validate_margins_cover_footprint,
     calculate_row_v_positions,
     calculate_row_u_positions,
     calculate_grid_positions,
@@ -71,6 +72,47 @@ class TestParameterValidation:
             pad_width=1.2, pad_length=1.2, pad_thickness=0.15,
             fin_height=1.0, fin_base_width=0.8, fin_thickness=fin_thickness)
         assert valid == expect_valid
+
+
+# ---------------------------------------------------------------------------
+# validate_margins_cover_footprint (full-review finding #28, 2026-08-08)
+# ---------------------------------------------------------------------------
+
+class TestMarginsCoverFootprint:
+
+    def test_margins_exactly_equal_to_half_footprint_valid(self):
+        # Threshold is `<`, so margin == half_pad exactly must be accepted.
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.6, v_margin=0.6, pad_width=1.2, pad_length=1.2)
+        assert valid
+        assert errors == []
+
+    def test_edge_margin_just_below_half_pad_width_invalid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.6 - 1e-6, v_margin=0.6, pad_width=1.2, pad_length=1.2)
+        assert not valid
+        assert any("edge_margin" in e for e in errors)
+
+    def test_v_margin_just_below_half_pad_length_invalid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=0.6, v_margin=0.6 - 1e-6, pad_width=1.2, pad_length=1.2)
+        assert not valid
+        assert any("v_margin" in e for e in errors)
+
+    def test_margins_comfortably_larger_than_footprint_valid(self):
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=3.0, v_margin=2.0, pad_width=1.2, pad_length=1.2)
+        assert valid
+        assert errors == []
+
+    def test_default_properties_are_self_consistent(self):
+        # Pins the actual shipped defaults (snow_guard_proxy.set_defaults):
+        # EdgeMargin=3.0, VMargin=2.0, PadWidth=1.2, PadLength=1.2 -- a
+        # regression here means the out-of-the-box defaults would
+        # themselves fail validation.
+        valid, errors = validate_margins_cover_footprint(
+            edge_margin=3.0, v_margin=2.0, pad_width=1.2, pad_length=1.2)
+        assert valid, f"shipped defaults fail their own margin validation: {errors}"
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,10 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
+from station_sign_geometry import (
+    group_wire_bboxes_into_islands,
+    calculate_sign_layout,
+)  # noqa: E402
 
 # Default font: C&O station font alongside the macro; fall back to empty (system default)
 _FONT_CANDIDATES = [
@@ -86,7 +90,9 @@ def _wires_to_faces(char_wires):
     Convert the wire list for one glyph to one or more Part.Face objects.
 
     Handles disconnected glyph parts (dot of 'i', 'j', etc.) by using
-    bounding-box containment to distinguish holes from separate islands.
+    bounding-box containment (station_sign_geometry.
+    group_wire_bboxes_into_islands, extracted 2026-08-08 -- full-review
+    finding #29) to distinguish holes from separate islands.
     """
     if not char_wires:
         return []
@@ -97,34 +103,13 @@ def _wires_to_faces(char_wires):
         except Exception:
             return []
 
-    eps = 1e-6
-    bbs = [w.BoundBox for w in char_wires]
+    bboxes = [(w.BoundBox.XMin, w.BoundBox.XMax, w.BoundBox.YMin, w.BoundBox.YMax)
+              for w in char_wires]
+    groups = group_wire_bboxes_into_islands(bboxes)
 
-    def contains(outer_bb, inner_bb):
-        return (inner_bb.XMin >= outer_bb.XMin - eps and
-                inner_bb.XMax <= outer_bb.XMax + eps and
-                inner_bb.YMin >= outer_bb.YMin - eps and
-                inner_bb.YMax <= outer_bb.YMax + eps)
-
-    n = len(char_wires)
-    is_outer = [True] * n
-    for i in range(n):
-        for j in range(n):
-            if i != j and contains(bbs[j], bbs[i]):
-                is_outer[i] = False
-                break
-
-    used = [False] * n
     faces = []
-    for i in range(n):
-        if not is_outer[i] or used[i]:
-            continue
-        used[i] = True
-        group = [char_wires[i]]
-        for j in range(n):
-            if not used[j] and not is_outer[j] and contains(bbs[i], bbs[j]):
-                group.append(char_wires[j])
-                used[j] = True
+    for group_indices in groups:
+        group = [char_wires[i] for i in group_indices]
         try:
             f = Part.Face(group)
             if not f.isNull():
@@ -151,23 +136,29 @@ def generate_sign_shape(station_name, font_path, text_height,
     """
     text_faces, bb = _make_text_faces(station_name, font_path, text_height)
 
-    text_w = bb.XLength
-    text_h = bb.YLength
-
-    sign_w = 2 * border_thick + 2 * border_gap + text_w
-    sign_h = 2 * border_thick + 2 * border_gap + text_h
-
-    bg_thickness  = 2 * mat_thick          # background slab
-    border_height = bg_thickness + mat_thick   # top of border layer
+    # Delegates to station_sign_geometry.calculate_sign_layout() (extracted
+    # 2026-08-08 -- full-review finding #29) so the sizing math is
+    # pytest-testable without FreeCAD.
+    layout = calculate_sign_layout(
+        text_w=bb.XLength, text_h=bb.YLength,
+        text_xmin=bb.XMin, text_ymin=bb.YMin,
+        mat_thick=mat_thick, border_thick=border_thick, border_gap=border_gap)
+    sign_w = layout['sign_w']
+    sign_h = layout['sign_h']
+    bg_thickness = layout['bg_thickness']
+    border_height = layout['border_height']
+    inner_x = layout['inner_x']
+    inner_y = layout['inner_y']
+    inner_w = layout['inner_w']
+    inner_h = layout['inner_h']
+    text_x = layout['text_x']
+    text_y = layout['text_y']
+    text_z = layout['text_z']
 
     # Background slab
     bg = Part.makeBox(sign_w, sign_h, bg_thickness)
 
     # Border frame: outer box minus inner cutout
-    inner_x = border_thick
-    inner_y = border_thick
-    inner_w = sign_w - 2 * border_thick
-    inner_h = sign_h - 2 * border_thick
     border_outer = Part.makeBox(sign_w, sign_h, mat_thick,
                                 Vector(0, 0, bg_thickness))
     border_hole  = Part.makeBox(inner_w, inner_h, mat_thick,
@@ -175,11 +166,6 @@ def generate_sign_shape(station_name, font_path, text_height,
     border = border_outer.cut(border_hole)
 
     # Raised text: centered within the inner area, placed on top of border
-    # Subtract bb.XMin/YMin so positioning is correct if text doesn't start at 0
-    text_x = inner_x + (inner_w - text_w) / 2 - bb.XMin
-    text_y = inner_y + (inner_h - text_h) / 2 - bb.YMin
-    text_z = border_height
-
     glyph_solids = []
     for face in text_faces:
         s = face.extrude(Vector(0, 0, mat_thick))
@@ -253,6 +239,7 @@ class StationSignProxy:
         if not name:
             return
         font_path = resolve_font_path(str(obj.FontPath), "StationSignProxy")
+        had_shape = obj.Shape is not None and not obj.Shape.isNull()
         try:
             shape, w, h = generate_sign_shape(
                 station_name  = name,
@@ -267,6 +254,13 @@ class StationSignProxy:
                 f"  ✓ StationSign '{name}' → {w:.2f} × {h:.2f} mm\n")
         except Exception as e:
             App.Console.PrintError(f"StationSignProxy '{name}': {e}\n")
+            if not had_shape:
+                # No prior successful Shape to fall back to -- see
+                # label_proxy.py's execute() for the full rationale
+                # (full-review finding #31, 2026-08-08). Re-raising lets
+                # FreeCAD's own recompute error handling mark the object
+                # visibly instead of leaving it silently invisible.
+                raise
 
     def dumps(self):
         return {"Type": self.Type}
