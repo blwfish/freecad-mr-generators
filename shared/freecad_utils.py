@@ -9,7 +9,16 @@ Imported by:  brick_generator_macro, radial_brick_generator_macro,
               snow_guard_generator, standing_seam_generator,
               standing_seam_snow_guard_generator, label_generator
 
-Version: 1.5.0
+Version: 1.6.0
+  1.6.0: Remove commit_result() -- dead code with zero real callers
+         repo-wide (the shingle_generator.FCMacro rewrite that replaced
+         its independent legacy pipeline with the standard proxy-based
+         pattern removed its last, unused import of this function; full-
+         review finding freecad-mr-generators-20260808-a0b9#41). Also add
+         a warning to find_spreadsheet() when a name/label match isn't
+         actually a Spreadsheet::Sheet (#29), and tighten
+         resolve_font_path() to check the path is a file with a
+         recognized font extension, not just os.path.exists() (#31).
   1.5.0: Add resolve_sources_faces() -- consolidates the obj.Sources ->
          (face, link_obj, sub_name) resolution loop that was independently
          copy-pasted into 8 proxies (5 of which had it wrong: getElement()
@@ -40,7 +49,7 @@ Version: 1.5.0
 
 import os
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # ---------------------------------------------------------------------------
 # Assertion toggle
@@ -854,142 +863,3 @@ def _warn_typeid_mismatch(name, actual_type_id):
         f"a {actual_type_id}, not a Spreadsheet::Sheet -- ignoring it and "
         f"trying the next candidate name.\n"
     )
-
-
-# ---------------------------------------------------------------------------
-# Undoable output creation
-# ---------------------------------------------------------------------------
-
-def commit_result(doc, object_name, shape, generator_name, generator_version,
-                  extra_props=None, transaction_label=None):
-    """
-    Create an output Part::Feature inside an undo transaction.
-
-    Wraps ``doc.addObject`` + property assignment + ``doc.recompute()``
-    in ``openTransaction`` / ``commitTransaction`` so the entire operation
-    is a single Ctrl+Z step.  On error the transaction is aborted
-    (no partial objects left behind).
-
-    Parameters
-    ----------
-    doc : FreeCAD.Document
-        Active document.
-    object_name : str
-        Name for the new Part::Feature (e.g. "HipCap_Roof").
-    shape : Part.Shape
-        The shape to assign (Compound, Solid, etc.).
-    generator_name : str
-        Value for the GeneratorName metadata property.
-    generator_version : str
-        Value for the GeneratorVersion metadata property.
-    extra_props : dict, optional
-        Additional ``{prop_name: (prop_type, group, tooltip, value)}``
-        entries.  Example::
-
-            {"SeamType": ("App::PropertyString", "Metadata",
-                          "Seam type (hip or valley)", "hip")}
-
-    transaction_label : str, optional
-        Label shown in Edit→Undo.  Defaults to
-        ``"{generator_name}: {object_name}"``.
-
-    Returns
-    -------
-    FreeCAD.DocumentObject
-        The newly created Part::Feature.
-
-    Preconditions:
-        - doc: must not be None; must support openTransaction/addObject
-        - object_name: must be a non-empty str (used as FreeCAD object name)
-        - shape: must not be None; must be a Part.Shape or compatible;
-          must be valid (shape.isValid()) and non-degenerate (positive
-          BoundBox diagonal)
-        - generator_name: must be a non-empty str
-        - generator_version: must be a non-empty str
-        - extra_props: if provided, must be a dict; each value must be a
-          4-tuple of (prop_type_str, group_str, tooltip_str, value)
-
-    Postconditions:
-        - returned object is not None
-        - returned object has GeneratorName == generator_name
-        - returned object has GeneratorVersion == generator_version
-        - returned object has a Shape assigned (Shape is not None)
-    """
-    # --- Preconditions ---
-    _assert(doc is not None,
-            f"commit_result: doc must not be None")
-    _assert(hasattr(doc, 'openTransaction') and hasattr(doc, 'addObject'),
-            f"commit_result: doc must be a FreeCAD.Document, got type={type(doc).__name__!r}")
-
-    _assert(isinstance(object_name, str) and object_name.strip(),
-            f"commit_result: object_name must be a non-empty str, got {object_name!r}")
-
-    _assert(shape is not None,
-            f"commit_result: shape must not be None (object_name={object_name!r})")
-    _assert(hasattr(shape, 'isValid'),
-            f"commit_result: shape must be a Part.Shape (has isValid()), "
-            f"got type={type(shape).__name__!r} (object_name={object_name!r})")
-    _assert(shape.isValid(),
-            f"commit_result: shape.isValid() returned False for object_name={object_name!r}; "
-            f"OCCT considers this shape corrupt — do not commit invalid geometry")
-    _assert(hasattr(shape, 'BoundBox') and shape.BoundBox.DiagonalLength > 0,
-            f"commit_result: shape has zero/degenerate BoundBox "
-            f"(DiagonalLength={getattr(shape, 'BoundBox', None) and shape.BoundBox.DiagonalLength!r}) "
-            f"for object_name={object_name!r}; shape is empty or point-degenerate")
-
-    _assert(isinstance(generator_name, str) and generator_name.strip(),
-            f"commit_result: generator_name must be a non-empty str, got {generator_name!r}")
-    _assert(isinstance(generator_version, str) and generator_version.strip(),
-            f"commit_result: generator_version must be a non-empty str, got {generator_version!r}")
-
-    _assert(extra_props is None or isinstance(extra_props, dict),
-            f"commit_result: extra_props must be dict or None, got "
-            f"{type(extra_props).__name__!r}")
-    if extra_props and _ASSERTIONS_ENABLED:
-        for prop_name, prop_spec in extra_props.items():
-            _assert(isinstance(prop_spec, tuple) and len(prop_spec) == 4,
-                    f"commit_result: extra_props[{prop_name!r}] must be a 4-tuple "
-                    f"(prop_type, group, tooltip, value), got {prop_spec!r}")
-
-    _assert(transaction_label is None or isinstance(transaction_label, str),
-            f"commit_result: transaction_label must be str or None, got "
-            f"{type(transaction_label).__name__!r} value={transaction_label!r}")
-
-    label = transaction_label or f"{generator_name}: {object_name}"
-    doc.openTransaction(label)
-    try:
-        result = doc.addObject("Part::Feature", object_name)
-        result.Shape = shape
-
-        result.addProperty(
-            "App::PropertyString", "GeneratorName", "Metadata", "Generator name")
-        result.GeneratorName = generator_name
-
-        result.addProperty(
-            "App::PropertyString", "GeneratorVersion", "Metadata", "Generator version")
-        result.GeneratorVersion = generator_version
-
-        if extra_props:
-            for prop_name, (prop_type, group, tooltip, value) in extra_props.items():
-                result.addProperty(prop_type, prop_name, group, tooltip)
-                setattr(result, prop_name, value)
-
-        doc.recompute()
-        doc.commitTransaction()
-    except Exception:
-        doc.abortTransaction()
-        raise
-
-    # --- Postconditions ---
-    _assert(result is not None,
-            f"commit_result: doc.addObject returned None for object_name={object_name!r}")
-    _assert(result.Shape is not None,
-            f"commit_result: result.Shape is None after assignment for object_name={object_name!r}")
-    _assert(result.GeneratorName == generator_name,
-            f"commit_result: GeneratorName mismatch: expected {generator_name!r}, "
-            f"got {result.GeneratorName!r} (object_name={object_name!r})")
-    _assert(result.GeneratorVersion == generator_version,
-            f"commit_result: GeneratorVersion mismatch: expected {generator_version!r}, "
-            f"got {result.GeneratorVersion!r} (object_name={object_name!r})")
-
-    return result

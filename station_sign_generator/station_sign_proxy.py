@@ -48,10 +48,16 @@ _DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
 # free/bundled -- unlike label_generator's system-font fallbacks, "any
 # font will do" isn't really true for period-correct C&O lettering, so a
 # silent substitution is actively misleading rather than just imprecise.
-# Printed once at load (below) and again from execute() whenever
-# generation actually needs the font and it's still missing, so a user
-# who skips past the first message still gets told why their sign looks
-# wrong or didn't generate at all.
+# Printed once at load (below), and again from execute() the first time
+# generation actually needs the font and it's still missing -- covers a
+# session where nothing triggered the load-time warning's visibility
+# (e.g. loaded before the user was looking at the console). _font_help_
+# shown_in_execute then suppresses further repeats: once the user has
+# seen it during this session's execute() calls, reprinting it on every
+# single recompute is just noise, not reinforcement (full-review finding
+# freecad-mr-generators-20260808-a0b9#42).
+_font_help_shown_in_execute = False
+
 _FONT_HELP = (
     "StationSignProxy: the C&O prototype font 'Station-font-AV-20-219.ttf' "
     "was not found. This font is NOT included with this generator -- it's "
@@ -267,11 +273,15 @@ class StationSignProxy:
             return
         font_path = resolve_font_path(str(obj.FontPath), "StationSignProxy")
         if not font_path:
-            # Reinforces the load-time warning at the moment generation
-            # actually needs the font -- a user who skipped past that
-            # message still gets told why their sign looks wrong (or
-            # didn't generate) the moment they see the result.
-            App.Console.PrintWarning(_FONT_HELP + "\n")
+            global _font_help_shown_in_execute
+            if not _font_help_shown_in_execute:
+                # Reinforces the load-time warning at the moment generation
+                # actually needs the font -- a user who skipped past that
+                # message still gets told why their sign looks wrong (or
+                # didn't generate). Shown once per session from here, not
+                # on every recompute -- see _FONT_HELP's own comment.
+                App.Console.PrintWarning(_FONT_HELP + "\n")
+                _font_help_shown_in_execute = True
         had_shape = obj.Shape is not None and not obj.Shape.isNull()
         try:
             shape, w, h = generate_sign_shape(
