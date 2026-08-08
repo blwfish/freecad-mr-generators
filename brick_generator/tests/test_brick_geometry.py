@@ -783,6 +783,75 @@ class TestBoundaryOverflow:
                 )
 
 
+class TestCalculateCourseLayoutNarrowWallClamps:
+    """_calculate_course_layout's two defensive clamps for walls too
+    narrow to fit even one whole brick plus two minimum-size closers --
+    previously undocumented and uncovered (full-review finding
+    freecad-mr-generators-20260808-a0b9#36, #43).
+
+    In this narrow-wall regime the two clamps are correlated, not
+    independent: a wall too narrow to fit `n_bricks=1` worth of spacing
+    (triggering the `n_bricks < 1 -> 1` floor) is also too narrow to leave
+    a non-negative closer (triggering the final `closer_width < 0 -> 0`
+    clamp) -- there's no wall_width that hits one without the other, so
+    both are asserted together rather than pretending they're separable.
+    """
+
+    BG = BrickGeometry(u_length=20.0, v_length=10.0, brick_width=2.32,
+                        brick_height=0.65, brick_depth=1.09, mortar=0.11,
+                        bond_type='stretcher')
+
+    def test_wall_narrower_than_one_brick_floors_n_bricks_to_one(self):
+        # wall_width < brick_width -> int((W+m)/spacing) computes to 0
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=1.0, brick_width=2.32)
+        assert n_bricks == 1  # floored, never 0
+        assert closer_width == 0.0  # also hits the final clamp -- see class docstring
+
+    def test_wall_much_narrower_than_one_brick_still_floors_to_one(self):
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=0.01, brick_width=2.32)
+        assert n_bricks == 1
+        assert closer_width == 0.0
+
+    def test_closer_width_never_negative_at_the_narrow_extreme(self):
+        # A wall narrower than even one brick's own width (not just too
+        # narrow for closers) -- leftover is deeply negative before the
+        # final clamp.
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=0.5, brick_width=2.32)
+        assert closer_width >= 0.0
+        assert n_bricks == 1
+
+    def test_wall_exactly_at_brick_width_boundary(self):
+        # wall_width == brick_width: at/below/above coverage for the
+        # n_bricks<1 floor's implicit threshold.
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=2.32, brick_width=2.32)
+        assert n_bricks == 1
+
+    def test_wall_just_above_brick_width_can_still_hit_final_clamp(self):
+        # Just above brick_width: n_bricks still floors to 1 via the
+        # initial int() truncation (spacing includes a mortar term the
+        # wall doesn't have room for either), and closer_width is still
+        # negative before the final clamp -- confirms the two clamps stay
+        # correlated a little past the exact brick_width boundary too.
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=2.35, brick_width=2.32)
+        assert n_bricks == 1
+        assert closer_width == 0.0
+
+    def test_normal_wide_wall_triggers_neither_clamp(self):
+        # Sanity check: a comfortably wide wall doesn't hit either
+        # defensive clamp -- n_bricks lands above 1 via the reduction
+        # loop's own exit condition, and closer_width stays comfortably
+        # positive without needing the floor-at-0 clamp.
+        n_bricks, closer_width = self.BG._calculate_course_layout(
+            wall_width=20.0, brick_width=2.32)
+        assert n_bricks > 1
+        assert closer_width > 0.0
+
+
 # =============================================================================
 # left_quoin feature tests
 # =============================================================================

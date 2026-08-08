@@ -1,5 +1,5 @@
 """
-Brick Geometry Generator Library v5.0.2
+Brick Geometry Generator Library v5.1.0
 
 Pure Python geometry generation for parametric brick walls.
 No FreeCAD dependencies - designed for testing and reuse.
@@ -236,6 +236,19 @@ class BrickGeometry:
             Tuple of (n_whole_bricks, closer_width)
             - n_whole_bricks: Number of full-size bricks in the middle
             - closer_width: Width of queen closer bricks at each end (same on both sides)
+
+        Narrow-wall fallback: for a wall too narrow to fit even one whole
+        brick plus two minimum-size closers, the reduction loop below
+        bottoms out at n_bricks=1 (its own `n_bricks > 1` guard prevents
+        going lower) and closer_width can still come out negative; the
+        final clamp below floors it at 0. This produces a single course
+        with zero-width "closers" -- geometrically a single brick relying
+        entirely on downstream OCCT clipping against the wall boundary,
+        the same over-generate-then-clip pattern this module uses
+        throughout (contrast with the flemish dual-quoin path, which
+        documents this same fallback shape explicitly at its own call
+        site). See TestCalculateCourseLayoutNarrowWall in
+        tests/test_brick_geometry.py for the exact boundary behavior.
         """
         spacing = brick_width + self.mortar
 

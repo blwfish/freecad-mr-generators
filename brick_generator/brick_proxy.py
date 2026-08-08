@@ -50,8 +50,11 @@ QUOIN CORNERS (LeftQuoin / RightQuoin):
   see quoin_generator/. That two-pass design is superseded: it required a
   second full-shape OCCT boolean cut against the whole (by-then heavily
   fragmented) BrickedWall even in the correctly-planned case. quoin_proxy.py
-  is still around only as a touch-up path for pre-existing walls that were
-  fully bricked without ever setting LeftQuoin/RightQuoin.)
+  and quoin_generator.FCMacro have since been deleted entirely — a scan of
+  every .FCStd document found zero real use of the two-pass touch-up path
+  they provided, and this single-pass design is now the only quoin
+  mechanism. quoin_generator/quoin_geometry.py remains: this module still
+  imports QuoinGeometry/mirror_to_right_edge from it directly.)
 
 This module must be importable by FreeCAD (installed alongside the macro).
 """
@@ -525,7 +528,9 @@ class BrickProxy:
                             "matching brick params + opposite Primary). "
                             "Supported on all bond types; english/common "
                             "bond header courses do not yet respect the "
-                            "reservation (see brick_geometry docstring).")
+                            "quoin boundary and can spatially overlap the "
+                            "real quoin brick there (see brick_geometry "
+                            "docstring).")
             obj.LeftQuoin = False
         if not hasattr(obj, 'LeftQuoinPrimary'):
             obj.addProperty("App::PropertyBool", "LeftQuoinPrimary", grp,

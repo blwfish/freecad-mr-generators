@@ -367,55 +367,6 @@ def validate_collar_margin(shingle_width: float, shingle_height: float) -> float
     return max(shingle_width, shingle_height) * 3
 
 
-def should_clip_shingles(material_thickness: float) -> bool:
-    """
-    Determine if individual shingles should be clipped to face boundary.
-    
-    Clipping is necessary when shingles would overhang significantly,
-    which is problematic for 3D printing (supports on flat surfaces).
-    
-    Args:
-        material_thickness: Thickness of shingle material (mm)
-    
-    Returns:
-        True if shingles should be clipped (material_thickness < 1mm typical)
-    """
-    # If material is very thin, clipping is essential for print support placement
-    # Threshold: 1mm (anything thinner needs careful support management)
-    return material_thickness < 1.0
-
-
-def calculate_shingle_clip_volume(face_bounds: Dict,
-                                  material_thickness: float) -> Dict:
-    """
-    Calculate the volume for clipping shingles to face boundary.
-
-    Creates a "clipping box" that represents the valid region for shingles
-    (the face + a small margin for material thickness).
-
-    Args:
-        face_bounds: Dict with 'x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max'
-        material_thickness: Thickness of material (mm)
-
-    Returns:
-        Dict describing the clipping volume:
-            - bounds: expanded bounds with material_thickness margin
-            - needs_clipping: whether clipping is necessary
-    """
-    margin = material_thickness  # Only expand by actual material thickness
-
-    return {
-        'x_min': face_bounds.get('x_min', 0) - margin,
-        'x_max': face_bounds.get('x_max', 0) + margin,
-        'y_min': face_bounds.get('y_min', 0) - margin,
-        'y_max': face_bounds.get('y_max', 0) + margin,
-        'z_min': face_bounds.get('z_min', 0) - margin,
-        'z_max': face_bounds.get('z_max', 0) + margin,
-        'needs_clipping': True
-    }
-
-
-
 # Shared functions (is_planar, calculate_face_bounds, find_eave_and_ridge_vertices,
 # calculate_upslope_direction, calculate_across_roof_direction,
 # get_roof_coordinate_system, find_coincident_edges,
