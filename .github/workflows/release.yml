@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes a GitHub Release whenever a version tag is pushed (e.g.
+# `git tag v1.1.0 && git push origin v1.1.0`). GitHub attaches "Source
+# code (zip)" and "(tar.gz)" to every release automatically -- those are
+# built with `git archive`, which honors .gitattributes' export-ignore
+# rules, so no separate packaging step is needed here. This workflow's
+# only job is to (a) gate on the test suite passing and (b) turn the tag
+# into an actual Release object with notes, since a bare tag push alone
+# doesn't create one.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+      - name: Run test suite
+        run: python3 -m pytest
+
+  release:
+    name: Publish release
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

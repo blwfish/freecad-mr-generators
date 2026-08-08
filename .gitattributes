@@ -1,0 +1,10 @@
+# Controls what `git archive` includes — this is what GitHub uses both for
+# the automatic "Source code (zip/tar.gz)" links on every tag/release and
+# for the release.yml workflow. Keeping this list accurate is what keeps
+# those downloads a clean end-user package instead of a dump of internal
+# review/agent tooling.
+
+.github/          export-ignore
+.claude/          export-ignore
+.claude-review/   export-ignore
+.gitattributes    export-ignore
