@@ -553,6 +553,50 @@ class TestEdgeCases:
             assert course_0_start == pytest.approx(course_1_start, abs=0.01)
 
 
+class TestTopCourseCoverage:
+    """Downstream-consumer invariant: radial_brick_proxy.py places these
+    bricks as freestanding solids with NO boolean clip against the source
+    face (unlike flat brick_geometry.py, which deliberately floor-truncates
+    because it over-generates and clips). The top course must always reach
+    z_max, or the top of the surface is left visibly bare -- full-review
+    finding freecad-mr-generators-20260808-a0b9#01.
+    """
+
+    @pytest.mark.parametrize("z_max,brick_height,mortar_thickness", [
+        (30.0, 0.65, 0.11),      # the exact finding's repro case
+        (100.0, 0.65, 0.11),     # shipped HO-scale defaults
+        (0.76, 0.65, 0.11),      # single-unit minimum (one course spacing)
+        (101.0, 1.0, 0.01),      # exact integer multiple of course_spacing
+        (7.6, 0.65, 0.11),       # exact multiple (10 * course_spacing=0.76)
+        (50.3, 0.9, 0.2),        # arbitrary non-round real-model value
+    ])
+    def test_last_course_top_reaches_z_max(self, z_max, brick_height, mortar_thickness):
+        z_min = 0.0
+        rbg = RadialBrickGeometry(
+            z_min=z_min, z_max=z_max,
+            radius_at_z_min=50, radius_at_z_max=50,
+            brick_length=2.32, brick_height=brick_height, brick_thickness=1.09,
+            mortar_thickness=mortar_thickness,
+        )
+        result = rbg.generate()
+        last_course = max(b.course for b in result['bricks'])
+        last_course_top = z_min + last_course * rbg.course_spacing + brick_height
+        assert last_course_top >= z_max - 1e-9, (
+            f"last course top {last_course_top} does not reach z_max {z_max} "
+            f"-- would leave a bare gap at the top of the surface"
+        )
+
+    def test_num_courses_rounds_up_not_down(self):
+        # 30 / 0.76 = 39.47... -- floor gives 39 (undercoverage), ceil+1 gives 41
+        rbg = RadialBrickGeometry(
+            z_min=0, z_max=30,
+            radius_at_z_min=50, radius_at_z_max=50,
+            brick_length=2.32, brick_height=0.65, brick_thickness=1.09,
+            mortar_thickness=0.11,
+        )
+        assert rbg.num_courses == 41
+
+
 class TestRadialBrickDefNamedTuple:
     """Test RadialBrickDef namedtuple."""
 

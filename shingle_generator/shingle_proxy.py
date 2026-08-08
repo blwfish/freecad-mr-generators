@@ -29,7 +29,9 @@ from shingle_geometry import (
     calculate_layout,
     calculate_stagger_offset,
     get_roof_coordinate_system,
+    is_valid_clip_fragment,
 )
+from freecad_utils import resolve_sources_faces  # noqa: E402
 
 
 # =============================================================================
@@ -118,13 +120,23 @@ def _build_clip_volumes(face):
 
 
 def _clip_shape(shape, clip_volumes):
-    """Clip a shape against dual clip volumes. Returns clipped shape or None."""
+    """Clip a shape against dual clip volumes. Returns clipped shape or None.
+
+    Survival is judged against the shape's own pre-clip volume (see
+    is_valid_clip_fragment) rather than a fixed absolute threshold, so a
+    razor-thin sliver at a face boundary is discarded instead of surviving
+    as a stray fragment -- the same fix already applied to slate_proxy.py,
+    slate_seam_proxy.py, and standing_seam_proxy.py after a documented real
+    incident (a 0.02mm^3 sliver surviving as ~1% of a 1.8mm^3 tile on a hip
+    roof); this proxy was missed by that fix.
+    """
+    full_volume = shape.Volume
     for cv in clip_volumes:
         try:
             result = shape.common(cv)
             if result.ShapeType == 'Compound' and len(result.Solids) == 1:
                 result = result.Solids[0]
-            if result.Volume > 0.001:
+            if is_valid_clip_fragment(result.Volume, full_volume):
                 return result
         except Exception:
             continue
@@ -172,6 +184,25 @@ def _generate_shingles_for_face(face, params):
     shingle_shapes = []
 
     for row in range(num_courses):
+        # Skip/stop courses where less than half the shingle height lies on
+        # the face. Row 0 is a box of height=exposure; all other rows use
+        # shingle_height. Below the eave (butt < v=0): skip, keep looping --
+        # a later row may still land on the face. Past the ridge: break --
+        # no useful courses remain, and the clipped fragment there is
+        # thicker in the normal direction than it is tall up the slope,
+        # reading as a raised fin rather than a shingle. Ported from
+        # shingle_generator.FCMacro's v5.4.0 fix, which this proxy never
+        # received (full-review finding
+        # freecad-mr-generators-20260808-a0b9#02's consequences).
+        v_row = row * exposure - exposure
+        v_h = exposure if row == 0 else shingle_height
+        v_butt = v_row - v_h
+        v_on_face = min(v_row, v_length) - max(v_butt, 0.0)
+        if v_on_face < v_h * 0.5:
+            if v_butt >= 0.0:
+                break
+            continue
+
         stagger = calculate_stagger_offset(row, stagger_pattern, shingle_width)
 
         for col in range(shingles_per_course):
@@ -367,19 +398,20 @@ class ShingleProxy:
             App.Console.PrintError(f"ShingleGenerator: {msg}\n")
             return
 
-        # Resolve LinkSubList -> faces
+        # Resolve LinkSubList -> faces. resolve_sources_faces() calls
+        # getElement() inside its own per-entry try/except, so a stale
+        # sub_name after a topology change skips just that face instead of
+        # aborting the whole loop (this proxy previously called getElement()
+        # directly, outside any try/except -- the same bug a same-day fix
+        # already covered in 8 sibling proxies but missed here).
         all_shingles = []
-        for link_obj, sub_names in obj.Sources:
-            for sub_name in sub_names:
-                if not sub_name.startswith("Face"):
-                    continue
-                face = link_obj.Shape.getElement(sub_name)
-                try:
-                    pieces = _generate_shingles_for_face(face, params)
-                    all_shingles.extend(pieces)
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"  {link_obj.Label}.{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "ShingleGenerator"):
+            try:
+                pieces = _generate_shingles_for_face(face, params)
+                all_shingles.extend(pieces)
+            except Exception as e:
+                App.Console.PrintError(
+                    f"  {link_obj.Label}.{sub_name}: {e}\n")
 
         if not all_shingles:
             App.Console.PrintWarning("ShingleGenerator: no shingles generated\n")
