@@ -1,0 +1,16 @@
+[run]
+source = .
+omit =
+    */tests/*
+    */__pycache__/*
+    .claude/*
+    .pytest_cache/*
+    conftest.py
+    # *_proxy.py imports FreeCAD/Part, unavailable under plain python3 -m pytest
+    # (see CLAUDE.md "Testing FreeCAD-dependent proxy code"). Coverage on these
+    # files is structurally unmeasurable here, not a real 0% signal — omit them
+    # so the floor-check reports only what plain pytest can actually exercise.
+    */*_proxy.py
+
+[report]
+skip_empty = True
