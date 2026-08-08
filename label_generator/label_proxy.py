@@ -41,7 +41,15 @@ _FONT_CANDIDATES = [
     "/Library/Fonts/Arial Unicode.ttf",
 ]
 
-_DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
+# find_first_existing_path() already returns "" (never None) when no
+# candidate exists -- true on non-macOS, or macOS without these specific
+# fonts. The `or ""` is a defensive belt-and-suspenders guard: even if a
+# future change to find_first_existing_path ever returned None, set_defaults
+# below must never assign None to the App::PropertyFile FontPath property
+# (that would surface later as an opaque "file not found: None"-style
+# failure instead of resolve_font_path()'s clear "FontPath is not set"
+# PrintWarning -- full-review finding #07).
+_DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES) or ""
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +198,11 @@ class LabelProxy:
     @staticmethod
     def set_defaults(obj, text="Label", font_path=None):
         obj.Text             = text
-        obj.FontPath         = font_path if font_path is not None else _DEFAULT_FONT
+        # Never assign None to the App::PropertyFile FontPath property (see
+        # the _DEFAULT_FONT comment above -- full-review finding #07): "" is
+        # the expected "not set" sentinel that resolve_font_path() already
+        # handles with a clear diagnostic.
+        obj.FontPath         = font_path if font_path is not None else (_DEFAULT_FONT or "")
         obj.FontSize         = 0.0       # 0 = auto
         obj.Height           = 0.3
         obj.Padding          = 1.0

@@ -7,8 +7,12 @@ Run with: python -m pytest test_brick_geometry.py -v
 
 import pytest
 import math
-from brick_geometry import BrickGeometry, BrickDef
+from brick_geometry import (
+    BrickGeometry, BrickDef,
+    face_index_set, find_dual_listed_faces, resolve_quoin_flags_for_face,
+)
 from boundary_assertions import assert_overflows_boundary
+from quoin_geometry import QuoinGeometry, mirror_to_right_edge
 
 
 def _brick_u_extent(b):
@@ -671,16 +675,65 @@ class TestBoundaryOverflow:
                 label=f"bond={bond} u_length={u_length} course={course_idx}: ",
             )
 
+    def test_calculate_course_layout_closer_at_min_closer_boundary(self):
+        """Mutation guard for `_calculate_course_layout`'s own
+        `while closer_width < min_closer` (the shared helper english bond
+        calls) -- NOT the same boundary as the flemish-bond test below.
+
+        This is a real, previously-confirmed surviving mutant: mutating
+        this line's `<` to `<=` and rerunning the full suite left every
+        test passing, because `_generate_flemish_bond` never calls
+        `_calculate_course_layout` at all -- it has its own, independent
+        closer-feasibility search (test_C0 >= min_closer, a different
+        operator and a different code path), so a test exercised only via
+        flemish bond (like the one below, despite its former misleading
+        name/docstring) cannot catch a mutation here (full-review finding
+        freecad-mr-generators-20260808-a0b9#22).
+
+        Chosen so the loop's SECOND iteration lands closer_width exactly
+        at min_closer: with the correct `<`, the loop stops there
+        (n_bricks=3, closer_width=1.0); with the `<=` mutant, it reduces
+        once more (n_bricks=2, closer_width=2.25). English bond is the
+        real caller, so exercise it through that path.
+        """
+        bw, m = 2.0, 0.5
+        W = 10.0  # see brick_generator/tests/test_brick_geometry.py history for the derivation
+        bg = BrickGeometry(u_length=W, v_length=5.0,
+                           brick_width=bw, brick_height=0.65, brick_depth=bw,
+                           mortar=m, bond_type='stretcher')
+        n_bricks, closer_width = bg._calculate_course_layout(W, bw)
+        assert n_bricks == 3
+        assert closer_width == pytest.approx(1.0)
+
     def test_flemish_closer_at_min_closer_boundary(self):
-        """Mutation guard: `while closer_width < min_closer` — pin the exact-boundary case.
+        """Mutation guard for `_generate_flemish_bond`'s OWN, independent
+        closer-feasibility search (test_C0 >= min_closer) -- a separate
+        code path from `_calculate_course_layout` above, despite computing
+        a superficially similar quantity. See the test above for why these
+        two boundaries must be pinned by two separate tests.
 
         Choose W so C0 comes out exactly equal to min_closer for n=1.  With the
         correct `<` the loop exits (n=1 is valid); with `<=` the loop reduces n
         to 0 and produces a different course layout.  Pinning the stretcher count
         catches that mutation without FreeCAD.
+
+        Uses S/H/m values that are exactly representable in binary
+        floating point (2.0/1.0/0.25), not the realistic-looking HO-scale
+        decimals (2.32/1.09/0.11) an earlier version of this test used --
+        those aren't exact in binary, so solving for W analytically
+        (W = 2*min_closer + ...) and then having the code recompute C0 via
+        a differently-grouped expression ((W - ...)/2) landed on
+        0.22000000000000028, not the intended exact 0.22 (confirmed via a
+        real Python repl trace). `0.22000000000000028 >= 0.22` and
+        `0.22000000000000028 > 0.22` are BOTH true, so that version could
+        not actually discriminate `>=` from `>` at this boundary despite
+        its own docstring's claim -- full-review finding
+        freecad-mr-generators-20260808-a0b9#33. Exactly-representable
+        inputs make W - A and (W - A) / 2 round-trip bit-for-bit, so C0
+        really does land on exactly `min_closer`.
         """
-        S, H, m = 2.32, 1.09, 0.11
-        min_closer = m * 2  # 0.22
+        S, H, m = 2.0, 1.0, 0.25
+        min_closer = m * 2  # 0.5, exact
         n = 1
         W = 2 * min_closer + (n + 1) * S + n * H + 2 * (n + 1) * m
         bg = BrickGeometry(u_length=W, v_length=5.0,
@@ -762,6 +815,55 @@ class TestLeftQuoinFillStart:
         bg = BrickGeometry(u_length=30, v_length=20, bond_type='stretcher', **HO)
         for course in range(5):
             assert bg._quoin_fill_start(course) == 0.0
+
+
+class TestRightQuoinFillEnd:
+    """_quoin_fill_end is the single source of truth _generate_flemish_bond's
+    dual-quoin right closer derives from (C_right = fill_end(course) - u).
+    These pin its direct return value against the same u_length/quoin_width/
+    mortar arithmetic the live closer-width computation depends on."""
+
+    W = 30.0
+
+    @pytest.mark.parametrize('course,primary,expected', [
+        (0, True,  30.0 - 2.32 - 0.11),   # even, primary → S reserved → W-S-m
+        (1, True,  30.0 - 1.09 - 0.11),   # odd,  primary → H reserved → W-H-m
+        (0, False, 30.0 - 1.09 - 0.11),   # even, return  → H reserved → W-H-m
+        (1, False, 30.0 - 2.32 - 0.11),   # odd,  return  → S reserved → W-S-m
+    ])
+    def test_fill_end_value(self, course, primary, expected):
+        bg = BrickGeometry(
+            u_length=self.W, v_length=20.0,
+            left_quoin=True, left_quoin_primary=True,
+            right_quoin=True, right_quoin_primary=primary,
+            bond_type='flemish', **HO,
+        )
+        assert bg._quoin_fill_end(course) == pytest.approx(expected, abs=1e-9)
+
+    def test_no_right_quoin_returns_u_length(self):
+        bg = BrickGeometry(u_length=self.W, v_length=20.0, bond_type='stretcher', **HO)
+        for course in range(5):
+            assert bg._quoin_fill_end(course) == self.W
+
+    def test_matches_live_closer_right_edge(self):
+        """The value this method returns for a given course must equal the
+        u-coordinate where the live flemish-bond right closer actually ends
+        (closer.u + closer.width) — i.e. _generate_flemish_bond's C_right
+        really is derived from this method, not a silently-diverging copy."""
+        bg = BrickGeometry(
+            u_length=27.628, v_length=20.0,
+            left_quoin=True, left_quoin_primary=True,
+            right_quoin=True, right_quoin_primary=False,
+            bond_type='flemish', **HO,
+        )
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course, bricks in by_course.items():
+            closer = [b for b in bricks if b.brick_type == 'closer'][0]
+            right_edge = closer.u + closer.width
+            assert right_edge == pytest.approx(bg._quoin_fill_end(course), abs=1e-9)
 
 
 class TestLeftQuoinStretcherBond:
@@ -1192,6 +1294,227 @@ class TestDualQuoinRealWidths:
         result = bg.generate()
         for b in result['bricks']:
             assert b.width > 1e-9, f"course {b.course}: zero/negative-width brick"
+
+
+def _merge_dual_quoin_population(left_primary, right_primary, W, v_length=20.0, **extra):
+    """Reproduce brick_proxy._create_mortar_grid's merge (all_bricks + quoin_defs)
+    for a single-segment face (no bay boundaries: seg_start=0, seg_end=W) — the
+    exact population that gets Part.Compound()'d and fed to `.common()`/`.cut()`
+    against face_slab in the real proxy. See brick_proxy.py lines ~339-395.
+    """
+    kw = dict(HO, **extra)
+    bg = BrickGeometry(
+        u_length=W, v_length=v_length,
+        left_quoin=True, left_quoin_primary=left_primary,
+        right_quoin=True, right_quoin_primary=right_primary,
+        bond_type='flemish', **kw,
+    )
+    all_bricks = list(bg.generate()['bricks'])
+
+    qg = QuoinGeometry(
+        wall_height=v_length, brick_width=kw['brick_width'],
+        brick_height=kw['brick_height'], brick_depth=kw['brick_depth'],
+        mortar=kw['mortar'], bond_type='flemish',
+    )
+    qresult = qg.generate()
+
+    quoin_defs = []
+    left_side = qresult['face_a_bricks'] if left_primary else qresult['face_b_bricks']
+    quoin_defs.extend(left_side)
+    right_side = qresult['face_a_bricks'] if right_primary else qresult['face_b_bricks']
+    quoin_defs.extend(mirror_to_right_edge(right_side, span=W))
+
+    return all_bricks, quoin_defs
+
+
+class TestDualQuoinMergedBoundaryOverflow:
+    """CLAUDE.md Rule 2 (downstream-consumer invariant): brick_proxy's
+    _create_mortar_grid feeds `all_bricks + quoin_defs` — fill bricks AND the
+    real quoin-column bricks, merged — into a single Part.Compound() that gets
+    `.common()`/`.cut()` against face_slab (brick_proxy.py lines ~339-404).
+
+    TestNoOverlap / TestDualQuoinFillExclusion only check that quoin and fill
+    don't overlap each other; they say nothing about whether the MERGED
+    population clears the wall's [0, u_length] boundary. Since left/right
+    quoin fill deliberately stops short of u=0/u=u_length (the quoin column
+    is meant to cover that edge instead — see _quoin_fill_start/_quoin_fill_end),
+    checking fill bricks alone would show them stopping well short of the
+    boundary, which is correct in isolation but says nothing about whether the
+    quoin bricks that are supposed to cover that gap actually overflow it.
+    """
+
+    @pytest.mark.parametrize('left_primary,right_primary', [
+        (True, True), (True, False), (False, True), (False, False),
+    ])
+    @pytest.mark.parametrize('W', [
+        27.628,                           # actual model width (west wall)
+        50.0,                             # round number
+        14 * 2.32 + 13 * 0.11,            # exact integer multiple of stretcher spacing
+    ])
+    def test_merged_population_overflows_wall_boundary(self, left_primary, right_primary, W):
+        all_bricks, quoin_defs = _merge_dual_quoin_population(left_primary, right_primary, W)
+        merged = all_bricks + quoin_defs
+
+        by_course = {}
+        for b in merged:
+            by_course.setdefault(b.course, []).append(b)
+
+        for course_idx, course_bricks in by_course.items():
+            assert_overflows_boundary(
+                course_bricks, lo=0.0, hi=W,
+                get_extent=_brick_u_extent,
+                label=f"left_primary={left_primary} right_primary={right_primary} "
+                      f"W={W} course={course_idx}: ",
+            )
+
+    def test_fill_alone_does_not_overflow_left_or_right(self):
+        """Sanity check on the premise: without the quoin bricks, fill bricks
+        stop short of both edges (by design — the quoin covers the corner).
+        This is what makes the merged-population check in the test above
+        meaningful rather than redundant with the existing fill-only tests."""
+        all_bricks, quoin_defs = _merge_dual_quoin_population(True, True, W=27.628)
+        assert len(quoin_defs) > 0
+        min_start = min(b.u for b in all_bricks)
+        max_end = max(b.u + b.width for b in all_bricks)
+        assert min_start >= 0.0 - 1e-6, (
+            f"expected fill-only left edge to NOT overflow u=0, got {min_start}"
+        )
+        assert max_end <= 27.628 + 1e-6, (
+            f"expected fill-only right edge to NOT overflow u=27.628, got {max_end}"
+        )
+
+
+class TestFaceIndexSet:
+    """face_index_set() -- extracted from brick_proxy._face_index_set,
+    full-review finding freecad-mr-generators-20260808-a0b9#09."""
+
+    def test_matches_by_identity(self):
+        link_obj = object()
+        other_obj = object()
+        link_sub_list = [
+            (link_obj, ("Face1", "Face3")),
+            (other_obj, ("Face1",)),  # different obj, must be ignored
+        ]
+        assert face_index_set(link_sub_list, link_obj) == {0, 2}
+
+    def test_no_matching_entries_is_empty(self):
+        link_obj = object()
+        other_obj = object()
+        assert face_index_set([(other_obj, ("Face1",))], link_obj) == set()
+
+    def test_empty_list_is_empty(self):
+        link_obj = object()
+        assert face_index_set([], link_obj) == set()
+
+    def test_non_face_sub_names_ignored(self):
+        link_obj = object()
+        link_sub_list = [(link_obj, ("Edge3", "Vertex1", "Face2"))]
+        assert face_index_set(link_sub_list, link_obj) == {1}
+
+    def test_face_index_is_zero_based_from_one_based_name(self):
+        link_obj = object()
+        assert face_index_set([(link_obj, ("Face1",))], link_obj) == {0}
+        assert face_index_set([(link_obj, ("Face10",))], link_obj) == {9}
+
+    def test_malformed_face_name_raises(self):
+        # Ambiguous input (a "FaceN" name with a non-numeric suffix) must
+        # not silently produce a wrong index -- raise instead, per this
+        # project's Threshold-Boundary Testing Rule.
+        link_obj = object()
+        with pytest.raises(ValueError):
+            face_index_set([(link_obj, ("FaceX",))], link_obj)
+
+
+class TestFindDualListedFaces:
+    def test_disjoint_sets(self):
+        assert find_dual_listed_faces({0, 1}, {2, 3}) == set()
+
+    def test_overlapping_sets(self):
+        assert find_dual_listed_faces({0, 1, 2}, {1, 2, 3}) == {1, 2}
+
+    def test_both_empty(self):
+        assert find_dual_listed_faces(set(), set()) == set()
+
+    def test_identical_sets(self):
+        assert find_dual_listed_faces({0, 1}, {0, 1}) == {0, 1}
+
+
+class TestResolveQuoinFlagsForFace:
+    """resolve_quoin_flags_for_face() -- extracted from
+    brick_proxy._resolve_quoin_flags's per-face resolve() closure."""
+
+    def test_face_not_in_any_override_uses_defaults(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=5,
+            left_primary=set(), left_secondary=set(),
+            right_primary=set(), right_secondary=set(),
+            default_left_quoin=False, default_left_primary=True,
+            default_right_quoin=True, default_right_primary=False,
+        )
+        assert result == (False, True, True, False)
+
+    def test_face_in_left_primary(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=0,
+            left_primary={0}, left_secondary=set(),
+            right_primary=set(), right_secondary=set(),
+            default_left_quoin=False, default_left_primary=False,
+            default_right_quoin=False, default_right_primary=False,
+        )
+        assert result == (True, True, False, False)
+
+    def test_face_in_left_secondary_only(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=0,
+            left_primary=set(), left_secondary={0},
+            right_primary=set(), right_secondary=set(),
+            default_left_quoin=False, default_left_primary=True,
+            default_right_quoin=False, default_right_primary=False,
+        )
+        assert result == (True, False, False, False)
+
+    def test_face_in_right_primary(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=2,
+            left_primary=set(), left_secondary=set(),
+            right_primary={2}, right_secondary=set(),
+            default_left_quoin=False, default_left_primary=False,
+            default_right_quoin=False, default_right_primary=False,
+        )
+        assert result == (False, False, True, True)
+
+    def test_face_in_right_secondary_only(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=2,
+            left_primary=set(), left_secondary=set(),
+            right_primary=set(), right_secondary={2},
+            default_left_quoin=False, default_left_primary=False,
+            default_right_quoin=False, default_right_primary=True,
+        )
+        assert result == (False, False, True, False)
+
+    def test_face_in_both_left_primary_and_secondary_resolves_primary(self):
+        # Matches _resolve_quoin_flags's documented contract: a face
+        # listed in both Primary and Secondary for the same side resolves
+        # as Primary (and the caller separately warns about the overlap).
+        result = resolve_quoin_flags_for_face(
+            face_idx=0,
+            left_primary={0}, left_secondary={0},
+            right_primary=set(), right_secondary=set(),
+            default_left_quoin=False, default_left_primary=False,
+            default_right_quoin=False, default_right_primary=False,
+        )
+        assert result[0] is True and result[1] is True
+
+    def test_face_in_both_left_and_right_overrides(self):
+        result = resolve_quoin_flags_for_face(
+            face_idx=0,
+            left_primary={0}, left_secondary=set(),
+            right_primary={0}, right_secondary=set(),
+            default_left_quoin=False, default_left_primary=False,
+            default_right_quoin=False, default_right_primary=False,
+        )
+        assert result == (True, True, True, True)
 
 
 if __name__ == '__main__':

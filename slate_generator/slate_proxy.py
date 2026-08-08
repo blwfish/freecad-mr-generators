@@ -303,6 +303,18 @@ class SlateProxy:
         butt_thick = float(obj.ButtThickness)
         if butt_thick == 0:
             butt_thick = mat_thick * 3
+        elif butt_thick <= mat_thick:
+            # Every non-starter course falls back to a flat box at
+            # mat_thick (see the row == 0 or butt_thick <= mat_thick
+            # branch in _generate_tiles_for_face) instead of the wedge
+            # profile ButtThickness implies. Warn once per execute() so
+            # the user isn't silently shown geometry that doesn't match
+            # the property panel's ButtThickness value.
+            App.Console.PrintWarning(
+                f"SlateGenerator: ButtThickness ({butt_thick}mm) <= "
+                f"MaterialThickness ({mat_thick}mm) -- building tile at "
+                "MaterialThickness instead; increase ButtThickness for a "
+                "stepped course profile.\n")
 
         params = {
             'tile_width':         float(obj.TileWidth),

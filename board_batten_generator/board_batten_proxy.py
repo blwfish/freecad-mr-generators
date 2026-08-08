@@ -87,11 +87,17 @@ def _make_rect_solid(h_start, h_end, v_min, v_max, thickness, offset_dir,
             ])
             return Part.Face(w).extrude(App.Vector(off, 0, 0))
     else:  # vert_axis == 'y'
+        # Normal axis is always 'z' here (see _detect_orientation): the
+        # constant coordinate must come from the face's actual bounding
+        # box, not a hardcoded 0 (full-review finding #06) -- mirrors how
+        # the vert_axis == 'z' branch above uses bbox.YMin/bbox.XMin for
+        # its own normal-axis constant.
+        bz = bbox.ZMin
         off = thickness if normal.z > 0 else -thickness
         w = Part.makePolygon([
-            App.Vector(h_start, v_min, 0), App.Vector(h_end, v_min, 0),
-            App.Vector(h_end, v_max, 0), App.Vector(h_start, v_max, 0),
-            App.Vector(h_start, v_min, 0),
+            App.Vector(h_start, v_min, bz), App.Vector(h_end, v_min, bz),
+            App.Vector(h_end, v_max, bz), App.Vector(h_start, v_max, bz),
+            App.Vector(h_start, v_min, bz),
         ])
         return Part.Face(w).extrude(App.Vector(0, 0, off))
 

@@ -17,6 +17,16 @@ VERSION = "7.0.1"
 GENERATOR_NAME = "clapboard_generator"
 CLAPBOARD_TRIM_OFFSET = 0.05  # mm — clapboard bottom inboard of trim edge
 
+_here = Path(__file__).parent
+for p in (str(_here), str(_here / '_lib')):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from clapboard_geometry import (  # noqa: E402
+    calculate_course_v_positions,
+    validate_parameters,
+)
+
 
 # =============================================================================
 # Geometry helpers (formerly inline in clapboard_generator.FCMacro)
@@ -92,11 +102,6 @@ def _detect_orientation(bbox):
     return 'y', 'x', 'z'
 
 
-def _snap_to_grid(bbox, height, vert_axis):
-    vmin = bbox.ZMin if vert_axis == 'z' else bbox.YMin
-    return round(vmin / height) * height
-
-
 def _find_gable_edges(wire, vert_axis, angle_tol=5.0):
     vd = App.Vector(0, 0, 1) if vert_axis == 'z' else App.Vector(0, 1, 0)
     gable = []
@@ -139,9 +144,16 @@ def _find_bay_boundaries(outer_wire, horiz_axis, vert_axis, gap_threshold=0.0005
     ]
 
 
-def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, normal,
+def _make_course(v_bot, v_top, bbox, thickness, vert_axis, horiz_axis, normal,
                  bay_boundaries=None):
-    """Build one clapboard course (or segmented pieces at bay boundaries)."""
+    """Build one clapboard course (or segmented pieces at bay boundaries).
+
+    v_bot/v_top are the course's vertical extent, already computed (and
+    boundary-overflow-guaranteed) by
+    clapboard_geometry.calculate_course_v_positions() -- this function no
+    longer derives them itself. See generate_clapboard_skin() and full-
+    review finding #03.
+    """
     actual_thick = thickness - CLAPBOARD_TRIM_OFFSET
     thin = 0.01
     boundaries = sorted(bay_boundaries or [])
@@ -164,25 +176,9 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
     if not segs:
         segs = [(h_min_all, h_max_all)]
 
-    # TOPO_EPS: snap any course edge within this distance of the wall
-    # vertical boundary strictly OUTSIDE the wall.  Required to avoid an
-    # OCCT common() segfault during gable-trim when wall_height is an exact
-    # integer multiple of clapboard_height (top course's v_top would
-    # otherwise coincide with bbox.ZMax / bbox.YMax).  Matches the invariant
-    # tested by calculate_course_v_positions in clapboard_geometry.py.
-    TOPO_EPS = 1e-3
-
     pieces = []
     for h_min, h_max in segs:
         if vert_axis == 'z':
-            v_bot = vert_pos
-            v_top = min(vert_pos + height, bbox.ZMax + 0.1)
-            if v_bot >= bbox.ZMax:
-                continue
-            if abs(v_bot - bbox.ZMin) < TOPO_EPS:
-                v_bot = bbox.ZMin - TOPO_EPS
-            if abs(v_top - bbox.ZMax) < TOPO_EPS:
-                v_top = bbox.ZMax + TOPO_EPS
             if horiz_axis == 'x':
                 by = bbox.YMin
                 to = actual_thick if normal.y > 0 else -actual_thick
@@ -212,15 +208,12 @@ def _make_course(vert_pos, bbox, height, thickness, vert_axis, horiz_axis, norma
                     App.Vector(bx, h_min, v_bot),
                 ])
         else:  # vert_axis == 'y'
-            v_bot = vert_pos
-            v_top = min(vert_pos + height, bbox.YMax + 0.1)
-            if v_bot >= bbox.YMax:
-                continue
-            if abs(v_bot - bbox.YMin) < TOPO_EPS:
-                v_bot = bbox.YMin - TOPO_EPS
-            if abs(v_top - bbox.YMax) < TOPO_EPS:
-                v_top = bbox.YMax + TOPO_EPS
-            bz = 0
+            # Normal axis is always 'z' here (see _detect_orientation): the
+            # constant coordinate must come from the face's actual bounding
+            # box, not a hardcoded 0 (full-review finding #06) -- mirrors
+            # how the vert_axis == 'z' branch above uses bbox.YMin/bbox.XMin
+            # for its own normal-axis constant.
+            bz = bbox.ZMin
             to = actual_thick if normal.z > 0 else -actual_thick
             no = thin if normal.z > 0 else -thin
             ow = Part.makePolygon([
@@ -251,16 +244,21 @@ def generate_clapboard_skin(face, clapboard_height=1.75, clapboard_thickness=0.2
     normal = _face_normal(face)
     bay_bounds = _find_bay_boundaries(outer_wire, horiz_axis, vert_axis)
 
-    wall_h = (bbox.ZMax - bbox.ZMin) if vert_axis == 'z' else (bbox.YMax - bbox.YMin)
-    vert_min = _snap_to_grid(bbox, clapboard_height, vert_axis)
-    num_courses = int(math.ceil(wall_h / clapboard_height))
+    wall_v_min = bbox.ZMin if vert_axis == 'z' else bbox.YMin
+    wall_v_max = bbox.ZMax if vert_axis == 'z' else bbox.YMax
+
+    # Delegates to clapboard_geometry so this proxy and the pytest-verified
+    # math can never diverge (previously an inlined, independently-drifting
+    # copy with only a tight per-course TOPO_EPS snap and no +1 extra course
+    # / post-loop overflow guarantee -- see CLAUDE.md's "Testing rule:
+    # proxy/geometry parity" and full-review finding #03).
+    course_positions = calculate_course_v_positions(
+        wall_v_min, wall_v_max, clapboard_height)
 
     parts = []
-    for i in range(num_courses):
-        overlap = 0.01 if i > 0 else 0
-        vert_pos = vert_min + i * clapboard_height - overlap
+    for i, (v_bot, v_top) in enumerate(course_positions):
         try:
-            cb = _make_course(vert_pos, bbox, clapboard_height, clapboard_thickness,
+            cb = _make_course(v_bot, v_top, bbox, clapboard_thickness,
                               vert_axis, horiz_axis, normal, bay_bounds)
             if cb:
                 parts.append(cb)
@@ -342,6 +340,17 @@ class ClapboardProxy:
 
         h = float(obj.ClapboardHeight)
         t = float(obj.ClapboardThickness)
+
+        # Full-review finding #05: validate up front (matching
+        # board_batten_proxy.py's parameter-validation pattern) so an
+        # invalid combination (e.g. clapboard_thickness > clapboard_height)
+        # produces one clear PrintError instead of failing per-face deep
+        # inside geometry construction.
+        valid, errors = validate_parameters(h, t)
+        if not valid:
+            App.Console.PrintError(
+                f"ClapboardProxy: invalid parameters: {'; '.join(errors)}\n")
+            return
 
         skins = []
         for link_obj, sub_names in obj.Sources:

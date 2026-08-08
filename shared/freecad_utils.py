@@ -376,7 +376,9 @@ def _closest_candidate(orig_face, candidates):
     if not candidates:
         return None, None
     orig_center = orig_face.CenterOfMass
-    orig_normal_v = orig_face.normalAt(0.5, 0.5)
+    orig_uv = orig_face.ParameterRange
+    orig_normal_v = orig_face.normalAt(
+        (orig_uv[0] + orig_uv[1]) / 2, (orig_uv[2] + orig_uv[3]) / 2)
     orig_normal = (orig_normal_v.x, orig_normal_v.y, orig_normal_v.z)
     test_vtx = Part.Vertex(orig_center)
 
@@ -394,7 +396,8 @@ def _closest_candidate(orig_face, candidates):
                 f"center distance: {e}\n")
             d = orig_center.distanceToPoint(f.CenterOfMass)
         try:
-            fn = f.normalAt(0.5, 0.5)
+            f_uv = f.ParameterRange
+            fn = f.normalAt((f_uv[0] + f_uv[1]) / 2, (f_uv[2] + f_uv[3]) / 2)
             normal = (fn.x, fn.y, fn.z)
         except Exception as e:
             App.Console.PrintWarning(
