@@ -29,6 +29,7 @@ from roof_geometry import (
     classify_roof_intersection,
     calculate_dihedral_angle,
     analyze_roof_intersection,
+    is_valid_clip_fragment,
 )
 
 

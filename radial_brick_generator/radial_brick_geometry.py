@@ -92,7 +92,21 @@ class RadialBrickGeometry:
         # Pre-calculate derived values
         self.surface_height = z_max - z_min
         self.course_spacing = brick_height + mortar_thickness
-        self.num_courses = max(1, int(self.surface_height / self.course_spacing))
+        # ceil(...)+1, not floor/int-truncate: radial_brick_proxy places
+        # these bricks as freestanding solids with no downstream boolean
+        # clip against the source face (unlike flat brick_geometry.py,
+        # which floor-truncates deliberately because it over-generates via
+        # ceil(...)+2 and then clips). Floor-truncating here left the top
+        # course short of z_max on nearly any non-exact-multiple input -- a
+        # visible bare gap at the top of the surface, not a mere rounding
+        # artifact. ceil() alone is not sufficient either: at an exact (or
+        # float-precision-fuzzed-to-exact) multiple of course_spacing,
+        # ceil(surface_height/course_spacing) can still land one course
+        # short, undercovering by mortar_thickness -- the same "+1" margin
+        # clapboard_geometry.calculate_course_v_positions already uses for
+        # the identical reason (full-review finding
+        # freecad-mr-generators-20260808-a0b9#01, #03).
+        self.num_courses = max(1, math.ceil(self.surface_height / self.course_spacing) + 1)
 
         # Taper calculation: how much radius changes per unit Z
         self.taper_rate = (radius_at_z_max - radius_at_z_min) / self.surface_height if self.surface_height > 0 else 0
