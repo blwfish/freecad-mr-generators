@@ -12,6 +12,7 @@ Parametric FreeCAD generators for model railroad structure detailing. Select fac
 - [Generator reference](#generator-reference)
 - [Scales](#scales)
 - [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -29,6 +30,7 @@ All dimensions are in **millimetres**, at the real-world prototype scale you are
 
 | Macro | Surface | What it produces |
 |---|---|---|
+| `ashlar_generator` | *(none — standalone wall)* | 3D-printable ashlar stone wall panel with quarried-texture stone faces, mortar sheet, and backing (requires numpy/scipy — see [Requirements](#requirements-and-platform-notes)) |
 | `bead_board_generator` | wall faces | Beadboard panelling — vertical boards with recessed bead grooves |
 | `board_batten_generator` | wall faces | Board-and-batten siding — wide vertical boards with narrow battens over the joints |
 | `brick_generator_macro` | wall faces | Brick coursing engraved into the wall — stretcher, English, Flemish, or common bond |
@@ -46,14 +48,28 @@ All dimensions are in **millimetres**, at the real-world prototype scale you are
 
 ## Requirements and platform notes
 
-- **FreeCAD 1.0 or later.** Tested primarily on weekly development builds. The generators use the FeaturePython parametric object system.
-- **Python 3.x**, bundled with FreeCAD—no separate install needed.
+- **FreeCAD 1.1.x** (current stable) or a current weekly development build (calendar-versioned, e.g. `26.3+`). The generators use the FeaturePython parametric object system and only standard FreeCAD APIs.
+- **Python 3.x**, bundled with FreeCAD—no separate install needed for most generators.
+- **`ashlar_generator` additionally needs `numpy` and `scipy`** installed in FreeCAD's own Python environment (for Delaunay-triangulated stone texture). Every other generator needs nothing beyond FreeCAD itself. `install.py` checks for this automatically and prints the exact fix command if they're missing — see [Installation](#installation).
 
 **Platform:** I develop and test on macOS. The installer detects macOS, Linux, and Windows paths, and the generators use only standard FreeCAD APIs, so they should work on any platform FreeCAD runs on. That said, I've never tested on Linux or Windows. If you run into platform-specific issues, please open an issue or submit a PR.
+
+**Using an AI coding agent?** See [AGENT-INSTALL.md](AGENT-INSTALL.md) instead — it has agent-oriented install steps and an optional walkthrough for also setting up [freecad-mcp](https://github.com/blwfish/freecad-mcp), a companion tool that lets your agent drive FreeCAD directly.
 
 ---
 
 ## Installation
+
+**Download the latest release** (recommended — no git required):
+
+Grab the zip or tar.gz from the [Releases page](https://github.com/blwfish/freecad-mr-generators/releases/latest), extract it, then:
+
+```bash
+cd freecad-mr-generators-<version>
+python3 install.py
+```
+
+**Or clone the repo** (if you want git history, or plan to contribute):
 
 ```bash
 git clone https://github.com/blwfish/freecad-mr-generators
@@ -66,6 +82,7 @@ Restart FreeCAD. Macros appear in **Tools → Macros**.
 **What the installer does:**
 - Copies `*.FCMacro` files to your FreeCAD user macro directory
 - Copies the Python library to `FreeCAD/Mod/fc_generators/`, which FreeCAD adds to its Python path automatically on startup
+- Checks whether `ashlar_generator`'s `numpy`/`scipy` dependency is present in FreeCAD's own Python, and if not, prints the exact command to fix it
 
 **Preview before installing:**
 ```bash
@@ -170,6 +187,23 @@ Same idea as `brick_generator`, but for cylindrical or conical faces. Brick leng
 | `BrickHeight` | — | Brick height along the Z axis (mm) |
 | `MaterialThickness` | — | Radial skin depth (mm) |
 | `MortarThickness` | — | Mortar joint thickness (mm) |
+
+#### Ashlar Stone
+
+Standalone 3D-printable wall panel — not a face-detailing generator like the others. Generates a grid of individually fractured, Delaunay-triangulated stone faces, a mortar sheet with cutouts, and a backing box, ready for resin printing. **Requires `numpy` and `scipy`** in FreeCAD's own Python (see [Requirements](#requirements-and-platform-notes)); every other generator in this repo needs nothing beyond FreeCAD.
+
+| Property | Default | What it controls |
+|---|---|---|
+| `NCols` / `NRows` | 4 / 3 | Stone grid dimensions |
+| `StoneWidth` / `StoneHeight` | — | Stone face dimensions (mm) |
+| `JointWidth` | — | Mortar joint width (mm) |
+| `StoneDepth` | — | Stone/wall thickness (mm) |
+| `AvgSpacing` | — | Surface mesh point spacing (mm) — smaller = more detail, slower |
+| `Randomness` | — | Grid point jitter factor (0–1) |
+| `DisplacementMin` / `DisplacementMax` | — | Z displacement range for quarried texture (mm) |
+| `NFractures` | — | Number of fracture planes |
+| `EdgeTaper` | — | Distance over which displacement tapers to zero at stone edges (mm) |
+| `Seed` | — | Base random seed — change for a different stone pattern |
 
 ---
 
@@ -295,4 +329,10 @@ pip install pytest
 pytest
 ```
 
-341 tests, no FreeCAD required.
+980 tests, no FreeCAD required.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
