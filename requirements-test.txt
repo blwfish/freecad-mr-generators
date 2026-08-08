@@ -1,0 +1,10 @@
+# Dependencies needed to run `python3 -m pytest` on this repo (outside
+# FreeCAD -- FreeCAD/Part are provided by FreeCAD's own bundled Python and
+# are never installed via pip; see CLAUDE.md's "Testing FreeCAD-dependent
+# proxy code" section).
+#
+# Install with: pip install -r requirements-test.txt
+
+pytest
+pytest-cov
+numpy   # ashlar_generator/ashlar_geometry.py and its tests
