@@ -5,6 +5,19 @@ Change any property in the panel and the seam geometry regenerates.
 Face references stored as PropertyLinkSubList so they survive save/reload.
 
 This module must be importable by FreeCAD (installed alongside the macro).
+
+Version History:
+- 5.1.0: find_shared_edge/resolve_shared_edge/_closest_base_face moved to
+         shared/freecad_utils.py (consolidating a vendored duplicate in
+         slate_seam_proxy.py) and extended to recognize the Sources
+         PropertyLinkSubList convention (shingle_proxy's current output,
+         and this repo's modern standard generally) alongside the legacy
+         BaseObject/ShingledRoof_/ShingleSkin_ convention from
+         shingle_generator's old macro-only workflow, which this module
+         previously only recognized. Selecting faces from a *current*
+         ShingleProxy output never got unwrapped to the real roof panel
+         before this fix.
+- 5.0.0: (unversioned history prior to this entry)
 """
 
 import FreeCAD as App
@@ -13,13 +26,15 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "5.0.0"
+VERSION = "5.1.0"
 GENERATOR_NAME = "roof_seam_generator"
 
 _here = Path(__file__).parent
-for p in (str(_here), str(_here / '_lib')):
+for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+from freecad_utils import find_shared_edge, resolve_shared_edge  # noqa: E402
 
 
 # =============================================================================
@@ -39,154 +54,6 @@ def _make_rotation_matrix(x_axis, y_axis, z_axis):
         0, 0, 0, 1,
     )
 
-
-def find_shared_edge(face1, face2, tol=0.1):
-    """Find shared edge between two faces (endpoint matching + collinear overlap)."""
-    # Fast path: endpoint matching
-    for e1 in face1.Edges:
-        p1a = e1.Vertexes[0].Point
-        p1b = e1.Vertexes[-1].Point
-        for e2 in face2.Edges:
-            p2a = e2.Vertexes[0].Point
-            p2b = e2.Vertexes[-1].Point
-            d = min(max(p1a.distanceToPoint(p2a), p1b.distanceToPoint(p2b)),
-                    max(p1a.distanceToPoint(p2b), p1b.distanceToPoint(p2a)))
-            if d < tol:
-                return e1
-
-    # Slow path: collinear overlap
-    for e1 in face1.Edges:
-        if not isinstance(e1.Curve, (Part.Line, Part.LineSegment)):
-            continue
-        p1a = e1.Vertexes[0].Point
-        p1b = e1.Vertexes[-1].Point
-        d1 = p1b.sub(p1a)
-        len1 = d1.Length
-        if len1 < 0.001:
-            continue
-        dir1 = App.Vector(d1)
-        dir1.normalize()
-
-        for e2 in face2.Edges:
-            if not isinstance(e2.Curve, (Part.Line, Part.LineSegment)):
-                continue
-            p2a = e2.Vertexes[0].Point
-            p2b = e2.Vertexes[-1].Point
-            d2 = p2b.sub(p2a)
-            len2 = d2.Length
-            if len2 < 0.001:
-                continue
-            if d1.cross(d2).Length / (len1 * len2) > 0.01:
-                continue
-            offset = p2a.sub(p1a)
-            perp = offset.sub(dir1 * offset.dot(dir1))
-            if perp.Length > tol:
-                continue
-            t1a, t1b = 0.0, p1b.sub(p1a).dot(dir1)
-            t2a = p2a.sub(p1a).dot(dir1)
-            t2b = p2b.sub(p1a).dot(dir1)
-            overlap = min(max(t1a, t1b), max(t2a, t2b)) - max(min(t1a, t1b), min(t2a, t2b))
-            if overlap >= tol:
-                return e1 if len1 <= len2 else e2
-
-    return None
-
-
-def _closest_base_face(orig_face, base_faces):
-    """Return the face in base_faces that best matches orig_face."""
-    orig_center = orig_face.CenterOfMass
-    orig_normal = orig_face.normalAt(0.5, 0.5)
-    if orig_normal.Length > 1e-9:
-        orig_normal.normalize()
-    test_vtx = Part.Vertex(orig_center)
-    best, best_score = None, float('inf')
-    for f in base_faces:
-        try:
-            d = f.distToShape(test_vtx)[0]
-        except Exception:
-            d = orig_center.distanceToPoint(f.CenterOfMass)
-        try:
-            fn = f.normalAt(0.5, 0.5)
-            if fn.Length > 1e-9:
-                fn.normalize()
-            dot = abs(orig_normal.dot(fn))
-        except Exception:
-            dot = 0.0
-        score = d - dot * 0.5
-        if score < best_score:
-            best_score = score
-            best = f
-    return best
-
-
-def resolve_shared_edge(face1, obj1, face2, obj2, doc=None):
-    """Find shared edge, auto-unwrapping ShingledRoof/ShingleSkin compounds."""
-    edge = find_shared_edge(face1, face2)
-    if edge is not None:
-        return edge, face1, obj1, face2, obj2
-
-    def _find_base_object(obj):
-        current = obj
-        for _ in range(5):
-            found = None
-            if 'BaseObject' in current.PropertiesList:
-                base = current.getPropertyByName('BaseObject')
-                if base is not None:
-                    found = base
-            if found is None:
-                doc_objects = (doc.Objects if doc else
-                               (App.ActiveDocument.Objects if App.ActiveDocument else []))
-                for doc_obj in doc_objects:
-                    if ('ShingleSkin' in doc_obj.PropertiesList
-                            and doc_obj.getPropertyByName('ShingleSkin') is current
-                            and 'BaseObject' in doc_obj.PropertiesList):
-                        base = doc_obj.getPropertyByName('BaseObject')
-                        if base is not None:
-                            found = base
-                            break
-            if found is None:
-                for prefix in ('ShingledRoof_', 'ShingleSkin_'):
-                    if current.Name.startswith(prefix):
-                        base_name = current.Name[len(prefix):]
-                        doc_to_use = doc or App.ActiveDocument
-                        if doc_to_use:
-                            base = doc_to_use.getObject(base_name)
-                            if base is not None:
-                                found = base
-                                break
-            if found is None:
-                break
-            current = found
-        return current if current is not obj else None
-
-    def _get_base(face, obj):
-        base = _find_base_object(obj)
-        if base is not None:
-            App.Console.PrintMessage(
-                f"  Unwrapping {obj.Name} → {base.Name}\n")
-            return _closest_base_face(face, base.Shape.Faces), base
-        return face, obj
-
-    f1, o1 = _get_base(face1, obj1)
-    f2, o2 = _get_base(face2, obj2)
-    if f1 is not face1 or f2 is not face2:
-        edge = find_shared_edge(f1, f2)
-        if edge is not None:
-            return edge, f1, o1, f2, o2
-
-    # Geometric intersection fallback
-    for fa, oa, fb, ob in [(f1, o1, f2, o2), (face1, obj1, face2, obj2)]:
-        try:
-            section = fa.section(fb)
-            if section.Edges:
-                seam = max(section.Edges, key=lambda e: e.Length)
-                App.Console.PrintMessage(
-                    f"  Found seam via geometric intersection: {seam.Length:.2f} mm\n")
-                return seam, fa, oa, fb, ob
-        except Exception as e:
-            App.Console.PrintMessage(f"  section() failed: {e}\n")
-
-    return None, face1, obj1, face2, obj2
 
 
 def classify_seam(face1, face2, shared_edge):

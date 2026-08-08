@@ -5,9 +5,18 @@ Installed to: Macro/_lib/freecad_utils.py
 Imported by:  brick_generator_macro, radial_brick_generator_macro,
               clapboard_generator, board_batten_generator, bead_board_generator,
               shingle_generator, smart_trim_generator, station_sign_generator,
-              roof_seam_generator
+              roof_seam_generator, slate_seam_generator
 
-Version: 1.3.0
+Version: 1.4.0
+  1.4.0: Add resolve_shared_edge()/resolve_base_face() — roof-seam face
+         unwrapping consolidated from roof_seam_proxy.py and a vendored
+         copy in slate_seam_proxy.py, extended to recognize the modern
+         Sources PropertyLinkSubList convention (brick_proxy, quoin_proxy,
+         shingle_proxy, slate_proxy) alongside the legacy BaseObject/
+         ShingledRoof_/ShingleSkin_ convention. Neither original recognized
+         Sources, so selecting faces from any current tiled/shingled output
+         silently used tiny tile/shingle fragments instead of the real
+         roof face.
   1.3.0: Add precondition/postcondition assertions throughout (GEN_NO_ASSERT=1 to disable).
   1.2.0: Add find_spreadsheet() — multi-name spreadsheet lookup with App::Link support.
   1.1.0: Add commit_result() — undoable output object creation with metadata.
@@ -16,7 +25,7 @@ Version: 1.3.0
 
 import os
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # ---------------------------------------------------------------------------
 # Assertion toggle
@@ -240,6 +249,288 @@ def log_global_placement(obj, label=None):
                   f"will be applied to face geometry")
     except AttributeError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Roof-seam face resolution
+# ---------------------------------------------------------------------------
+# Extracted 2026-08-08 from roof_seam_proxy.py, where it originated, and a
+# vendored copy in slate_seam_proxy.py (deliberately duplicated there rather
+# than refactoring an 854-line, zero-test-coverage file as a drive-by of an
+# unrelated task -- see that file's git history for the original rationale).
+# Consolidating now because both copies needed the same fix at once: neither
+# recognized the `Sources` PropertyLinkSubList convention (brick_proxy,
+# quoin_proxy, shingle_proxy, slate_proxy) as a valid "trace back to the real
+# roof face" path -- only the older BaseObject / ShingledRoof_ / ShingleSkin_
+# convention from shingle_generator's legacy macro-only workflow. A user
+# selecting faces from any *current* tiled/shingled output (which all use
+# Sources) got silently fed tiny individual tile/shingle fragments instead
+# of the true whole roof face, breaking hip/valley classification.
+
+import FreeCAD as App
+import Part
+
+
+def find_shared_edge(face1, face2, tol=0.1):
+    """
+    Find the edge shared between two faces, by endpoint matching first and
+    a collinear-overlap check second.
+
+    Parameters
+    ----------
+    face1, face2 : Part.Face
+    tol : float
+        Distance tolerance (document units) for both checks.
+
+    Returns
+    -------
+    Part.Edge or None
+        None if no shared or collinear-overlapping edge is found.
+    """
+    for e1 in face1.Edges:
+        p1a = e1.Vertexes[0].Point
+        p1b = e1.Vertexes[-1].Point
+        for e2 in face2.Edges:
+            p2a = e2.Vertexes[0].Point
+            p2b = e2.Vertexes[-1].Point
+            d = min(max(p1a.distanceToPoint(p2a), p1b.distanceToPoint(p2b)),
+                    max(p1a.distanceToPoint(p2b), p1b.distanceToPoint(p2a)))
+            if d < tol:
+                return e1
+
+    for e1 in face1.Edges:
+        if not isinstance(e1.Curve, (Part.Line, Part.LineSegment)):
+            continue
+        p1a = e1.Vertexes[0].Point
+        p1b = e1.Vertexes[-1].Point
+        d1 = p1b.sub(p1a)
+        len1 = d1.Length
+        if len1 < 0.001:
+            continue
+        dir1 = App.Vector(d1)
+        dir1.normalize()
+
+        for e2 in face2.Edges:
+            if not isinstance(e2.Curve, (Part.Line, Part.LineSegment)):
+                continue
+            p2a = e2.Vertexes[0].Point
+            p2b = e2.Vertexes[-1].Point
+            d2 = p2b.sub(p2a)
+            len2 = d2.Length
+            if len2 < 0.001:
+                continue
+            if d1.cross(d2).Length / (len1 * len2) > 0.01:
+                continue
+            offset = p2a.sub(p1a)
+            perp = offset.sub(dir1 * offset.dot(dir1))
+            if perp.Length > tol:
+                continue
+            t1a, t1b = 0.0, p1b.sub(p1a).dot(dir1)
+            t2a = p2a.sub(p1a).dot(dir1)
+            t2b = p2b.sub(p1a).dot(dir1)
+            overlap = min(max(t1a, t1b), max(t2a, t2b)) - max(min(t1a, t1b), min(t2a, t2b))
+            if overlap >= tol:
+                return e1 if len1 <= len2 else e2
+
+    return None
+
+
+def _closest_candidate(orig_face, candidates):
+    """
+    Return the (face, owner) pair in *candidates* geometrically closest to
+    *orig_face*, scoring on centroid distance with a bonus for normal
+    alignment. Shared scoring core for both the single-owner legacy path
+    (`_closest_base_face`) and the multi-owner `Sources` path, so there is
+    one place that defines "closest match" rather than two that could drift.
+
+    Parameters
+    ----------
+    orig_face : Part.Face
+    candidates : list of (Part.Face, owner_obj)
+
+    Returns
+    -------
+    (Part.Face, owner_obj) or (None, None)
+        (None, None) if *candidates* is empty.
+    """
+    if not candidates:
+        return None, None
+    orig_center = orig_face.CenterOfMass
+    orig_normal = orig_face.normalAt(0.5, 0.5)
+    if orig_normal.Length > 1e-9:
+        orig_normal.normalize()
+    test_vtx = Part.Vertex(orig_center)
+    best_face, best_owner, best_score = None, None, float('inf')
+    for f, owner in candidates:
+        try:
+            d = f.distToShape(test_vtx)[0]
+        except Exception:
+            d = orig_center.distanceToPoint(f.CenterOfMass)
+        try:
+            fn = f.normalAt(0.5, 0.5)
+            if fn.Length > 1e-9:
+                fn.normalize()
+            dot = abs(orig_normal.dot(fn))
+        except Exception:
+            dot = 0.0
+        score = d - dot * 0.5
+        if score < best_score:
+            best_score = score
+            best_face, best_owner = f, owner
+    return best_face, best_owner
+
+
+def _closest_base_face(orig_face, base_faces):
+    """Return the face in base_faces geometrically closest to orig_face.
+    Single-owner convenience wrapper around _closest_candidate."""
+    face, _owner = _closest_candidate(orig_face, [(f, None) for f in base_faces])
+    return face
+
+
+def resolve_base_face(face, obj, doc=None, _depth=0):
+    """
+    Trace a possibly wrapped/tiled/skinned face back to the real face and
+    object it was generated from, if any wrapping is detected. Recognizes
+    two conventions:
+
+    - Legacy: an explicit `BaseObject` property; a sibling object whose
+      `ShingleSkin` property points back at *obj* and which itself has a
+      `BaseObject`; or `ShingledRoof_<name>` / `ShingleSkin_<name>` object
+      naming. This is shingle_generator's old, destructive, macro-only
+      workflow's convention.
+    - Modern: a `Sources` PropertyLinkSubList (brick_proxy, quoin_proxy,
+      shingle_proxy, slate_proxy) -- may reference faces from more than one
+      object, so each candidate face's owner is tracked individually rather
+      than assuming a single whole base object.
+
+    Walks up to 5 levels in case of a chain of wraps (e.g. a seam cap
+    generated on top of an already-wrapped output). Returns *(face, obj)*
+    unchanged if no wrapping is detected by either convention.
+
+    Parameters
+    ----------
+    face : Part.Face
+        The originally selected face (possibly a tiny tile/shingle fragment).
+    obj : FreeCAD document object
+        The object *face* was selected from.
+    doc : FreeCAD.Document, optional
+        Document to search for a ShingleSkin-style sibling object and for
+        ShingledRoof_/ShingleSkin_ name resolution. Defaults to
+        App.ActiveDocument.
+
+    Returns
+    -------
+    (Part.Face, obj)
+        The resolved (face, obj) pair -- possibly the input unchanged.
+    """
+    if _depth >= 5:
+        return face, obj
+
+    base = None
+    if 'BaseObject' in obj.PropertiesList:
+        candidate = obj.getPropertyByName('BaseObject')
+        if candidate is not None:
+            base = candidate
+
+    if base is None:
+        doc_objects = (doc.Objects if doc else
+                       (App.ActiveDocument.Objects if App.ActiveDocument else []))
+        for doc_obj in doc_objects:
+            if ('ShingleSkin' in doc_obj.PropertiesList
+                    and doc_obj.getPropertyByName('ShingleSkin') is obj
+                    and 'BaseObject' in doc_obj.PropertiesList):
+                candidate = doc_obj.getPropertyByName('BaseObject')
+                if candidate is not None:
+                    base = candidate
+                    break
+
+    if base is None:
+        for prefix in ('ShingledRoof_', 'ShingleSkin_'):
+            if obj.Name.startswith(prefix):
+                base_name = obj.Name[len(prefix):]
+                doc_to_use = doc or App.ActiveDocument
+                if doc_to_use:
+                    candidate = doc_to_use.getObject(base_name)
+                    if candidate is not None:
+                        base = candidate
+                        break
+
+    if base is not None:
+        best = _closest_base_face(face, base.Shape.Faces)
+        if best is not None:
+            return resolve_base_face(best, base, doc, _depth + 1)
+        return face, obj
+
+    candidates = []
+    if 'Sources' in obj.PropertiesList:
+        sources = obj.getPropertyByName('Sources') or []
+        for link_obj, sub_names in sources:
+            if not hasattr(link_obj, 'Shape'):
+                continue
+            for sub_name in sub_names:
+                if not sub_name.startswith('Face'):
+                    continue
+                idx = int(sub_name[4:]) - 1
+                if 0 <= idx < len(link_obj.Shape.Faces):
+                    candidates.append((link_obj.Shape.Faces[idx], link_obj))
+
+    if candidates:
+        best_face, best_owner = _closest_candidate(face, candidates)
+        if best_face is not None:
+            return resolve_base_face(best_face, best_owner, doc, _depth + 1)
+
+    return face, obj
+
+
+def resolve_shared_edge(face1, obj1, face2, obj2, doc=None):
+    """
+    Find the shared edge between two faces, auto-unwrapping tiled/skinned
+    outputs (via resolve_base_face) to the real source roof faces if the
+    faces as selected don't share an edge directly.
+
+    Tries, in order: (1) the two faces as given, (2) both faces unwrapped
+    to their real source via resolve_base_face, (3) a geometric-intersection
+    fallback (Face.section) on both the unwrapped and original pairs.
+
+    Parameters
+    ----------
+    face1, face2 : Part.Face
+    obj1, obj2 : FreeCAD document object
+        The objects *face1*/*face2* were selected from.
+    doc : FreeCAD.Document, optional
+        Passed through to resolve_base_face.
+
+    Returns
+    -------
+    (Part.Edge or None, Part.Face, obj, Part.Face, obj)
+        The shared edge (or None if none found) and the (possibly
+        unwrapped) face/object pairs it was found between.
+    """
+    edge = find_shared_edge(face1, face2)
+    if edge is not None:
+        return edge, face1, obj1, face2, obj2
+
+    f1, o1 = resolve_base_face(face1, obj1, doc)
+    f2, o2 = resolve_base_face(face2, obj2, doc)
+    if f1 is not face1 or f2 is not face2:
+        App.Console.PrintMessage(
+            f"  Unwrapping {obj1.Name} -> {o1.Name}, {obj2.Name} -> {o2.Name}\n")
+        edge = find_shared_edge(f1, f2)
+        if edge is not None:
+            return edge, f1, o1, f2, o2
+
+    for fa, oa, fb, ob in [(f1, o1, f2, o2), (face1, obj1, face2, obj2)]:
+        try:
+            section = fa.section(fb)
+            if section.Edges:
+                seam = max(section.Edges, key=lambda e: e.Length)
+                App.Console.PrintMessage(
+                    f"  Found seam via geometric intersection: {seam.Length:.2f} mm\n")
+                return seam, fa, oa, fb, ob
+        except Exception as e:
+            App.Console.PrintMessage(f"  section() failed: {e}\n")
+
+    return None, face1, obj1, face2, obj2
 
 
 # ---------------------------------------------------------------------------
