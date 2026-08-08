@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches FreeCAD's own bundled interpreter (see CLAUDE.md) --
+          # the *_geometry.py/shared/*.py suite this job runs is plain
+          # Python with no FreeCAD dependency, but pinning to the same
+          # version FreeCAD actually embeds avoids version-specific
+          # surprises diverging from the real runtime.
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov
+
+      - name: Run test suite
+        run: python3 -m pytest
