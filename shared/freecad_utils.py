@@ -736,10 +736,24 @@ def resolve_font_path(font_path, caller_name):
         App.Console.PrintWarning(
             f"{caller_name}: FontPath is not set -- using system default font\n")
         return ""
-    if not os.path.exists(font_path):
+    if not os.path.isfile(font_path):
+        reason = "does not exist" if not os.path.exists(font_path) else "is not a file"
         App.Console.PrintWarning(
-            f"{caller_name}: FontPath {font_path!r} does not exist -- "
+            f"{caller_name}: FontPath {font_path!r} {reason} -- "
             f"using system default font\n")
+        return ""
+    # A directory or non-font file passing os.path.exists() would otherwise
+    # only fail later with an opaque error from Part.makeWireString(); a
+    # recognized font extension is a cheap, useful signal to catch that
+    # earlier with a clear message (full-review finding
+    # freecad-mr-generators-20260808-a0b9#31). Not full magic-byte
+    # validation -- deliberately conservative, so it can't reject a real
+    # font FreeCAD would otherwise have accepted.
+    if not font_path.lower().endswith(('.ttf', '.otf', '.ttc')):
+        App.Console.PrintWarning(
+            f"{caller_name}: FontPath {font_path!r} doesn't look like a "
+            f"font file (expected .ttf/.otf/.ttc) -- using system default "
+            f"font\n")
         return ""
     return font_path
 
@@ -800,12 +814,15 @@ def find_spreadsheet(doc):
                             f"find_spreadsheet: resolved link target has unexpected TypeId="
                             f"{target.TypeId!r} (expected 'Spreadsheet::Sheet')")
                     return target
+                _warn_typeid_mismatch(ss_name, target.TypeId if target else 'App::Link (unresolved)')
             elif obj.TypeId == 'Spreadsheet::Sheet':
                 # --- Postcondition (direct path) ---
                 _assert(obj.TypeId == 'Spreadsheet::Sheet',
                         f"find_spreadsheet: matched object has unexpected TypeId="
                         f"{obj.TypeId!r} (expected 'Spreadsheet::Sheet')")
                 return obj
+            else:
+                _warn_typeid_mismatch(ss_name, obj.TypeId)
         # Fall back to Label match
         for obj in doc.Objects:
             if obj.Label == ss_name:
@@ -816,12 +833,27 @@ def find_spreadsheet(doc):
                                 f"find_spreadsheet: resolved link target has unexpected TypeId="
                                 f"{target.TypeId!r} (expected 'Spreadsheet::Sheet')")
                         return target
+                    _warn_typeid_mismatch(ss_name, target.TypeId if target else 'App::Link (unresolved)')
                 elif obj.TypeId == 'Spreadsheet::Sheet':
                     _assert(obj.TypeId == 'Spreadsheet::Sheet',
                             f"find_spreadsheet: matched object has unexpected TypeId="
                             f"{obj.TypeId!r} (expected 'Spreadsheet::Sheet')")
                     return obj
+                else:
+                    _warn_typeid_mismatch(ss_name, obj.TypeId)
     return None
+
+
+def _warn_typeid_mismatch(name, actual_type_id):
+    """A name/label matched a preferred spreadsheet candidate, but the
+    object isn't actually a Spreadsheet::Sheet -- without this, that case
+    was indistinguishable from "no spreadsheet present at all" (full-review
+    finding freecad-mr-generators-20260808-a0b9#29)."""
+    App.Console.PrintWarning(
+        f"find_spreadsheet: an object named/labeled '{name}' exists but is "
+        f"a {actual_type_id}, not a Spreadsheet::Sheet -- ignoring it and "
+        f"trying the next candidate name.\n"
+    )
 
 
 # ---------------------------------------------------------------------------

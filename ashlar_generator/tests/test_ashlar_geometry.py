@@ -29,6 +29,7 @@ from ashlar_geometry import (
     generate_stone_surface,
     compute_stone_positions,
     compute_wall_dimensions,
+    validate_parameters,
 )
 
 
@@ -324,6 +325,71 @@ class TestComputeStonePositions:
         # All stones are in the only column (col 0 == last col), so x is shifted
         xs = [s['x'] for s in stones]
         assert all(x == pytest.approx(-TOPO_EPS) for x in xs)
+
+
+# ---------------------------------------------------------------------------
+# validate_parameters
+# ---------------------------------------------------------------------------
+
+class TestValidateParameters:
+    """Full-review finding freecad-mr-generators-20260808-a0b9#24:
+    n_cols/n_rows <= 0 previously reached compute_wall_dimensions()
+    unguarded, producing a negative wall width fed straight into
+    Part.makeBox."""
+
+    VALID = dict(n_cols=4, n_rows=3, stone_width=7.0, stone_height=5.25, joint_width=0.3)
+
+    def test_valid_params_pass(self):
+        valid, reason = validate_parameters(**self.VALID)
+        assert valid is True
+        assert reason == ""
+
+    def test_n_cols_zero_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_cols': 0})
+        assert valid is False
+
+    def test_n_cols_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_cols': -1})
+        assert valid is False
+
+    def test_n_cols_one_is_valid(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_cols': 1})
+        assert valid is True
+
+    def test_n_rows_zero_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_rows': 0})
+        assert valid is False
+
+    def test_n_rows_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_rows': -1})
+        assert valid is False
+
+    def test_stone_width_zero_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'stone_width': 0.0})
+        assert valid is False
+
+    def test_stone_width_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'stone_width': -1.0})
+        assert valid is False
+
+    def test_stone_height_zero_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'stone_height': 0.0})
+        assert valid is False
+
+    def test_joint_width_zero_is_valid(self):
+        # Zero-width joints (stones butted directly together) are unusual
+        # but not degenerate -- only negative joint width is rejected.
+        valid, reason = validate_parameters(**{**self.VALID, 'joint_width': 0.0})
+        assert valid is True
+
+    def test_joint_width_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'joint_width': -0.1})
+        assert valid is False
+
+    def test_real_model_value(self):
+        valid, reason = validate_parameters(
+            n_cols=6, n_rows=4, stone_width=9.2, stone_height=6.1, joint_width=0.4)
+        assert valid is True
 
 
 # ---------------------------------------------------------------------------

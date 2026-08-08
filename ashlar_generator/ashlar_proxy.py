@@ -28,6 +28,7 @@ from ashlar_geometry import (
     generate_stone_surface,
     compute_stone_positions,
     compute_wall_dimensions,
+    validate_parameters,
     _NUMPY_SCIPY_OK,
     _IMPORT_ERROR,
 )
@@ -179,6 +180,12 @@ class AshlarProxy:
                 "-- cannot generate geometry. See the warning printed when "
                 "this generator loaded for how to fix.\n"
             )
+            return
+
+        valid, reason = validate_parameters(
+            obj.NCols, obj.NRows, obj.StoneWidth, obj.StoneHeight, obj.JointWidth)
+        if not valid:
+            App.Console.PrintError(f"AshlarProxy: invalid parameters: {reason}\n")
             return
 
         stones = compute_stone_positions(

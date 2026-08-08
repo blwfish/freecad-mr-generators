@@ -612,7 +612,19 @@ class BrickProxy:
             for sub_name in sub_names:
                 if not sub_name.startswith('Face'):
                     continue
-                face_idx = int(sub_name[4:]) - 1
+                try:
+                    face_idx = int(sub_name[4:]) - 1
+                except ValueError:
+                    # A malformed/extended sub_name (e.g. a future FreeCAD
+                    # TNP-style extended element name) previously raised
+                    # here uncaught, crashing execute() with a raw Python
+                    # traceback instead of the graceful per-face error path
+                    # this function otherwise uses (full-review finding
+                    # freecad-mr-generators-20260808-a0b9#23).
+                    App.Console.PrintWarning(
+                        f"BrickProxy: could not parse face index from "
+                        f"{sub_name!r} on {link_obj.Label} -- skipping\n")
+                    continue
                 key = link_obj.Name
                 if key not in source_map:
                     source_map[key] = (link_obj, [])
@@ -626,7 +638,6 @@ class BrickProxy:
             return
 
         link_obj, orig_face_indices = list(source_map.values())[0]
-        resolve_quoin = _resolve_quoin_flags(obj, link_obj)
 
         params = {
             'brick_width':        float(obj.BrickWidth),
@@ -640,6 +651,14 @@ class BrickProxy:
         }
 
         try:
+            # _resolve_quoin_flags (via face_index_set) can raise ValueError
+            # on a malformed "FaceX" name in the *QuoinFaces override
+            # properties -- moved inside this try so that's caught by the
+            # existing handler below instead of crashing execute()
+            # uncaught (full-review finding
+            # freecad-mr-generators-20260808-a0b9#23).
+            resolve_quoin = _resolve_quoin_flags(obj, link_obj)
+
             # Work on a copy of the source shape (non-destructive)
             working_shape = link_obj.Shape.copy()
 
