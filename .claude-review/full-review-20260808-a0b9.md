@@ -113,7 +113,7 @@ Scope: entire project (17 generators + shared/), partitioned into 3 groups for P
 
 ## Final Disposition
 
-User approved fixing Critical + High + Medium (all 35 findings in those tiers); Low findings (`#36`–`#43`) were explicitly left for a future pass. Final suite after all fixes: **1088 passed, 2 skipped.**
+All 43 findings fixed. Final suite after all fixes: **1094 passed, 2 skipped** (up from 980 at the start of the pass).
 
 **Commit `6dfad6c` — Critical (2 findings), plus 5 High findings closed as direct consequences:**
 `#01` (radial_brick undercoverage, fixed via `ceil(...)+1`), `#02` (`shingle_generator.FCMacro`/`shingle_proxy.py` fork — macro rewritten to the standard proxy-based pattern used by every other generator), `#12` (`shingle_proxy._clip_shape` fraction-based threshold), `#13` (`shingle_proxy` `resolve_sources_faces` wiring), `#14` (moot — the macro's own vendored vertex-dict bug no longer exists), `#18` (moot — the macro's bare-except spreadsheet reader removed), `#21` (moot — the macro's duplicate `find_spreadsheet()` removed).
@@ -124,4 +124,5 @@ User approved fixing Critical + High + Medium (all 35 findings in those tiers); 
 **Commit `2729a8d` — Medium (13 findings):**
 `#23`–`#26`, `#28`, `#29`, `#31`, `#35` fixed directly. `#27` and `#34` already closed above. `#30` and `#32` became moot (both lived in code the Critical-tier macro rewrite removed entirely).
 
-**Deferred (not in scope this pass):** `#36`–`#43` (8 Low findings — stale docstrings/comments, dead code, minor console-noise duplication, uncovered defensive-clamp branches). None are correctness-affecting; see the ledger for full detail and disposition reasoning per finding.
+**Commit `c9d3d00` — Low (8 findings), fixed on a follow-up request ("no good reason not to fix the lows too"):**
+`#36`/`#43` (undocumented + untested narrow-wall clamp in `_calculate_course_layout` — documented and given `TestCalculateCourseLayoutNarrowWallClamps`), `#37`/`#38` (stale `quoin_proxy.py`-era docstring/tooltip text in `brick_proxy.py`), `#39` (brick_geometry.py version-header drift), `#40` (`should_clip_shingles`/`calculate_shingle_clip_volume` — deleted as confirmed dead code rather than tested), `#41` (`commit_result()` — deleted as confirmed dead code, `shared/freecad_utils.py` bumped to v1.6.0), `#42` (station_sign's `_FONT_HELP` warning — suppressed to fire once per session from `execute()` instead of every recompute; live-verified via FreeCADCmd: 3 recomputes → 1 warning, was 3).
