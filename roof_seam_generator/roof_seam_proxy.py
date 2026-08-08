@@ -36,6 +36,11 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
 
 from freecad_utils import find_shared_edge, resolve_shared_edge, resolve_sources_faces  # noqa: E402
 from roof_geometry import classify_roof_intersection  # noqa: E402
+from roof_seam_geometry import (  # noqa: E402
+    validate_exposure,
+    calculate_cap_positions,
+    calculate_hip_cap_profile,
+)
 
 
 # =============================================================================
@@ -60,18 +65,27 @@ def _make_rotation_matrix(x_axis, y_axis, z_axis):
 def classify_seam(face1, face2, shared_edge):
     """Classify seam as 'hip' or 'valley'.
 
-    Delegates to shared/roof_geometry.classify_roof_intersection() -- the
-    dihedral-angle-based classifier slate_generator, standing_seam_
-    generator, and slate_seam_generator all already use -- instead of an
-    independently-maintained Z-coordinate-average heuristic with no
-    'ambiguous' outcome of its own. Previously this was the one generator
-    in the repo NOT using the shared classifier despite roof_geometry.py's
-    own module docstring claiming hip/valley-detection code "lives in
-    exactly one place" (full-review finding #21, 2026-08-08).
+    Delegates to shared/roof_geometry.classify_roof_intersection() -- a
+    pure Z-coordinate-average heuristic (NOT dihedral-angle-based, despite
+    an earlier version of this docstring's claim -- dihedral angle is
+    computed separately by calculate_dihedral_angle() and never feeds this
+    classification decision, only human-readable text elsewhere) that
+    slate_generator, standing_seam_generator, and slate_seam_generator all
+    already use, instead of an independently-maintained duplicate with no
+    'ambiguous' outcome of its own.
 
-    Falls back to 'hip' (with a printed warning) on the shared
-    classifier's own 'ambiguous' result, preserving this function's
-    previous binary (no-third-option) contract for callers.
+    Raises RuntimeError on the shared classifier's own 'ambiguous' result
+    instead of silently defaulting to 'hip'. This previously defaulted to
+    'hip' with only a PrintWarning -- but slate_seam_generator's
+    resolve_cap_eligibility(), written against the SAME shared classifier,
+    explicitly rejects 'ambiguous' rather than risk silently capping an
+    actual valley the one time this branch fires for real. Two consumers
+    of the same classifier had reached opposite, unreconciled decisions on
+    the identical edge case (full-review finding
+    freecad-mr-generators-20260808-a0b9#16) -- raising here matches the
+    more conservative of the two and surfaces the ambiguity to the user
+    (via execute()'s existing try/except -> PrintError) instead of
+    guessing.
     """
     face1_verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face1.Vertexes]
     face2_verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face2.Vertexes]
@@ -84,10 +98,12 @@ def classify_seam(face1, face2, shared_edge):
         return 'hip'
     if classification == 'valley':
         return 'valley'
-    App.Console.PrintWarning(
-        f"  Seam classification ambiguous "
-        f"({result.get('reason', 'unknown')}) -- defaulting to hip\n")
-    return 'hip'
+    raise RuntimeError(
+        f"Seam classification ambiguous "
+        f"({result.get('reason', 'unknown')}) -- cannot safely determine "
+        f"hip vs valley for this face pair. Select two faces with a "
+        f"clearer roof intersection, or check the faces for degenerate "
+        f"geometry.")
 
 
 # =============================================================================
@@ -108,17 +124,8 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     exposure    = params.get('shingleExposure', 1.5)
     angle_depth = params.get('angleDepth', 0.2)
     half_width  = cap_width / 2.0
-    taper       = angle_depth * mat_thick
 
-    if exposure <= 0:
-        # The cap-placement loop below advances by `t += exposure` each
-        # iteration; exposure<=0 makes t never reach edge_len, hanging
-        # FreeCAD's GUI thread at 100% CPU forever (confirmed live,
-        # 2026-08-08 -- see CLAUDE.md/full-review finding #02). Raising
-        # here is caught by execute()'s existing try/except, matching
-        # this repo's established validation pattern.
-        raise ValueError(
-            f"shingleExposure must be positive to generate hip caps, got {exposure}")
+    validate_exposure(exposure, "generate_hip_caps")
 
     # Edge geometry — orient eave (low Z) → apex (high Z)
     v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
@@ -135,6 +142,17 @@ def generate_hip_caps(shared_edge, face1, face2, params):
 
     def compute_d(n_out, face_centroid):
         d_raw = n_out.cross(edge_dir)
+        if d_raw.Length < 1e-9:
+            # Degenerate: this face's normal is parallel to the shared
+            # edge. generate_slate_hip_caps/generate_metal_hip_strip in
+            # this same file both guard the analogous local_x computation
+            # this way; generate_hip_caps (the default hip_style='shingle'
+            # path) previously didn't, raising an unhandled
+            # ZeroDivisionError instead of a clear, catchable error
+            # (full-review finding freecad-mr-generators-20260808-a0b9#15).
+            raise ValueError(
+                "Cannot compute hip cap wing direction: a face normal is "
+                "parallel to the shared edge (degenerate hip geometry)")
         d = d_raw * (1.0 / d_raw.Length)
         if (face_centroid - seam_mid).dot(d) < 0:
             d = d * -1.0
@@ -144,34 +162,25 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     d2 = compute_d(n2_out, face2.CenterOfMass)
 
     bisector = n1_out + n2_out
+    if bisector.Length < 1e-9:
+        raise ValueError(
+            "Cannot compute hip cap bisector: face normals are near-opposite "
+            "(nearly coplanar faces meeting at a near-180 degree angle)")
     bisector = bisector * (1.0 / bisector.Length)
 
     local_x = edge_dir.cross(bisector)
-    local_x = local_x * (1.0 / local_x.Length)
+    if local_x.Length < 1e-9:
+        local_x = App.Vector(1, 0, 0)
+    else:
+        local_x = local_x * (1.0 / local_x.Length)
     local_z = bisector
 
     cos_dihed = n1_out.dot(n2_out)
-    dihed = math.acos(max(-1.0, min(1.0, cos_dihed)))
-    half_dihed = dihed / 2.0
-    h_center = half_width * math.tan(half_dihed)
-    cap_lift = mat_thick * math.cos(half_dihed)
-
-    wing_len = math.sqrt(half_width ** 2 + h_center ** 2)
-    nw = h_center / wing_len
-    nz = half_width / wing_len
-
-    bl_2d  = (-half_width,  cap_lift - h_center)
-    bc_2d  = (0.0,          cap_lift)
-    br_2d  = ( half_width,  cap_lift - h_center)
-    tl_2d  = (bl_2d[0] - nw * mat_thick,  bl_2d[1] + nz * mat_thick)
-    tc1_2d = (bc_2d[0] - nw * mat_thick,  bc_2d[1] + nz * mat_thick)
-    tc2_2d = (bc_2d[0] + nw * mat_thick,  bc_2d[1] + nz * mat_thick)
-    tr_2d  = (br_2d[0] + nw * mat_thick,  br_2d[1] + nz * mat_thick)
-
-    chord_2d = math.sqrt((tc2_2d[0] - tc1_2d[0]) ** 2 + (tc2_2d[1] - tc1_2d[1]) ** 2)
-    dome_sagitta = chord_2d * 0.082
-    dome_mid_2d = ((tc1_2d[0] + tc2_2d[0]) / 2.0,
-                   (tc1_2d[1] + tc2_2d[1]) / 2.0 + dome_sagitta)
+    profile = calculate_hip_cap_profile(half_width, mat_thick, cos_dihed, angle_depth)
+    bl_2d, bc_2d, br_2d = profile['bl_2d'], profile['bc_2d'], profile['br_2d']
+    tl_2d, tc1_2d, tc2_2d, tr_2d = profile['tl_2d'], profile['tc1_2d'], profile['tc2_2d'], profile['tr_2d']
+    dome_mid_2d = profile['dome_mid_2d']
+    taper = profile['taper']
 
     def to_3d(x2d, z2d, pt):
         return pt + local_x * x2d + local_z * z2d
@@ -319,8 +328,7 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     # Generate cap shingles
     shapes = []
     fail_count = 0
-    t = 0.0
-    while t < edge_len:
+    for t in calculate_cap_positions(edge_len, exposure):
         pt = start_pt + edge_dir * t
         try:
             cap = _make_one_cap(pt)
@@ -330,7 +338,6 @@ def generate_hip_caps(shared_edge, face1, face2, params):
                 shapes.append(cap)
         except Exception:
             fail_count += 1
-        t += exposure
 
     if fail_count:
         App.Console.PrintMessage(f"  {fail_count} caps failed\n")
@@ -373,11 +380,7 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
     mat_thick  = params.get('materialThickness', 0.3)
     exposure   = params.get('shingleExposure', cap_height)  # spacing along edge
 
-    if exposure <= 0:
-        # Same non-advancing-loop hang risk as generate_hip_caps -- see
-        # the comment there (CLAUDE.md/full-review finding #03).
-        raise ValueError(
-            f"shingleExposure must be positive to generate slate hip caps, got {exposure}")
+    validate_exposure(exposure, "generate_slate_hip_caps")
 
     v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
     start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
@@ -403,8 +406,7 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
     half_w = cap_width / 2.0
 
     shapes = []
-    t = 0.0
-    while t < edge_len:
+    for t in calculate_cap_positions(edge_len, exposure):
         pt = start_pt + edge_dir * t
         # Flat rectangle centred on the ridge, lying in the bisector plane
         p0 = pt - local_x * half_w
@@ -421,7 +423,6 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
                 shapes.append(cap)
         except Exception:
             pass
-        t += exposure
 
     App.Console.PrintMessage(f"  Generated {len(shapes)} slate hip tiles\n")
     return shapes, []

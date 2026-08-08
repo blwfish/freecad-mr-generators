@@ -32,6 +32,7 @@ from snow_guard_geometry import (
 )
 from roof_geometry import get_roof_coordinate_system
 from freecad_utils import resolve_sources_faces  # noqa: E402
+from snow_guard_solid_geometry import calculate_fin_position
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +109,17 @@ def _build_guard_solid(pad_width, pad_length, pad_thickness,
     Deliberately a simple primitive shape (box + extruded triangle, no
     lofts/sweeps) -- lower OCCT risk than a sculpted profile, per this
     generator's design decision.
+
+    The fin-centering math (fin_x0/fin_y0) comes from
+    shared/snow_guard_solid_geometry.calculate_fin_position, shared with
+    standing_seam_snow_guard_proxy.py's near-identical
+    _build_guard_solid so the two constructions can't silently diverge
+    (full-review finding #20, 2026-08-08).
     """
     pad = Part.makeBox(pad_width, pad_length, pad_thickness)
 
-    fin_y0 = (pad_length - fin_base_width) / 2.0
+    fin_x0, fin_y0 = calculate_fin_position(
+        pad_width, pad_length, fin_base_width, fin_thickness)
     p0 = App.Vector(0, fin_y0, pad_thickness)
     p1 = App.Vector(0, fin_y0 + fin_base_width, pad_thickness)
     p2 = App.Vector(0, fin_y0 + fin_base_width / 2.0, pad_thickness + fin_height)
@@ -122,7 +130,6 @@ def _build_guard_solid(pad_width, pad_length, pad_thickness,
     ])
     fin = Part.Face(profile).extrude(App.Vector(fin_thickness, 0, 0))
 
-    fin_x0 = (pad_width - fin_thickness) / 2.0
     fin.translate(App.Vector(fin_x0, 0, 0))
 
     return pad.fuse(fin)

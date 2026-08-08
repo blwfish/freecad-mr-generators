@@ -47,6 +47,7 @@ from standing_seam_geometry import (
     DEFAULT_SEAM_WIDTH,
     DEFAULT_SEAM_HEIGHT,
 )  # noqa: E402
+from snow_guard_solid_geometry import calculate_fin_position
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +128,17 @@ def _build_guard_solid(clamp_width, clamp_length, clamp_thickness,
     independent solid in 3D space (see module docstring), so there is no
     OCCT coincidence risk from the guard's footprint overlapping the
     rib's (unrelated) solid.
+
+    The fin-centering math (fin_x0/fin_y0) is not just "identical by
+    construction" -- both this function and snow_guard_proxy.py's call
+    the same shared/snow_guard_solid_geometry.calculate_fin_position, so
+    the two can no longer silently diverge (full-review finding #20,
+    2026-08-08; see shared/tests/test_snow_guard_solid_geometry.py).
     """
     pad = Part.makeBox(clamp_width, clamp_length, clamp_thickness)
 
-    fin_y0 = (clamp_length - fin_base_width) / 2.0
+    fin_x0, fin_y0 = calculate_fin_position(
+        clamp_width, clamp_length, fin_base_width, fin_thickness)
     p0 = App.Vector(0, fin_y0, clamp_thickness)
     p1 = App.Vector(0, fin_y0 + fin_base_width, clamp_thickness)
     p2 = App.Vector(0, fin_y0 + fin_base_width / 2.0, clamp_thickness + fin_height)
@@ -141,7 +149,6 @@ def _build_guard_solid(clamp_width, clamp_length, clamp_thickness,
     ])
     fin = Part.Face(profile).extrude(App.Vector(fin_thickness, 0, 0))
 
-    fin_x0 = (clamp_width - fin_thickness) / 2.0
     fin.translate(App.Vector(fin_x0, 0, 0))
 
     return pad.fuse(fin)

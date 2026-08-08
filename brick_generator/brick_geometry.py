@@ -12,14 +12,22 @@ Supported bond patterns:
 
 Returns lists of brick definitions ready for FreeCAD instantiation or other use.
 
-Version: 5.0.1
+Version: 5.1.0
 Date: 2025-12-31
+  5.1.0: Add face_index_set()/resolve_quoin_flags_for_face()/find_dual_
+         listed_faces() -- the per-face quoin-role override resolution
+         logic from brick_proxy.py's _face_index_set/_resolve_quoin_flags,
+         extracted so it's testable under plain pytest instead of only via
+         FreeCAD (full-review finding
+         freecad-mr-generators-20260808-a0b9#09). The logic itself was
+         already pure Python; only App.Console.PrintWarning tied it to
+         FreeCAD, and that call stays in the proxy.
 """
 
-__version__ = "5.0.2"
+__version__ = "5.1.0"
 
 import math
-from typing import List, Dict, Tuple, NamedTuple
+from typing import List, Dict, Tuple, NamedTuple, Set
 
 
 class BrickDef(NamedTuple):
@@ -32,6 +40,66 @@ class BrickDef(NamedTuple):
     width: float                  # Brick dimension along U
     height: float                 # Brick dimension along V (always same)
     depth: float                  # Brick dimension perpendicular to wall
+
+
+# =============================================================================
+# Per-face quoin-role override resolution
+# =============================================================================
+# Pure logic behind brick_proxy.py's LeftQuoinPrimaryFaces/LeftQuoinSecondary
+# Faces/RightQuoinPrimaryFaces/RightQuoinSecondaryFaces override properties
+# (added alongside the dual-quoin corner-merge feature). A face not listed in
+# any override falls back to the object-level LeftQuoin/RightQuoin/*Primary
+# booleans unchanged.
+
+def face_index_set(link_sub_list, link_obj) -> Set[int]:
+    """Face indices (0-based) referencing *link_obj* within a
+    PropertyLinkSubList-shaped value: an iterable of (entry_obj, sub_names)
+    pairs, where sub_names is an iterable of strings like "Face3".
+
+    *link_obj* is compared by identity (`is`), matching how FreeCAD's own
+    PropertyLinkSubList entries reference document objects -- but this
+    function itself has no FreeCAD dependency; any hashable/comparable
+    object works as link_obj in a test.
+    """
+    indices = set()
+    for entry_obj, sub_names in link_sub_list:
+        if entry_obj is not link_obj:
+            continue
+        for sub_name in sub_names:
+            if sub_name.startswith('Face'):
+                indices.add(int(sub_name[4:]) - 1)
+    return indices
+
+
+def find_dual_listed_faces(primary_set: Set[int], secondary_set: Set[int]) -> Set[int]:
+    """Faces present in both a Primary and Secondary override set for the
+    same side (Left or Right) -- ambiguous; callers resolve these as
+    Primary and should warn the user."""
+    return primary_set & secondary_set
+
+
+def resolve_quoin_flags_for_face(
+        face_idx: int,
+        left_primary: Set[int], left_secondary: Set[int],
+        right_primary: Set[int], right_secondary: Set[int],
+        default_left_quoin: bool, default_left_primary: bool,
+        default_right_quoin: bool, default_right_primary: bool,
+) -> Tuple[bool, bool, bool, bool]:
+    """Resolve (left_quoin, left_quoin_primary, right_quoin,
+    right_quoin_primary) for one face index, honoring the per-face
+    override sets ahead of the object-level defaults.
+
+    Returns a 4-tuple of bools.
+    """
+    if face_idx in left_primary or face_idx in left_secondary:
+        left_quoin, left_primary_flag = True, (face_idx in left_primary)
+    else:
+        left_quoin, left_primary_flag = default_left_quoin, default_left_primary
+    if face_idx in right_primary or face_idx in right_secondary:
+        right_quoin, right_primary_flag = True, (face_idx in right_primary)
+    else:
+        right_quoin, right_primary_flag = default_right_quoin, default_right_primary
+    return left_quoin, left_primary_flag, right_quoin, right_primary_flag
 
 
 class BrickGeometry:
@@ -141,6 +209,11 @@ class BrickGeometry:
         When right_quoin=True, return the u-coordinate where fill must end
         for this course (u_length - quoin_width - mortar). Returns u_length
         when right_quoin=False.
+
+        This is the single source of truth for the right-quoin boundary:
+        `_generate_flemish_bond` derives its right closer width
+        (`C_right`) directly from this method (`C_right = fill_end - u`)
+        rather than recomputing the reserved-width formula inline.
         """
         if not self.right_quoin:
             return self.u_length
@@ -487,9 +560,13 @@ class BrickGeometry:
                         u += other_w + m
 
                 if self.right_quoin:
-                    right_is_stretcher = (course % 2 == 0) == self.right_quoin_primary
-                    R = S if right_is_stretcher else H
-                    C_right = base_C - R - m
+                    # Single source of truth for the right-quoin boundary:
+                    # derive the closer width from _quoin_fill_end (u-coordinate
+                    # where fill must stop) rather than re-deriving the reserved
+                    # width inline. Verified equal to the prior inline formula
+                    # (base_C - R - m) across course parities and primary/W
+                    # combinations before this refactor landed.
+                    C_right = self._quoin_fill_end(course) - u
                 else:
                     C_right = base_C + TOPO_EPS  # push right edge slightly past wall boundary
 

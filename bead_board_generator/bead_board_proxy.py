@@ -12,7 +12,6 @@ This module must be importable by FreeCAD (installed alongside the macro).
 
 import FreeCAD as App
 import Part
-import math
 import sys
 from pathlib import Path
 
@@ -23,6 +22,12 @@ _here = Path(__file__).parent
 for p in (str(_here), str(_here / '_lib')):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+from bead_board_geometry import (  # noqa: E402
+    validate_parameters,
+    calculate_bead_positions,
+    calculate_gap_positions,
+)
 
 
 # =============================================================================
@@ -83,11 +88,17 @@ def _make_gap(gap_start, gap_end, v_min, v_max, depth, horiz_axis, vert_axis, bb
             ])
             return Part.Face(w).extrude(App.Vector(off, 0, 0))
     else:  # vert_axis == 'y'
+        # Normal axis is always 'z' here (see _detect_orientation): the
+        # constant coordinate must come from the face's actual bounding
+        # box, not a hardcoded 0 (full-review finding #06) -- mirrors how
+        # the vert_axis == 'z' branch above uses bbox.YMin/bbox.XMin for
+        # its own normal-axis constant.
+        bz = bbox.ZMin
         off = depth if normal.z > 0 else -depth
         w = Part.makePolygon([
-            App.Vector(gap_start, v_min, 0), App.Vector(gap_end, v_min, 0),
-            App.Vector(gap_end, v_max, 0), App.Vector(gap_start, v_max, 0),
-            App.Vector(gap_start, v_min, 0),
+            App.Vector(gap_start, v_min, bz), App.Vector(gap_end, v_min, bz),
+            App.Vector(gap_end, v_max, bz), App.Vector(gap_start, v_max, bz),
+            App.Vector(gap_start, v_min, bz),
         ])
         return Part.Face(w).extrude(App.Vector(0, 0, off))
 
@@ -118,26 +129,18 @@ def generate_bead_board_skin(face, bead_spacing=101.6, bead_depth=0.20, bead_gap
         v_min = bbox.YMin - 0.1
         v_max = bbox.YMax + 0.1
 
-    half_gap = bead_gap / 2
-    num_beads = int(math.ceil((h_max - h_min) / bead_spacing))
-    bead_centers = [h_min + i * bead_spacing for i in range(num_beads)
-                    if h_min + i * bead_spacing < h_max]
-
-    # TOPO_EPS: any gap edge within this distance of h_min/h_max is pushed
-    # strictly outside the wall to avoid an OCCT common() segfault on
-    # coincident faces.  Triggered when wall_width = K*bead_spacing + half_gap
-    # for any integer K — the last gap's right edge would otherwise land
-    # exactly on h_max.  See shared/boundary_assertions.py for the invariant.
-    TOPO_EPS = 1e-3
+    # Delegates to bead_board_geometry so this proxy and the pytest-verified
+    # math can never diverge (previously an inlined, independently-drifting
+    # copy -- see CLAUDE.md's "Testing rule: proxy/geometry parity" and
+    # full-review finding #04). calculate_gap_positions' h_min/h_max/topo_eps
+    # args reproduce this proxy's existing TOPO_EPS boundary-overflow
+    # behavior exactly.
+    bead_centers = calculate_bead_positions(h_min, h_max, bead_spacing)
+    gap_positions = calculate_gap_positions(
+        bead_centers, bead_gap, h_min=h_min, h_max=h_max, topo_eps=1e-3)
 
     gaps = []
-    for i, center in enumerate(bead_centers):
-        gs = center - half_gap
-        ge = center + half_gap
-        if abs(gs - h_min) < TOPO_EPS: gs = h_min - TOPO_EPS
-        if abs(gs - h_max) < TOPO_EPS: gs = h_max + TOPO_EPS
-        if abs(ge - h_min) < TOPO_EPS: ge = h_min - TOPO_EPS
-        if abs(ge - h_max) < TOPO_EPS: ge = h_max + TOPO_EPS
+    for i, (gs, ge) in enumerate(gap_positions):
         try:
             g = _make_gap(gs, ge,
                           v_min, v_max, bead_depth,
@@ -223,6 +226,17 @@ class BeadBoardProxy:
         spacing = float(obj.BeadSpacing)
         depth   = float(obj.BeadDepth)
         gap     = float(obj.BeadGap)
+
+        # Full-review finding #05: validate up front (matching
+        # board_batten_proxy.py's parameter-validation pattern) so an
+        # invalid combination (e.g. bead_gap >= bead_spacing) produces one
+        # clear PrintError instead of failing per-face deep inside geometry
+        # construction.
+        valid, errors = validate_parameters(spacing, depth, gap)
+        if not valid:
+            App.Console.PrintError(
+                f"BeadBoardProxy: invalid parameters: {'; '.join(errors)}\n")
+            return
 
         skins = []
         for link_obj, sub_names in obj.Sources:

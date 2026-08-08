@@ -72,7 +72,10 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'quoin_generator')
 
 try:
     import brick_geometry as _bg
-    from brick_geometry import BrickGeometry, BrickDef
+    from brick_geometry import (
+        BrickGeometry, BrickDef,
+        face_index_set, find_dual_listed_faces, resolve_quoin_flags_for_face,
+    )
 except ImportError:
     _bg = None
     BrickGeometry = None
@@ -221,18 +224,6 @@ def _create_brick_from_def(brick_def, origin, u_vec, v_vec, normal):
     return Part.Solid(Part.Shell(faces))
 
 
-def _face_index_set(link_sub_list, link_obj):
-    """Face indices (0-based) referencing link_obj within a PropertyLinkSubList."""
-    indices = set()
-    for entry_obj, sub_names in link_sub_list:
-        if entry_obj is not link_obj:
-            continue
-        for sub_name in sub_names:
-            if sub_name.startswith('Face'):
-                indices.add(int(sub_name[4:]) - 1)
-    return indices
-
-
 def _resolve_quoin_flags(obj, link_obj):
     """
     Build a face_idx -> (left_quoin, left_quoin_primary, right_quoin,
@@ -241,17 +232,24 @@ def _resolve_quoin_flags(obj, link_obj):
     booleans. A face not present in any override list falls back to the
     plain booleans unchanged — this keeps every pre-existing document
     (which has empty override lists) behaving exactly as before.
+
+    The actual index/flag resolution logic lives in brick_geometry.py
+    (face_index_set/find_dual_listed_faces/resolve_quoin_flags_for_face) --
+    pure Python, pytest-testable without FreeCAD (full-review finding
+    freecad-mr-generators-20260808-a0b9#09). This function is the thin
+    FreeCAD-facing wrapper: reading the object's properties and printing
+    the dual-listed-face warning.
     """
-    left_primary    = _face_index_set(getattr(obj, 'LeftQuoinPrimaryFaces', []), link_obj)
-    left_secondary  = _face_index_set(getattr(obj, 'LeftQuoinSecondaryFaces', []), link_obj)
-    right_primary   = _face_index_set(getattr(obj, 'RightQuoinPrimaryFaces', []), link_obj)
-    right_secondary = _face_index_set(getattr(obj, 'RightQuoinSecondaryFaces', []), link_obj)
+    left_primary    = face_index_set(getattr(obj, 'LeftQuoinPrimaryFaces', []), link_obj)
+    left_secondary  = face_index_set(getattr(obj, 'LeftQuoinSecondaryFaces', []), link_obj)
+    right_primary   = face_index_set(getattr(obj, 'RightQuoinPrimaryFaces', []), link_obj)
+    right_secondary = face_index_set(getattr(obj, 'RightQuoinSecondaryFaces', []), link_obj)
 
     for side, primary_set, secondary_set in (
         ('Left', left_primary, left_secondary),
         ('Right', right_primary, right_secondary),
     ):
-        both = primary_set & secondary_set
+        both = find_dual_listed_faces(primary_set, secondary_set)
         if both:
             App.Console.PrintWarning(
                 f"BrickProxy: Face(s) {sorted(i + 1 for i in both)} listed in "
@@ -264,15 +262,10 @@ def _resolve_quoin_flags(obj, link_obj):
     default_right_primary  = bool(getattr(obj, 'RightQuoinPrimary', True))
 
     def resolve(face_idx):
-        if face_idx in left_primary or face_idx in left_secondary:
-            left_quoin, left_primary_flag = True, (face_idx in left_primary)
-        else:
-            left_quoin, left_primary_flag = default_left_quoin, default_left_primary
-        if face_idx in right_primary or face_idx in right_secondary:
-            right_quoin, right_primary_flag = True, (face_idx in right_primary)
-        else:
-            right_quoin, right_primary_flag = default_right_quoin, default_right_primary
-        return left_quoin, left_primary_flag, right_quoin, right_primary_flag
+        return resolve_quoin_flags_for_face(
+            face_idx, left_primary, left_secondary, right_primary, right_secondary,
+            default_left_quoin, default_left_primary,
+            default_right_quoin, default_right_primary)
 
     return resolve
 
