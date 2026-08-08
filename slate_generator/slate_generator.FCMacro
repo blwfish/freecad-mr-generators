@@ -11,7 +11,7 @@ WORKFLOW:
 3. Adjust TileWidth, TileHeight, MaterialThickness, Exposure, StaggerPattern
    in the Properties panel — tiles update live
 
-HO scale defaults: 2.0 × 2.5 mm tiles, 1.2 mm exposure (~12 × 15" slate)
+HO scale defaults: 2.0 × 2.5 mm tiles, 2.2 mm exposure
 
 Requires: slate_proxy.py, slate_geometry.py in same directory
           roof_geometry.py in _lib/ subdirectory or generators/_shared/

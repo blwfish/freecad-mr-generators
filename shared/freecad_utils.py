@@ -384,12 +384,23 @@ def _closest_candidate(orig_face, candidates):
     for f, owner in candidates:
         try:
             d = f.distToShape(test_vtx)[0]
-        except Exception:
+        except Exception as e:
+            # distToShape can fail on some OCCT face types; fall back to
+            # center-to-center distance rather than aborting the whole
+            # candidate-scoring pass over one bad candidate.
+            App.Console.PrintWarning(
+                f"_closest_candidate: distToShape failed for a candidate "
+                f"({getattr(owner, 'Label', owner)!r}), falling back to "
+                f"center distance: {e}\n")
             d = orig_center.distanceToPoint(f.CenterOfMass)
         try:
             fn = f.normalAt(0.5, 0.5)
             normal = (fn.x, fn.y, fn.z)
-        except Exception:
+        except Exception as e:
+            App.Console.PrintWarning(
+                f"_closest_candidate: normalAt failed for a candidate "
+                f"({getattr(owner, 'Label', owner)!r}), treating as zero "
+                f"normal (no alignment bonus): {e}\n")
             normal = (0.0, 0.0, 0.0)
         scored.append((d, normal, (f, owner)))
 
@@ -545,7 +556,7 @@ def resolve_shared_edge(face1, obj1, face2, obj2, doc=None):
                     f"  Found seam via geometric intersection: {seam.Length:.2f} mm\n")
                 return seam, fa, oa, fb, ob
         except Exception as e:
-            App.Console.PrintMessage(f"  section() failed: {e}\n")
+            App.Console.PrintWarning(f"  section() failed: {e}\n")
 
     return None, face1, obj1, face2, obj2
 

@@ -1,5 +1,5 @@
 """
-Parametric Station Sign Generator for FreeCAD v2.0.0
+Parametric Station Sign Generator for FreeCAD v2.1.1
 
 Fully parametric: change StationName in the Properties panel and the sign
 rebuilds automatically, scaling its width and height to fit the new text.
@@ -14,10 +14,16 @@ WORKFLOW:
 4. Adjust BorderThickness, BorderGap, MaterialThickness as desired
 
 Version History:
+- 2.1.1: Fixed disconnected glyph islands (dot of 'i'/'j', etc.) being
+         mishandled as holes instead of separate faces.
+- 2.1.0: Fixed text generation to use Part.makeWireString -- the 2.0.0
+         entry below claiming "Part.makeShapeString directly" was wrong
+         even at the time: Part.makeShapeString never existed as a real
+         Part module function, only as a Draft-module fallback that
+         silently created and discarded temporary document objects.
 - 2.0.0: FeaturePython conversion — fully parametric live-update object.
          No selection required; sign auto-scales around StationName text.
          Generation logic moved to station_sign_proxy.py.
-         Uses Part.makeShapeString directly (no temporary Draft objects).
 - 1.2.0: Transaction wrapping for undo
 - 1.1.1: Increased default border gap
 - 1.1.0: Fixed border gap, improved text centering

@@ -2,10 +2,18 @@
 Smart Trim Geometry Library v1.0.1
 
 Pure Python geometry functions for detecting and classifying edges for trim application.
-Used by both clapboard_trim and shingle_trim generators.
 
 No dependencies on FreeCAD.Part, FreeCAD.Vector, etc.
 Uses standard Python types (tuples, dicts, lists) for I/O.
+
+classify_edge() is called by trim_geometry.classify_edge_direction() (this
+same generator), which extracts a FreeCAD Edge's tangent as a plain tuple
+and delegates the actual angle classification here -- single source of
+truth for the vertical/horizontal/gable distinction (fixed 2026-08-08,
+full-review finding #09; previously classify_edge_direction independently
+reimplemented equivalent angle math, and this module's docstring claimed
+consumers -- "clapboard_trim and shingle_trim generators" -- that don't
+exist anywhere in this repo).
 
 Version History:
 - 1.0.1: Removed filter_edges_for_trim (replaced by is_perimeter_edge in macro)

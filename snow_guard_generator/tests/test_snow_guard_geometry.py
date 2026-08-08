@@ -380,8 +380,20 @@ class TestSnowGuardDownstreamInvariants:
             get_extent=lambda p: (p[2] - half_l, p[2] + half_l),
             label="v-axis: ")
 
-    @pytest.mark.parametrize("dim", [1.2, 1.2, 0.15, 1.0, 0.8, 0.6])
-    def test_guard_dimensions_are_non_degenerate(self, dim):
-        # Zero-dimension guard per this repo's Part.Solid consumer table:
-        # every dimension feeding a box/extrude must be strictly positive.
-        assert dim > 1e-9
+    def test_shipped_default_dimensions_are_non_degenerate(self):
+        # Full-review finding #52 (2026-08-08): this test previously
+        # parametrized over the same 6 hardcoded literals and asserted
+        # `dim > 1e-9` directly on each -- trivially true by construction,
+        # since it never called any function under test. A tautology
+        # sweep would (and should) have flagged this. Rewritten to
+        # actually exercise validate_parameters() with these shipped
+        # default dimensions (matching snow_guard_proxy.set_defaults:
+        # PadWidth=1.2, PadLength=1.2, PadThickness=0.15, FinHeight=1.0,
+        # FinBaseWidth=0.8, FinThickness=0.6) -- a real regression (one of
+        # these defaults becoming zero/negative, per this repo's
+        # Part.Solid zero-dimension consumer table) would now actually
+        # fail this test.
+        valid, errors = validate_parameters(
+            pad_width=1.2, pad_length=1.2, pad_thickness=0.15,
+            fin_height=1.0, fin_base_width=0.8, fin_thickness=0.6)
+        assert valid, f"shipped default dimensions fail validation: {errors}"

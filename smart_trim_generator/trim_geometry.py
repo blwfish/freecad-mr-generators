@@ -2,13 +2,18 @@
 Trim Geometry Library
 ====================
 
-Pure Python geometry library for architectural trim generation.
-Provides corner detection, classification, and trim piece geometry generation.
+Geometry library for architectural trim generation: corner detection,
+classification, and trim piece geometry generation.
 
-This library works with FreeCAD Part::TopoShape objects but contains no FreeCAD
-dependencies in the core geometry functions - similar to clapboard_geometry.py.
+Despite the name parallel to clapboard_geometry.py, this module is NOT
+FreeCAD-independent -- most of its functions (get_edge_vector,
+calculate_interior_angle, classify_edge_direction, _is_perimeter_edge,
+apply_miter_cut_at_corner, create_internal_corner_fill, etc.) call
+FreeCAD-specific Edge/Vector/Part methods directly on the objects passed
+in. smart_trim_geometry.py (in this same generator) holds the actual
+FreeCAD-independent pure-Python logic; see its module docstring instead
+for what's genuinely pytest-testable without FreeCAD.
 
-Author: Brian White
 Version: 1.4.1
 License: MIT
 """
