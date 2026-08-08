@@ -1,11 +1,19 @@
 """
-Roof Geometry Library v1.0.0
+Roof Geometry Library v1.1.0
 
 Shared pure-Python geometry for all roof-surface generators (shingle, slate,
 standing seam, seam caps).  No FreeCAD dependencies — fully testable with pytest.
 
 Extracted from shingle_geometry.py v5.x so that the bug-prone face-orientation
 and hip/valley-detection code lives in exactly one place.
+
+Version History:
+- 1.1.0: Add score_face_match/best_matching_candidate — pure-math core of
+         freecad_utils.resolve_base_face's candidate matching, extracted so
+         it's pytest-testable (that logic previously lived only in
+         roof_seam_proxy.py/a vendored copy in slate_seam_proxy.py, both
+         FreeCAD-dependent and untested).
+- 1.0.0: Initial extraction from shingle_geometry.py.
 
 Functions
 ---------
@@ -24,6 +32,10 @@ Hip / valley analysis
     classify_roof_intersection
     calculate_dihedral_angle
     analyze_roof_intersection
+
+Face-candidate matching (for freecad_utils.resolve_base_face)
+    score_face_match
+    best_matching_candidate
 
 Coursed-tile layout helpers (generic — no slate-specific content)
     is_valid_clip_fragment
@@ -391,6 +403,87 @@ def analyze_roof_intersection(
         'dihedral_angle':        dihedral,
         'trim_recommendation':   rec,
     }
+
+
+# ---------------------------------------------------------------------------
+# Face-candidate matching (for freecad_utils.resolve_base_face)
+# ---------------------------------------------------------------------------
+# Pure-math core of the "which candidate face is really the same face as
+# this one" scoring used when unwrapping a tiled/shingled output back to
+# its real source roof face. Split out so the scoring formula itself is
+# pytest-testable without FreeCAD -- the FreeCAD-object plumbing (reading
+# .CenterOfMass, .normalAt(), .distToShape()) stays in freecad_utils.py,
+# which calls these with plain floats/tuples extracted from Part.Face.
+
+def score_face_match(distance: float,
+                      orig_normal: Tuple[float, float, float],
+                      candidate_normal: Tuple[float, float, float]) -> float:
+    """
+    Score how well a candidate face matches an original face. Lower is
+    better. Combines centroid distance with a bonus for normal alignment:
+    score = distance - abs(dot(orig_normal_hat, candidate_normal_hat)) * 0.5
+
+    abs() makes this orientation-agnostic on purpose: a Part::MultiFuse
+    result can leave locally-inconsistent Face.Orientation flags on
+    otherwise-correct faces (confirmed 2026-08-08 on a real fused hip-roof
+    solid), so a candidate whose normal is exactly reversed from the
+    original must score identically to one that's exactly aligned --
+    distance is what actually discriminates between genuinely different
+    faces.
+
+    Args:
+        distance: distance (document units) from the query point to the
+            candidate face. Physically >= 0, but not enforced here --
+            this is a pure scoring formula, not a validator.
+        orig_normal: the original face's normal, as an (x, y, z) tuple.
+            Need not be pre-normalized.
+        candidate_normal: the candidate face's normal, as an (x, y, z)
+            tuple. Need not be pre-normalized.
+
+    Returns:
+        float score, lower = better match. A zero-length normal (either
+        input) contributes zero alignment bonus (treated as unknown
+        orientation, not as a match or mismatch) -- the result is then
+        governed by distance alone.
+    """
+    def _unit(v):
+        length = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        if length < 1e-9:
+            return (0.0, 0.0, 0.0)
+        return (v[0] / length, v[1] / length, v[2] / length)
+
+    n1 = _unit(orig_normal)
+    n2 = _unit(candidate_normal)
+    dot = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+    return distance - dot * 0.5
+
+
+def best_matching_candidate(orig_normal: Tuple[float, float, float],
+                             candidates: List[Tuple[float, Tuple[float, float, float], object]]):
+    """
+    Return the payload of whichever candidate scores best (lowest) via
+    score_face_match, or None if candidates is empty.
+
+    Args:
+        orig_normal: the original face's normal, as an (x, y, z) tuple.
+        candidates: list of (distance, candidate_normal, payload) tuples.
+            payload is opaque -- returned as-is, never inspected.
+
+    Returns:
+        The payload of the best-scoring candidate, or None if candidates
+        is empty. Ties (equal score) go to whichever candidate appears
+        FIRST in the list -- comparison is strict '<', so a later
+        candidate must beat, not just match, the current best to replace
+        it. This is load-bearing for callers that pre-sort candidates by
+        preference.
+    """
+    best_payload, best_score = None, float('inf')
+    for distance, candidate_normal, payload in candidates:
+        score = score_face_match(distance, orig_normal, candidate_normal)
+        if score < best_score:
+            best_score = score
+            best_payload = payload
+    return best_payload
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,11 @@ Imported by:  brick_generator_macro, radial_brick_generator_macro,
               shingle_generator, smart_trim_generator, station_sign_generator,
               roof_seam_generator, slate_seam_generator
 
-Version: 1.4.0
+Version: 1.4.1
+  1.4.1: _closest_candidate's scoring formula extracted to
+         roof_geometry.score_face_match/best_matching_candidate so it's
+         pytest-testable without FreeCAD; this file now just extracts
+         plain distance/normal data from Part.Face and calls it.
   1.4.0: Add resolve_shared_edge()/resolve_base_face() — roof-seam face
          unwrapping consolidated from roof_seam_proxy.py and a vendored
          copy in slate_seam_proxy.py, extended to recognize the modern
@@ -25,7 +29,7 @@ Version: 1.4.0
 
 import os
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 # ---------------------------------------------------------------------------
 # Assertion toggle
@@ -270,6 +274,8 @@ def log_global_placement(obj, label=None):
 import FreeCAD as App
 import Part
 
+from roof_geometry import best_matching_candidate
+
 
 def find_shared_edge(face1, face2, tol=0.1):
     """
@@ -338,10 +344,13 @@ def find_shared_edge(face1, face2, tol=0.1):
 def _closest_candidate(orig_face, candidates):
     """
     Return the (face, owner) pair in *candidates* geometrically closest to
-    *orig_face*, scoring on centroid distance with a bonus for normal
-    alignment. Shared scoring core for both the single-owner legacy path
-    (`_closest_base_face`) and the multi-owner `Sources` path, so there is
-    one place that defines "closest match" rather than two that could drift.
+    *orig_face*. Thin FreeCAD-object plumbing: extracts plain distance/
+    normal-tuple data from each Part.Face and hands the actual "which one
+    wins" scoring to roof_geometry.best_matching_candidate, so that pure
+    math is pytest-testable without FreeCAD. Shared scoring core for both
+    the single-owner legacy path (`_closest_base_face`) and the multi-owner
+    `Sources` path, so there is one place that defines "closest match"
+    rather than two that could drift.
 
     Parameters
     ----------
@@ -356,11 +365,11 @@ def _closest_candidate(orig_face, candidates):
     if not candidates:
         return None, None
     orig_center = orig_face.CenterOfMass
-    orig_normal = orig_face.normalAt(0.5, 0.5)
-    if orig_normal.Length > 1e-9:
-        orig_normal.normalize()
+    orig_normal_v = orig_face.normalAt(0.5, 0.5)
+    orig_normal = (orig_normal_v.x, orig_normal_v.y, orig_normal_v.z)
     test_vtx = Part.Vertex(orig_center)
-    best_face, best_owner, best_score = None, None, float('inf')
+
+    scored = []  # (distance, candidate_normal, (face, owner))
     for f, owner in candidates:
         try:
             d = f.distToShape(test_vtx)[0]
@@ -368,16 +377,13 @@ def _closest_candidate(orig_face, candidates):
             d = orig_center.distanceToPoint(f.CenterOfMass)
         try:
             fn = f.normalAt(0.5, 0.5)
-            if fn.Length > 1e-9:
-                fn.normalize()
-            dot = abs(orig_normal.dot(fn))
+            normal = (fn.x, fn.y, fn.z)
         except Exception:
-            dot = 0.0
-        score = d - dot * 0.5
-        if score < best_score:
-            best_score = score
-            best_face, best_owner = f, owner
-    return best_face, best_owner
+            normal = (0.0, 0.0, 0.0)
+        scored.append((d, normal, (f, owner)))
+
+    best = best_matching_candidate(orig_normal, scored)
+    return best if best is not None else (None, None)
 
 
 def _closest_base_face(orig_face, base_faces):
