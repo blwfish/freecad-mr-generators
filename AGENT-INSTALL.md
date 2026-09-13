@@ -105,9 +105,12 @@ Tell the user to restart FreeCAD. The macros then appear in **Tools → Macros**
 
 ## Verifying the install worked
 
-From the FreeCAD Python console:
+FreeCAD adds `Mod/fc_generators/` itself to `sys.path`—not its parent `Mod/`
+directory—so the files inside it are importable directly by name, not as a
+`fc_generators` package. From the FreeCAD Python console:
 ```python
-import fc_generators  # should not raise ImportError
+import freecad_utils  # a shared module installed regardless of which
+                       # generators are present; should not raise ImportError
 ```
 
 Or check that `Mod/fc_generators/Init.py` exists.
