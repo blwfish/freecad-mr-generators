@@ -12,8 +12,23 @@ Supported bond patterns:
 
 Returns lists of brick definitions ready for FreeCAD instantiation or other use.
 
-Version: 5.1.0
-Date: 2025-12-31
+Version: 5.2.0
+Date: 2026-09-13
+  5.2.0: right_quoin no longer requires left_quoin=True or flemish bond --
+         a standalone right-edge quoin on any bond is built by generating
+         the mirror-image left_quoin problem and reflecting every brick's
+         u coordinate (course parity, which drives stretcher/header
+         alternation, never depends on u-position, so this is exact, not
+         an approximation). The dual-quoin-simultaneously case (both
+         left_quoin AND right_quoin on one wall) remains flemish-only --
+         that path has real bespoke meet-in-the-middle math in
+         _generate_flemish_bond, unlike the standalone case. Also added
+         compute_face_axes(), extracted from brick_proxy.py's
+         _get_face_coordinate_system() so the u/v-axis derivation used by
+         quoin corner detection is pure-Python-testable (surfaced while
+         fixing a real gap: a door pier's only real corner landed on its
+         *right* edge only, which was previously inexpressible without an
+         unwanted second quoin column and a forced bond-pattern change).
   5.1.0: Add face_index_set()/resolve_quoin_flags_for_face()/find_dual_
          listed_faces() -- the per-face quoin-role override resolution
          logic from brick_proxy.py's _face_index_set/_resolve_quoin_flags,
@@ -24,7 +39,7 @@ Date: 2025-12-31
          FreeCAD, and that call stays in the proxy.
 """
 
-__version__ = "5.1.0"
+__version__ = "5.2.0"
 
 import math
 from typing import List, Dict, Tuple, NamedTuple, Set
@@ -102,6 +117,20 @@ def resolve_quoin_flags_for_face(
     return left_quoin, left_primary_flag, right_quoin, right_primary_flag
 
 
+# =============================================================================
+# Face U/V-axis derivation (pure logic, now living in shared/face_geometry.py)
+# =============================================================================
+# Relocated 2026-09-13 (see that module's docstring for why) since this
+# logic is generic face-axis infrastructure, not brick-specific --
+# shared/corner_detection.py, and any future clapboard/bead_board/smart_trim
+# corner work, needs the same axis derivation. Re-exported here so existing
+# `from brick_geometry import compute_face_axes` call sites (and
+# brick_proxy.py's `_bg.compute_face_axes` attribute access) keep working
+# unchanged.
+
+from face_geometry import compute_face_axes  # noqa: E402,F401
+
+
 class BrickGeometry:
     """
     Generates brick wall geometry for a rectangular wall face.
@@ -139,12 +168,15 @@ class BrickGeometry:
             left_quoin_primary: True = this is Face A (stretcher quoin on even courses).
                                 False = this is Face B (header-return quoin on even courses).
                                 Ignored when left_quoin=False.
-            right_quoin: True when a second QuoinGeometry column occupies the right
-                        edge (u=u_length) — for a wall that spans between two quoin
-                        corners. Requires left_quoin=True and bond_type='flemish';
-                        the right closer is shrunk per-course to also clear the
-                        right quoin's reserved width instead of landing on the
-                        real wall edge.
+            right_quoin: True when a QuoinGeometry column occupies the right
+                        edge (u=u_length). Standalone (left_quoin=False) works on
+                        any bond type: generated as the mirror-image left_quoin
+                        problem and reflected, since course parity never depends
+                        on u-position. Combined with left_quoin=True (a wall
+                        spanning two quoin corners) is flemish-only -- the right
+                        closer must be shrunk per-course to also clear the right
+                        quoin's reserved width, which only _generate_flemish_bond
+                        implements.
             right_quoin_primary: True = Face A at the right corner (stretcher quoin
                                 on even courses). False = Face B. Ignored when
                                 right_quoin=False.
@@ -173,11 +205,15 @@ class BrickGeometry:
         if self.bond_type == 'common' and common_bond_count < 1:
             raise ValueError("common_bond_count must be at least 1")
 
-        if self.right_quoin and not self.left_quoin:
-            raise ValueError("right_quoin requires left_quoin=True (dual-quoin walls only)")
-
-        if self.right_quoin and self.bond_type != 'flemish':
-            raise ValueError("right_quoin is only implemented for flemish bond")
+        # Only the dual-quoin-simultaneously case (both edges quoined on one
+        # wall) is flemish-only -- that's the only path with real bespoke
+        # meet-in-the-middle math (_generate_flemish_bond's worst_right_reserve
+        # search). A standalone right_quoin (left_quoin=False) is handled by
+        # generate() via the mirror trick, on any bond type.
+        if self.left_quoin and self.right_quoin and self.bond_type != 'flemish':
+            raise ValueError(
+                "left_quoin and right_quoin together (a wall spanning two "
+                "quoin corners) is only implemented for flemish bond")
         
         # Pre-calculate spacing
         self.stretcher_spacing_u = brick_width + mortar
@@ -293,7 +329,15 @@ class BrickGeometry:
                 'bricks': List of BrickDef objects
                 'metadata': Dict with generation metadata
         """
-        if self.bond_type == 'stretcher':
+        if self.right_quoin and not self.left_quoin:
+            # No bond method computes a right-edge quoin directly (only
+            # _generate_flemish_bond's dual-quoin path references
+            # right_quoin at all, and only when left_quoin is also set).
+            # Course parity (course % 2, which drives stretcher/header
+            # alternation) never depends on u-position, so a standalone
+            # right_quoin is exactly the mirror-image left_quoin problem.
+            bricks = self._generate_mirrored_right_quoin()
+        elif self.bond_type == 'stretcher':
             bricks = self._generate_stretcher_bond()
         elif self.bond_type == 'english':
             bricks = self._generate_english_bond()
@@ -301,7 +345,7 @@ class BrickGeometry:
             bricks = self._generate_flemish_bond()
         elif self.bond_type == 'common':
             bricks = self._generate_common_bond()
-        
+
         # Add sequential indices
         for i, brick in enumerate(bricks):
             bricks[i] = brick._replace(index=i)
@@ -320,7 +364,33 @@ class BrickGeometry:
                 'mortar': self.mortar,
             }
         }
-    
+
+    def _generate_mirrored_right_quoin(self) -> List[BrickDef]:
+        """
+        Standalone right_quoin (left_quoin=False): build the mirror-image
+        left_quoin problem -- same bond, same right_quoin_primary as the
+        Primary designation -- then reflect every brick's u coordinate
+        across the wall so the quoin column lands at u=u_length instead of
+        u=0. Exact, not approximate: course parity (course % 2) drives
+        stretcher/header alternation and never depends on u-position, so
+        reflection changes nothing about which brick is a stretcher vs a
+        header -- only where it sits along the wall.
+        """
+        mirror = BrickGeometry(
+            u_length=self.u_length, v_length=self.v_length,
+            brick_width=self.brick_width, brick_height=self.brick_height,
+            brick_depth=self.brick_depth, mortar=self.mortar,
+            bond_type=self.bond_type, common_bond_count=self.common_bond_count,
+            skin_depth=self.skin_depth,
+            left_quoin=True, left_quoin_primary=self.right_quoin_primary,
+            right_quoin=False,
+        )
+        mirror_bricks = mirror.generate()['bricks']
+        return [
+            b._replace(u=self.u_length - b.u - b.width)
+            for b in mirror_bricks
+        ]
+
     def _generate_stretcher_bond(self) -> List[BrickDef]:
         """
         Stretcher (Running) Bond.

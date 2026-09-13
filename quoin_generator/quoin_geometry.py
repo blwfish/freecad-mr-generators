@@ -23,13 +23,26 @@ Usage:
     #     mirror_to_right_edge(result['face_a_bricks'], span=u_length)
 
 Version History:
+- 1.3.0: classify_dihedral()/classify_edge_position() relocated to
+         shared/corner_geometry.py (generic two-face-corner infrastructure,
+         not brick/quoin-specific -- clapboard/bead_board's own unaddressed
+         corner problem and a future smart_trim redesign need the same
+         classifiers). Re-exported here so existing import lines keep
+         working unchanged.
+- 1.2.0: Add classify_dihedral()/classify_edge_position() -- pure
+         classifiers backing shared/corner_detection.py's auto-discovery of
+         which wall-face pairs form real 90-degree building corners
+         eligible for a quoin, and which edge (Left/Right) of each face the
+         corner falls on. Both return 'ambiguous' rather than guessing when
+         an input falls outside their documented tolerance bands -- see
+         each function's docstring.
 - 1.1.0: Add mirror_to_right_edge() — lets BrickProxy place the same
          deterministic column at a face's right edge (RightQuoin) without
          reimplementing the topo_eps position math.
 - 1.0.0: Initial release.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 
 import math
 import sys
@@ -37,8 +50,10 @@ from pathlib import Path
 from typing import Dict, List
 
 _bg_path = str(Path(__file__).parent.parent / 'brick_generator')
-if _bg_path not in sys.path:
-    sys.path.insert(0, _bg_path)
+_shared_path = str(Path(__file__).parent.parent / 'shared')
+for _p in (_bg_path, _shared_path):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from brick_geometry import BrickDef  # noqa: E402
 
@@ -184,3 +199,16 @@ def mirror_to_right_edge(bricks: List[BrickDef], span: float) -> List[BrickDef]:
             u=span - bd.width + topo_eps,
         ))
     return mirrored
+
+
+# =============================================================================
+# Corner-pair classification (pure logic, now living in shared/corner_geometry.py)
+# =============================================================================
+# Relocated 2026-09-13 (see that module's docstring for why) since this
+# logic is generic two-face-corner infrastructure, not brick/quoin-specific
+# -- clapboard/bead_board's own unaddressed corner-overlap problem and a
+# future smart_trim redesign will need the same classifiers. Re-exported
+# here so existing `from quoin_geometry import classify_dihedral,
+# classify_edge_position` call sites keep working unchanged.
+
+from corner_geometry import classify_dihedral, classify_edge_position  # noqa: E402,F401

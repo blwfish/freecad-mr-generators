@@ -4,11 +4,35 @@ BrickProxy — FeaturePython proxy for parametric brick engraving.
 Change any property in the panel and the brickwork regenerates.
 Face references stored as PropertyLinkSubList so they survive save/reload.
 
-ARCHITECTURAL CHANGE from v5.x:
-  The old macro modified the source wall in-place (destructive).
-  This proxy takes a COPY of the source shape, applies recess + engrave to it,
-  and sets obj.Shape to the result.  The source object is unchanged.
-  Hide the source wall and use the parametric BrickedWall output instead.
+ARCHITECTURAL CHANGE in v7.0.0 (breaking):
+  Through v6.x, this proxy copied the ENTIRE source shape, cut a recess
+  INTO it, and engraved mortar into that recess -- obj.Shape was a modified
+  copy of the whole wall (or whole building, if Sources pointed at a solid
+  with real volume), meant to replace the source (hide the source, show
+  BrickedWall instead). This broke composability: two independent
+  BrickedWall objects sourcing different faces of the same solid each
+  produced a FULL duplicate copy of that solid's entire volume, since
+  "copy the input shape" copies the whole thing regardless of how many
+  faces are actually being bricked -- showing several such objects at once
+  produced overlapping duplicate buildings, not one coherent building with
+  several different brick treatments (found 2026-09-13 trying to give
+  different walls different bond patterns).
+
+  v7.0.0 instead builds a thin brick SKIN per Sources face, proud of (in
+  front of) the original surface by SkinDepth, with mortar carved
+  MortarDepth back into that skin's own thickness -- the same "applied
+  siding on a visible wall" model clapboard_proxy.py/bead_board_proxy.py
+  already use. obj.Shape is now just the skin (or a Part.Compound of one
+  skin per Sources face), never a copy of the wall/building it sits on.
+
+  User-facing consequence: **keep the source wall VISIBLE**, not hidden --
+  the skin sits on top of it, it doesn't replace it. This inverts the
+  pre-7.0.0 workflow.
+
+  Independent BrickedWall objects (one per wall, each its own bond
+  pattern) now compose correctly via simple side-by-side display, exactly
+  like independent ClapboardWall/BeadBoard objects already do -- no
+  chaining one BrickedWall's Sources onto another's output needed.
 
 QUOIN CORNERS (LeftQuoin / RightQuoin):
   Set LeftQuoin=True (and RightQuoin=True for a wall spanning two corners)
@@ -65,7 +89,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "6.2.0"
+VERSION = "7.0.0"
 GENERATOR_NAME = "brick_generator"
 
 _here = Path(__file__).parent
@@ -101,10 +125,38 @@ def _scale(vec, s):
     return App.Vector(vec.x * s, vec.y * s, vec.z * s)
 
 
+def _offset_face(face, normal, offset):
+    """
+    Translate a planar face's outer wire by `offset` along `normal` and
+    rebuild a Face from it -- a plain translation, not a boolean cut.
+
+    Replaces the old (pre-7.0.0) _recess_shape()'s "cut a recess volume out
+    of the whole shape, then re-identify the recessed face by centroid/
+    normal/area matching" -- unnecessary for a planar face, whose translated
+    position is trivially computable, and cheaper/more robust than an OCCT
+    cut + heuristic re-identification.
+    """
+    wire = face.OuterWire.copy()
+    wire.translate(_scale(normal, offset))
+    return Part.Face(wire)
+
+
+_AXIS_VECTORS = {
+    'x': App.Vector(1, 0, 0),
+    'y': App.Vector(0, 1, 0),
+    'z': App.Vector(0, 0, 1),
+}
+
+
 def _get_face_coordinate_system(face):
     """
     Establish U/V/normal coordinate system for a face.
     Returns (origin, u_vec, v_vec, normal, u_length, v_length, is_horizontal).
+
+    Thin FreeCAD-facing wrapper: extracts the bbox/vertex/normal data and
+    delegates the actual axis-selection math to brick_geometry's pure,
+    pytest-testable compute_face_axes() (also the basis for
+    quoin_generator/corner_detection.py's corner classification).
     """
     outer_wire = face.OuterWire
     bbox = outer_wire.BoundBox
@@ -115,42 +167,17 @@ def _get_face_coordinate_system(face):
     y_range = max(p.y for p in pts) - min(p.y for p in pts)
     z_range = max(p.z for p in pts) - min(p.z for p in pts)
 
-    axes = sorted([
-        (x_range, 'x', App.Vector(1, 0, 0)),
-        (y_range, 'y', App.Vector(0, 1, 0)),
-        (z_range, 'z', App.Vector(0, 0, 1)),
-    ], reverse=True)
-
     uv = face.ParameterRange
     normal = face.normalAt((uv[0]+uv[1])/2, (uv[2]+uv[3])/2)
 
-    z_axis  = next((a for a in axes if a[1] == 'z'), None)
-    others  = [a for a in axes if a[1] != 'z']
+    axes = _bg.compute_face_axes(x_range, y_range, z_range,
+                                  (normal.x, normal.y, normal.z))
 
-    if z_axis and z_axis[0] > 0.001:
-        v_vec    = z_axis[2]
-        v_length = z_axis[0]
-        best_u, best_len = None, 0
-        for rng, _, vec in others:
-            if abs(vec.dot(normal)) < 0.5 and rng > best_len:
-                best_u, best_len = vec, rng
-        if best_u is None:
-            best_u, best_len = others[0][2], others[0][0]
-        u_vec    = best_u
-        u_length = best_len
-        is_horizontal = False
-    else:
-        horiz = [(r, n2, v) for r, n2, v in axes if n2 != 'z']
-        horiz.sort(reverse=True)
-        if len(horiz) < 2 or horiz[0][0] < 0.001:
-            raise ValueError("Face has no meaningful horizontal extent.")
-        u_vec    = horiz[0][2]
-        u_length = horiz[0][0]
-        v_vec    = horiz[1][2]
-        v_length = horiz[1][0] if horiz[1][0] > 0.001 else u_length
-        is_horizontal = True
+    u_vec = _AXIS_VECTORS[axes['u_axis']]
+    v_vec = _AXIS_VECTORS[axes['v_axis']]
 
-    return origin, u_vec, v_vec, normal, u_length, v_length, is_horizontal
+    return (origin, u_vec, v_vec, normal,
+            axes['u_length'], axes['v_length'], axes['is_horizontal'])
 
 
 def _snap_origin_to_grid(origin, u_vec, v_vec, brick_width, brick_height, mortar):
@@ -406,78 +433,17 @@ def _create_mortar_grid(face, params):
 
 
 # =============================================================================
-# Shape-based recess (non-destructive, operates on a shape copy)
-# =============================================================================
-
-def _recess_shape(shape, face_indices, skin_depth):
-    """
-    Apply face recess to a shape.
-    Returns (modified_shape, new_face_indices).
-    Falls back to (original_shape, face_indices) if any step fails.
-    """
-    if skin_depth <= 0:
-        return shape, face_indices
-
-    recess_solids = []
-    sigs = []
-    for idx in face_indices:
-        if idx >= len(shape.Faces):
-            continue
-        face = shape.Faces[idx]
-        normal = face.normalAt(0, 0)
-        centroid = face.CenterOfMass
-        area = face.Area
-        sigs.append((idx, normal, centroid, area))
-        outer_wire = face.OuterWire
-        solid_face = Part.Face(outer_wire)
-        recess_solids.append(solid_face.extrude(_scale(normal, -skin_depth)))
-
-    if not recess_solids:
-        return shape, face_indices
-
-    combined = recess_solids[0] if len(recess_solids) == 1 else recess_solids[0].fuse(recess_solids[1:])
-    try:
-        new_shape = shape.cut(combined)
-        if new_shape.isNull():
-            return shape, face_indices
-    except Exception as e:
-        App.Console.PrintWarning(f"  Recess cut failed: {e}\n")
-        return shape, face_indices
-
-    # Re-identify recessed faces by expected centroid (shifted inward by skin_depth)
-    claimed = set()
-    new_face_indices = []
-    for orig_idx, orig_normal, orig_centroid, orig_area in sigs:
-        expected = orig_centroid + _scale(orig_normal, -skin_depth)
-        best_idx, best_score = orig_idx, float('inf')
-        for i, f in enumerate(new_shape.Faces):
-            if i in claimed:
-                continue
-            if f.normalAt(0, 0).dot(orig_normal) < 0.99:
-                continue
-            area_diff = abs(f.Area - orig_area) / max(orig_area, 0.001)
-            if area_diff > 0.10:
-                continue
-            score = expected.distanceToPoint(f.CenterOfMass) + area_diff * 10.0
-            if score < best_score:
-                best_score = score
-                best_idx = i
-        claimed.add(best_idx)
-        new_face_indices.append(best_idx)
-
-    return new_shape, new_face_indices
-
-
-# =============================================================================
 # FeaturePython proxy
 # =============================================================================
 
 class BrickProxy:
     """
-    Parametric brick engraving.  Change a property → brickwork updates.
+    Parametric brick skin.  Change a property → brickwork regenerates.
 
-    Output is a copy of the source wall with mortar engraved; the source
-    object is not modified.  Hide the source and use BrickedWall instead.
+    Output is a thin brick skin (or one per Sources face, compounded)
+    applied proud of the source wall's surface; the source object is not
+    modified and should stay VISIBLE underneath (see module docstring's
+    v7.0.0 ARCHITECTURAL CHANGE note).
     """
 
     Type = "BrickedWall"
@@ -514,7 +480,8 @@ class BrickProxy:
                             "Mortar joint thickness (mm)")
         if not hasattr(obj, 'SkinDepth'):
             obj.addProperty("App::PropertyLength", "SkinDepth", grp,
-                            "Face recess depth = brick skin thickness (mm)")
+                            "Brick skin thickness, proud of the source "
+                            "face's surface (mm)")
         if not hasattr(obj, 'MortarDepth'):
             obj.addProperty("App::PropertyLength", "MortarDepth", grp,
                             "Mortar groove engraving depth (mm)")
@@ -543,10 +510,11 @@ class BrickProxy:
             obj.LeftQuoinPrimary = True
         if not hasattr(obj, 'RightQuoin'):
             obj.addProperty("App::PropertyBool", "RightQuoin", grp,
-                            "A second real quoin column at the right edge "
-                            "(u=u_length), for a wall spanning two quoin "
-                            "corners. Requires LeftQuoin=True and flemish "
-                            "bond.")
+                            "A real quoin column at the right edge "
+                            "(u=u_length). Works standalone (LeftQuoin=False) "
+                            "on any bond type. Combined with LeftQuoin=True "
+                            "(a wall spanning two quoin corners) is "
+                            "flemish-only.")
             obj.RightQuoin = False
         if not hasattr(obj, 'RightQuoinPrimary'):
             obj.addProperty("App::PropertyBool", "RightQuoinPrimary", grp,
@@ -631,12 +599,12 @@ class BrickProxy:
 
         link_obj = resolved[0][1]
 
-        # _recess_shape/_resolve_quoin_flags are keyed by the face's plain
-        # integer index into link_obj.Shape.Faces (matching the *QuoinFaces
-        # override properties' own index scheme) -- derive it by identity
-        # match against the just-resolved Face rather than re-parsing
-        # sub_name, so a face resolved via a genuine TNP-tracked extended
-        # name still yields the correct current index.
+        # _resolve_quoin_flags is keyed by the face's plain integer index
+        # into link_obj.Shape.Faces (matching the *QuoinFaces override
+        # properties' own index scheme) -- derive it by identity match
+        # against the just-resolved Face rather than re-parsing sub_name,
+        # so a face resolved via a genuine TNP-tracked extended name still
+        # yields the correct current index.
         link_faces = list(link_obj.Shape.Faces)
         orig_face_indices = []
         for face, _owner, sub_name in resolved:
@@ -672,26 +640,26 @@ class BrickProxy:
             # freecad-mr-generators-20260808-a0b9#23).
             resolve_quoin = _resolve_quoin_flags(obj, link_obj)
 
-            # Work on a copy of the source shape (non-destructive)
-            working_shape = link_obj.Shape.copy()
-
-            # Step 1: Recess selected faces. _recess_shape returns new indices
-            # in the same order as orig_face_indices, so new_face_indices[i]
-            # is where orig_face_indices[i] ended up — quoin overrides are
-            # keyed by the ORIGINAL index (as referenced in Sources / the
-            # *QuoinFaces properties), so both are needed together below.
             skin_depth = params['material_thickness']
-            working_shape, new_face_indices = _recess_shape(
-                working_shape, orig_face_indices, skin_depth)
+            # v7.0.0: no working-shape copy, no recess-then-cut-the-whole-
+            # shape -- each face becomes its own thin skin, proud of the
+            # original surface by skin_depth, never a modified copy of
+            # link_obj's shape (see module docstring's ARCHITECTURAL
+            # CHANGE note for why: copying the whole input shape per
+            # BrickedWall object made independent per-wall objects
+            # duplicate the entire source volume instead of composing).
+            # A small embed offset (matching quoin_geometry's
+            # _TOPO_EPS_FACTOR convention of scaling with mortar) lets the
+            # skin's back face overlap slightly into the source wall
+            # rather than sit exactly coincident with it.
+            embed_offset = params['mortar'] * 0.1
 
-            # Step 2: Build mortar grids for each face, with per-face quoin
-            # flags resolved from the *QuoinFaces override properties (falling
-            # back to the plain LeftQuoin/RightQuoin/*Primary booleans).
-            mortar_grids = []
-            for orig_idx, idx in zip(orig_face_indices, new_face_indices):
-                if idx >= len(working_shape.Faces):
+            skins = []
+            for orig_idx in orig_face_indices:
+                if orig_idx >= len(link_obj.Shape.Faces):
                     continue
-                face = working_shape.Faces[idx]
+                face = link_obj.Shape.Faces[orig_idx]
+                normal = face.normalAt(0, 0)
                 left_quoin, left_quoin_primary, right_quoin, right_quoin_primary = \
                     resolve_quoin(orig_idx)
                 face_params = dict(params)
@@ -700,28 +668,21 @@ class BrickProxy:
                 face_params['right_quoin']         = right_quoin
                 face_params['right_quoin_primary'] = right_quoin_primary
                 try:
-                    grid = _create_mortar_grid(face, face_params)
-                    mortar_grids.append(grid)
+                    outer_face = _offset_face(face, normal, skin_depth)
+                    mortar_grid = _create_mortar_grid(outer_face, face_params)
+
+                    embedded_face = _offset_face(face, normal, -embed_offset)
+                    skin_solid = embedded_face.extrude(
+                        _scale(normal, skin_depth + embed_offset))
+
+                    skins.append(skin_solid.cut(mortar_grid))
                 except Exception as e:
-                    App.Console.PrintError(f"  BrickProxy face {idx}: {e}\n")
+                    App.Console.PrintError(f"  BrickProxy face {orig_idx}: {e}\n")
 
-            if not mortar_grids:
-                # No grids generated — just output the recessed shape
-                obj.Shape = working_shape
+            if not skins:
                 return
 
-            # Step 3: Cut mortar grids from working shape
-            if len(mortar_grids) == 1:
-                mortar_compound = mortar_grids[0]
-            else:
-                mortar_compound = Part.Compound(mortar_grids)
-
-            result = working_shape.cut(mortar_compound)
-            if result.isNull():
-                App.Console.PrintError("BrickProxy: boolean cut returned null shape\n")
-                return
-
-            obj.Shape = result
+            obj.Shape = skins[0] if len(skins) == 1 else Part.Compound(skins)
             obj.Placement = link_obj.Placement
             App.Console.PrintMessage(
                 f"✓ BrickedWall updated ({len(orig_face_indices)} face(s), "

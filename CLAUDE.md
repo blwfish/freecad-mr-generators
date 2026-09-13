@@ -188,59 +188,70 @@ If a checklist box would naturally be N/A for the function under test
 description rather than skipping silently.  "Didn't think about it" is
 the failure mode this rule exists to prevent.
 
-## Architecture rule: never chain a proxy's `Sources` onto another proxy's boolean-cut output
+## Architecture rule: a proxy that copies its whole input shape doesn't compose — build a thin skin instead
 
-**Trigger:** designing or reviewing any `*_proxy.py` feature where one
-FeaturePython's `Sources` (an `App::PropertyLinkSubList`) needs to reference
-a face on a shape that *another* FeaturePython proxy produced via a boolean
-operation (`.cut()`/`.fuse()`/`.common()`).
+**Trigger:** designing or reviewing any `*_proxy.py` whose `execute()` does
+`working_shape = link_obj.Shape.copy()` (or similar) and then boolean-cuts
+into that copy, rather than building independent geometry from just the
+target face(s).
 
-**The rule:** don't. Source `Sources` faces only from a shape nothing
-downstream ever re-cuts — the original solid the wall/roof/etc. was built
-from (e.g. a `Part::Cut` upstream of any bricking/siding pass), never
-another proxy's own boolean output. If two different treatments are needed
-on faces of the same building (two bond patterns, two clapboard heights,
-whatever), create independent proxy objects that each source the *original*
-stable shape directly — this is already the documented pattern in
-`brick_proxy.py`'s own docstring ("one BrickedWall per face... no live link
-between the two BrickedWall objects") and is exactly how `clapboard_proxy.py`
-already works (each source face is read straight off a never-modified
-shape; results are combined with `Part.Compound`, not chained boolean cuts).
+**The rule:** don't copy-and-modify the whole input shape if the source can
+have real volume (a solid, not a thin sheet) and more than one proxy object
+might source different faces of it. Build a thin skin per target face
+instead — proud of (or otherwise positioned relative to) the original
+surface, sized to just that face's own geometry — and combine multiple
+faces' skins with `Part.Compound`, the way `clapboard_proxy.py`/
+`bead_board_proxy.py` already do. Independent proxy objects, each sourcing
+the *original* stable shape directly, then compose correctly with no
+chaining needed at all.
 
-**Why:** FreeCAD/OCCT does not guarantee stable `Face`/`Edge`/`Vertex` names
-across a recompute that runs a boolean operation (the "Topological Naming
-Problem," TNP) — a `.cut()`/`.fuse()` can silently renumber sub-elements.
-Any `PropertyLinkSubList` entry storing a name like `"Face169"` into a shape
-that later gets re-cut is a landmine: the reference can resolve to the wrong
-face, or fail to resolve at all, with no compile-time or type-level warning.
+**Why:** `Shape.copy()` copies the ENTIRE input shape regardless of how
+much of it is actually being modified. If the source is a solid building
+(not a flat sheet), every proxy object that does this produces a full
+duplicate of the whole volume — showing several such objects together
+(e.g. one per wall, each a different bond/board pattern) doesn't compose
+into one building, it overlaps several near-duplicate buildings, each
+different only where its own target face was modified.
 
-This has already bitten the project twice for the identical reason:
+This has bitten the project twice, and the second time corrected the first
+time's takeaway:
 - **Quoin two-pass (2026-06-25 → 2026-08-08):** `quoin_proxy.py` took a
-  `BrickedWall`'s own (already mortar-cut) output as its `Source` and cut
-  corner columns into it. Once a wall was mortar-engraved, edge/face
-  selection on it resolved to tiny per-brick fragments instead of a whole
-  face. Abandoned in `34b12c6`: quoin corners are now computed directly
-  inside `brick_proxy.py`'s own single mortar cut — no second pass, ever.
-- **Per-wall bond pattern (2026-09-13):** a `BrickProxy` was chained onto
-  a *different* `BrickProxy`'s cut output to give one wall a different bond
-  pattern. Removing a face from the upstream object's `Sources` (to free it
-  up for the second pass) triggered a re-cut that renumbered the upstream
-  shape's faces, silently corrupting the downstream object's stored
-  `"Face169"` reference into an unresolvable `?Face169`. Required manual
-  geometric re-identification (matching by normal/centroid/area) to recover.
+  `BrickedWall`'s own (already mortar-cut, whole-volume) output as its
+  `Source` and cut corner columns into it. Once a wall was mortar-engraved,
+  edge/face selection on it resolved to tiny per-brick fragments instead of
+  a whole face (a TNP/topological-naming symptom — `Shape.copy()` +
+  `.cut()` doesn't guarantee stable face numbering across a recompute).
+  Abandoned in `34b12c6`: quoin corners moved into `brick_proxy.py`'s own
+  single mortar cut, no second pass.
+- **Per-wall bond pattern (2026-09-13):** first attempt chained a second
+  `BrickProxy` onto a *different* `BrickProxy`'s whole-volume output to give
+  one wall a different bond pattern — hit the same TNP face-renumbering
+  problem as the quoin case, fixed with `resolve_sources_faces()` (below)
+  plus geometric re-identification. Second attempt tried avoiding the
+  chain entirely — 5 independent `BrickProxy` objects, each sourcing a
+  different face of the same solid directly — and discovered the deeper
+  problem: each object was still a full duplicate of the whole building's
+  volume (confirmed via bounding box/volume comparison), because
+  `BrickProxy.execute()` still did `link_obj.Shape.copy()` regardless of
+  chaining. The actual fix (`brick_proxy.py` v7.0.0) was eliminating the
+  whole-shape copy: each `BrickedWall` object now builds a thin skin proud
+  of its one target face's surface, matching how `clapboard_proxy.py`/
+  `bead_board_proxy.py` already worked all along. Independent objects now
+  compose via simple display, no chaining, no TNP exposure from this at all.
 
-**Mitigation, not a fix:** `shared/freecad_utils.py`'s `resolve_sources_faces()`
+**`resolve_sources_faces()` is a separate, still-necessary mitigation for a
+different problem.** `shared/freecad_utils.py`'s `resolve_sources_faces()`
 resolves each `Sources` entry via FreeCAD's own `Shape.getElement()` inside
-a per-entry try/except, so a stale reference is skipped cleanly (one
-`PrintWarning`) instead of corrupting silently or crashing `execute()`
-outright. Every `*_proxy.py` with a `Sources` property must use it (11 of
-13 proxies did as of 2026-08-08; `brick_proxy.py` and
-`radial_brick_proxy.py` were hand-rolling their own resolution — parsing
-`"FaceN"` strings directly or calling `getElement()` unguarded — until
-fixed 2026-09-13). But this only changes *how gracefully* a stale reference
-is handled — it does not make chaining onto a boolean-cut output safe. The
-actual fix is architectural: don't create the stale reference in the first
-place by never chaining across a boolean cut.
+a per-entry try/except, so a stale `PropertyLinkSubList` reference — from
+*any* cause, not just whole-shape copying, e.g. simply deleting an
+unrelated object — is skipped cleanly (one `PrintWarning`) instead of
+corrupting silently or crashing `execute()` outright. Every `*_proxy.py`
+with a `Sources` property must use it (11 of 13 proxies did as of
+2026-08-08; `brick_proxy.py` and `radial_brick_proxy.py` were hand-rolling
+their own resolution until fixed 2026-09-13). Keep using it regardless of
+whether a given proxy copies its whole input shape — it's good practice
+either way, just not sufficient on its own to fix the composition problem
+above.
 
 ## Environment notes
 
