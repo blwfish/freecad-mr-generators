@@ -90,6 +90,8 @@ except ImportError:
     QuoinGeometry = None
     mirror_to_right_edge = None
 
+from freecad_utils import resolve_sources_faces
+
 
 # =============================================================================
 # Geometry helpers (trimmed from brick_generator_macro.FCMacro)
@@ -609,40 +611,46 @@ class BrickProxy:
                 "install brick_geometry.py in the _lib directory.\n")
             return
 
-        # Collect (face_index, link_obj) pairs; all faces must be on same object
-        source_map = {}  # obj_name → (link_obj, [face_idx, ...])
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face_idx = int(sub_name[4:]) - 1
-                except ValueError:
-                    # A malformed/extended sub_name (e.g. a future FreeCAD
-                    # TNP-style extended element name) previously raised
-                    # here uncaught, crashing execute() with a raw Python
-                    # traceback instead of the graceful per-face error path
-                    # this function otherwise uses (full-review finding
-                    # freecad-mr-generators-20260808-a0b9#23).
-                    App.Console.PrintWarning(
-                        f"BrickProxy: could not parse face index from "
-                        f"{sub_name!r} on {link_obj.Label} -- skipping\n")
-                    continue
-                key = link_obj.Name
-                if key not in source_map:
-                    source_map[key] = (link_obj, [])
-                source_map[key][1].append(face_idx)
-
-        if not source_map:
+        # Resolve Sources -> Face objects via the same TNP-aware helper
+        # (getElement() inside a per-entry try/except) every other proxy in
+        # this repo uses -- brick_proxy.py and radial_brick_proxy.py were
+        # the only two hand-rolling this (brick via raw int(sub_name[4:])-1
+        # string parsing that never called getElement() at all), which is
+        # what let a stale Sources entry corrupt into an unresolvable
+        # "?FaceN" reference instead of being skipped cleanly (surfaced
+        # 2026-09-13 chasing a per-wall bond-pattern bug).
+        resolved = resolve_sources_faces(obj.Sources, "BrickProxy")
+        if not resolved:
             return
-        if len(source_map) > 1:
+
+        link_names = {owner.Name for _, owner, _ in resolved}
+        if len(link_names) > 1:
             App.Console.PrintError(
                 "BrickProxy: all selected faces must be from the same object.\n")
             return
 
-        link_obj, orig_face_indices = list(source_map.values())[0]
+        link_obj = resolved[0][1]
+
+        # _recess_shape/_resolve_quoin_flags are keyed by the face's plain
+        # integer index into link_obj.Shape.Faces (matching the *QuoinFaces
+        # override properties' own index scheme) -- derive it by identity
+        # match against the just-resolved Face rather than re-parsing
+        # sub_name, so a face resolved via a genuine TNP-tracked extended
+        # name still yields the correct current index.
+        link_faces = list(link_obj.Shape.Faces)
+        orig_face_indices = []
+        for face, _owner, sub_name in resolved:
+            idx = next((i for i, f in enumerate(link_faces) if f.isSame(face)), None)
+            if idx is None:
+                App.Console.PrintWarning(
+                    f"BrickProxy: resolved face {sub_name!r} on "
+                    f"{link_obj.Label} not found in its current Shape -- "
+                    f"skipping\n")
+                continue
+            orig_face_indices.append(idx)
+
+        if not orig_face_indices:
+            return
 
         params = {
             'brick_width':        float(obj.BrickWidth),

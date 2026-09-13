@@ -25,6 +25,7 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from radial_brick_geometry import RadialBrickGeometry, RadialBrickDef
+from freecad_utils import resolve_sources_faces
 
 
 # =============================================================================
@@ -300,21 +301,15 @@ class RadialBrickProxy:
         mo = float(obj.MortarThickness)
 
         compounds = []
-        for link_obj, sub_names in obj.Sources:
-            if not hasattr(link_obj, 'Shape'):
-                continue
-            for sub_name in sub_names:
-                if not sub_name.startswith('Face'):
-                    continue
-                try:
-                    face = link_obj.Shape.getElement(sub_name)
-                    compound = generate_radial_bricks(face, bl, bh, mt, mo)
-                    compounds.append(compound)
-                    App.Console.PrintMessage(
-                        f"  ✓ {link_obj.Label}/{sub_name}\n")
-                except Exception as e:
-                    App.Console.PrintError(
-                        f"RadialBrickProxy: {link_obj.Label}/{sub_name}: {e}\n")
+        for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "RadialBrickProxy"):
+            try:
+                compound = generate_radial_bricks(face, bl, bh, mt, mo)
+                compounds.append(compound)
+                App.Console.PrintMessage(
+                    f"  ✓ {link_obj.Label}/{sub_name}\n")
+            except Exception as e:
+                App.Console.PrintError(
+                    f"RadialBrickProxy: {link_obj.Label}/{sub_name}: {e}\n")
 
         if not compounds:
             return
