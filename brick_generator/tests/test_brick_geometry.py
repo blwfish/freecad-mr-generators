@@ -10,6 +10,7 @@ import math
 from brick_geometry import (
     BrickGeometry, BrickDef,
     face_index_set, find_dual_listed_faces, resolve_quoin_flags_for_face,
+    compute_face_axes,
 )
 from boundary_assertions import assert_overflows_boundary
 from quoin_geometry import QuoinGeometry, mirror_to_right_edge
@@ -1163,18 +1164,24 @@ def _dual_narrow_threshold():
 
 
 class TestDualQuoinValidation:
-    """Constructor guards for right_quoin's preconditions."""
-
-    def test_right_quoin_without_left_quoin_raises(self):
-        with pytest.raises(ValueError, match='requires left_quoin'):
-            BrickGeometry(u_length=30, v_length=20, bond_type='flemish',
-                          right_quoin=True, **HO)
+    """Constructor guards for combining left_quoin AND right_quoin on one
+    wall (a wall spanning two quoin corners) -- flemish-only, since that's
+    the only path with real bespoke meet-in-the-middle math. A *standalone*
+    right_quoin (left_quoin=False) has no such restriction -- see
+    TestStandaloneRightQuoin below."""
 
     @pytest.mark.parametrize('bond', ['stretcher', 'english', 'common'])
-    def test_right_quoin_non_flemish_raises(self, bond):
+    def test_dual_quoin_non_flemish_raises(self, bond):
         with pytest.raises(ValueError, match='only implemented for flemish'):
             BrickGeometry(u_length=30, v_length=20, bond_type=bond,
                           left_quoin=True, right_quoin=True, **HO)
+
+    def test_dual_quoin_flemish_unaffected(self):
+        """The combined-quoins case is unaffected by the guard-clause
+        narrowing -- flemish + both quoins must still construct cleanly."""
+        bg = BrickGeometry(u_length=30, v_length=20, bond_type='flemish',
+                            left_quoin=True, right_quoin=True, **HO)
+        assert len(bg.generate()['bricks']) > 0
 
     @pytest.mark.parametrize('delta,should_raise', [
         (-0.01, True),   # just below threshold: infeasible
@@ -1195,6 +1202,131 @@ class TestDualQuoinValidation:
         W = _dual_narrow_threshold() - 1.0
         with pytest.raises(ValueError, match=r'u_length=\d+\.\d+'):
             _make_dual_bg(W=W).generate()
+
+
+# =============================================================================
+# Standalone right_quoin -- a quoin at u=u_length with NO quoin at u=0.
+#
+# Surfaced 2026-09-13: a door pier's one real building corner landed on its
+# *right* edge only (a deterministic consequence of compute_face_axes'
+# bbox-min-based origin, not a modeling choice) -- previously inexpressible
+# without an unwanted second quoin column at the door-opening edge and a
+# forced flemish bond. Implemented as the mirror image of the already-
+# supported left_quoin-only case: course parity (course % 2) drives
+# stretcher/header alternation and never depends on u-position, so
+# reflecting u across the wall is exact, not an approximation.
+# =============================================================================
+
+def _mirror_u(u, u_length, width):
+    return u_length - u - width
+
+
+class TestStandaloneRightQuoinNoLongerRaises:
+    """Every bond can now take right_quoin=True alone (no ValueError)."""
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'flemish', 'common'])
+    def test_right_quoin_alone_does_not_raise(self, bond):
+        bg = BrickGeometry(u_length=30, v_length=20, bond_type=bond,
+                            right_quoin=True, **HO)
+        assert len(bg.generate()['bricks']) > 0
+
+
+class TestStandaloneRightQuoinMirrorParity:
+    """A standalone right_quoin wall must be the exact mirror image of the
+    equivalent left_quoin wall -- same bricks, reflected u, same course/type
+    assignment. This is a coupling point: if generate()'s mirror dispatch
+    ever diverges from _generate_mirrored_right_quoin's reflection formula,
+    this test catches it even though both sides individually "look right."
+    """
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'flemish', 'common'])
+    @pytest.mark.parametrize('primary', [True, False])
+    @pytest.mark.parametrize('u_length', [
+        30.0,                    # round number
+        14 * 2.32 + 13 * 0.11,   # exact integer multiple of brick_width
+        2.32 + 2 * 0.11,         # single-stretcher minimum
+        8.75,                    # the real north-door-pier width
+    ])
+    def test_mirrors_left_quoin_exactly(self, bond, primary, u_length):
+        left = BrickGeometry(u_length=u_length, v_length=20.0, bond_type=bond,
+                              left_quoin=True, left_quoin_primary=primary, **HO)
+        right = BrickGeometry(u_length=u_length, v_length=20.0, bond_type=bond,
+                               right_quoin=True, right_quoin_primary=primary, **HO)
+
+        left_bricks = left.generate()['bricks']
+        right_bricks = right.generate()['bricks']
+
+        assert len(left_bricks) == len(right_bricks)
+
+        # Group by course and sort each group by u ascending. A course's
+        # bricks are laid contiguously left-to-right, so reflecting u
+        # (u' = u_length - u - width) reverses a course's brick ORDER but
+        # not its per-brick identity -- pairing left's i-th (ascending u)
+        # against right's (n-1-i)-th (ascending u) within the same course
+        # gives true mirror partners. A same-key sort-and-zip would silently
+        # mispair whenever a course has multiple same-width same-type
+        # bricks (the common case for stretcher/common bond fill).
+        def by_course(bricks):
+            grouped = {}
+            for b in bricks:
+                grouped.setdefault(b.course, []).append(b)
+            for course_bricks in grouped.values():
+                course_bricks.sort(key=lambda b: b.u)
+            return grouped
+
+        left_courses = by_course(left_bricks)
+        right_courses = by_course(right_bricks)
+        assert set(left_courses) == set(right_courses)
+
+        for course, lb_list in left_courses.items():
+            rb_list = right_courses[course]
+            assert len(lb_list) == len(rb_list), f"course {course}: brick count mismatch"
+            for lb, rb in zip(lb_list, reversed(rb_list)):
+                assert rb.brick_type == lb.brick_type
+                assert rb.width == pytest.approx(lb.width, abs=1e-6)
+                expected_u = _mirror_u(lb.u, u_length, lb.width)
+                assert rb.u == pytest.approx(expected_u, abs=1e-6), (
+                    f"course={course} type={lb.brick_type}: "
+                    f"expected mirrored u={expected_u}, got {rb.u}")
+                assert rb.v == pytest.approx(lb.v, abs=1e-6)
+                assert rb.height == lb.height
+                assert rb.depth == lb.depth
+
+
+class TestStandaloneRightQuoinBoundaryOverflow:
+    """The mirrored field fill's OPEN edge (u=0, no quoin there) must still
+    overflow the wall boundary -- same OCCT coincident-face segfault class
+    as TestBoundaryOverflow above; mirroring must not accidentally land a
+    course exactly on that boundary.
+
+    The u=u_length edge is intentionally NOT checked for overflow: that's
+    the quoin edge, meant to sit flush with the real corner (the quoin
+    column itself, generated separately and merged before the OCCT cut,
+    is what actually extends to the true face boundary there) -- exactly
+    mirroring how the left_quoin-only case is flush at u=0 by design."""
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'flemish', 'common'])
+    @pytest.mark.parametrize('u_length', [
+        30.0,
+        14 * 2.32 + 13 * 0.11,
+        2.32 + 2 * 0.11,
+        8.75,
+    ])
+    def test_courses_overflow_wall_width(self, bond, u_length):
+        bg = BrickGeometry(u_length=u_length, v_length=20.0, bond_type=bond,
+                            right_quoin=True, **HO)
+        bricks = bg.generate()['bricks']
+
+        by_course = {}
+        for b in bricks:
+            by_course.setdefault(b.course, []).append(b)
+
+        for course_idx, course_bricks in by_course.items():
+            assert_overflows_boundary(
+                course_bricks, lo=0.0, hi=u_length,
+                get_extent=_brick_u_extent, direction='left',
+                label=f"bond={bond} u_length={u_length} course={course_idx}: ",
+            )
 
 
 class TestDualQuoinFillExclusion:
@@ -1584,6 +1716,126 @@ class TestResolveQuoinFlagsForFace:
             default_right_quoin=False, default_right_primary=False,
         )
         assert result == (True, True, True, True)
+
+
+class TestComputeFaceAxes:
+    """compute_face_axes() -- pure half of brick_proxy.py's
+    _get_face_coordinate_system(), extracted 2026-09-13 so quoin corner
+    detection (quoin_generator/corner_detection.py) can reuse the exact
+    same U/V-axis derivation without needing FreeCAD.
+
+    U/V are always exactly one of the global axes in its POSITIVE
+    direction -- never negated to align with the normal. Which physical
+    edge of a face ends up at u=0 therefore depends only on that face's
+    own bbox-minimum corner, not on which way its normal points.
+    """
+
+    def test_ordinary_wall_x_axis_is_u(self):
+        # A wall running along X, facing -Y (like this project's actual
+        # equipment-hut-demo south/north walls): tall (z) and wide (x).
+        result = compute_face_axes(x_range=40.0, y_range=0.0, z_range=28.0,
+                                    normal=(0.0, -1.0, 0.0))
+        assert result == {'u_axis': 'x', 'v_axis': 'z',
+                           'u_length': 40.0, 'v_length': 28.0,
+                           'is_horizontal': False}
+
+    def test_ordinary_wall_y_axis_is_u(self):
+        # A wall running along Y, facing -X (like the demo's west wall):
+        # U must be Y here, not X, since X is ~parallel to the normal.
+        result = compute_face_axes(x_range=0.0, y_range=28.0, z_range=28.0,
+                                    normal=(-1.0, 0.0, 0.0))
+        assert result == {'u_axis': 'y', 'v_axis': 'z',
+                           'u_length': 28.0, 'v_length': 28.0,
+                           'is_horizontal': False}
+
+    def test_narrow_pier_still_uses_y_as_u(self):
+        # A narrow door-pier-shaped face facing +X: only 8 units wide (Y)
+        # but the same height (Z) as a full wall -- U selection must not
+        # be swayed by the small magnitude, only by the dot-product
+        # exclusion against the normal.
+        result = compute_face_axes(x_range=0.0, y_range=8.0, z_range=28.0,
+                                    normal=(1.0, 0.0, 0.0))
+        assert result['u_axis'] == 'y'
+        assert result['u_length'] == 8.0
+        assert result['v_axis'] == 'z'
+
+    @pytest.mark.parametrize('z_range,expect_vertical', [
+        (0.0009, False),  # just below threshold: falls to horizontal branch
+        (0.001,  False),  # exactly at threshold: `> 0.001` is strict, still horizontal
+        (0.0011, True),   # just above threshold: vertical wall path
+    ])
+    def test_z_range_vertical_threshold(self, z_range, expect_vertical):
+        # x_range=40, y_range=0: below/at the z threshold this falls into
+        # the horizontal-face branch (x becomes U, y falls back to V via
+        # the u_length fallback since y_range=0 isn't > 0.001 either) --
+        # NOT an error, since horiz still has 2 entries (x and y) even
+        # though one of them is degenerate.
+        result = compute_face_axes(x_range=40.0, y_range=0.0, z_range=z_range,
+                                    normal=(0.0, -1.0, 0.0))
+        if expect_vertical:
+            assert result == {'u_axis': 'x', 'v_axis': 'z',
+                               'u_length': 40.0, 'v_length': z_range,
+                               'is_horizontal': False}
+        else:
+            assert result == {'u_axis': 'x', 'v_axis': 'y',
+                               'u_length': 40.0, 'v_length': 40.0,
+                               'is_horizontal': True}
+
+    @pytest.mark.parametrize('nx,expect_x_excluded', [
+        (0.5001, True),   # just above threshold: excluded (>= 0.5 is "too parallel")
+        (0.5,    True),   # exactly at threshold: dot < 0.5 is False -> excluded
+        (0.4999, False),  # just below threshold: included
+    ])
+    def test_dot_product_exclusion_threshold(self, nx, expect_x_excluded):
+        # x_range is deliberately larger than y_range so, absent the
+        # dot-product exclusion, x would always win on magnitude alone --
+        # isolating whether the exclusion threshold itself is what decides.
+        result = compute_face_axes(x_range=40.0, y_range=10.0, z_range=28.0,
+                                    normal=(nx, 0.0, 0.0))
+        assert result['u_axis'] == ('y' if expect_x_excluded else 'x')
+
+    def test_equal_range_tie_prefers_later_axis_in_sort_order(self):
+        # x_range == y_range: axes = sorted([(r,'x'), (r,'y'), ...],
+        # reverse=True) puts ('r','y') before ('r','x') for equal r (tuple
+        # comparison falls through to the name string, and 'y' > 'x'), and
+        # the loop's strict `rng > best_len` means the first one encountered
+        # keeps the win on a tie. Pinning this so a future refactor that
+        # changes the sort/iteration order doesn't silently flip which axis
+        # wins an exact tie without anyone noticing.
+        result = compute_face_axes(x_range=20.0, y_range=20.0, z_range=28.0,
+                                    normal=(0.0, 0.0, -1.0))
+        assert result['u_axis'] == 'y'
+
+    def test_both_candidates_excluded_falls_back_to_larger_range(self):
+        # A pathological normal (diagonal between x and y) excludes BOTH
+        # non-z candidates via the dot<0.5 check -- best_axis stays None
+        # and the code falls back to others[0] (the larger-range axis in
+        # sorted order) rather than leaving u_axis undefined.
+        result = compute_face_axes(x_range=40.0, y_range=10.0, z_range=28.0,
+                                    normal=(0.7071, 0.7071, 0.0))
+        assert result['u_axis'] == 'x'
+        assert result['u_length'] == 40.0
+
+    def test_horizontal_face_floor_or_roof_deck(self):
+        # z_range ~0 (a flat floor/deck face) with two real horizontal
+        # extents -- the is_horizontal=True branch.
+        result = compute_face_axes(x_range=40.0, y_range=28.0, z_range=0.0,
+                                    normal=(0.0, 0.0, 1.0))
+        assert result['is_horizontal'] is True
+        assert result['u_axis'] == 'x'
+        assert result['u_length'] == 40.0
+        assert result['v_axis'] == 'y'
+        assert result['v_length'] == 28.0
+
+    def test_horizontal_face_degenerate_raises(self):
+        # All three extents below the 0.001 threshold -- neither a real
+        # vertical wall nor a horizontal face with usable extent in either
+        # direction. (x_range=40 alone, with y_range=0, is NOT degenerate --
+        # it still resolves via the horizontal branch's u_length fallback;
+        # this needs BOTH horizontal axes to be trivial.)
+        with pytest.raises(ValueError, match='no meaningful horizontal extent'):
+            compute_face_axes(x_range=0.0005, y_range=0.0005, z_range=0.0005,
+                               normal=(0.0, 0.0, 1.0))
 
 
 if __name__ == '__main__':

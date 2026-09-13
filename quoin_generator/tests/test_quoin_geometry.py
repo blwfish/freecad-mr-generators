@@ -8,7 +8,10 @@ no overlap between quoin column and fill, OCCT invariants.
 
 import math
 import pytest
-from quoin_geometry import QuoinGeometry, mirror_to_right_edge
+from quoin_geometry import (
+    QuoinGeometry, mirror_to_right_edge,
+    classify_dihedral, classify_edge_position,
+)
 from brick_geometry import BrickGeometry, BrickDef
 
 # HO-scale defaults used throughout
@@ -489,3 +492,97 @@ class TestMirrorToRightEdge:
             else:
                 assert m.width == pytest.approx(HO['brick_depth'], abs=1e-9)
                 assert m.brick_type == 'header'
+
+
+# =============================================================================
+# classify_dihedral / classify_edge_position -- pure classifiers backing
+# corner_detection.py's auto-discovery of real building corners.
+# =============================================================================
+
+class TestClassifyDihedral:
+    """cos_dihed = 0 means a 90-degree angle (convex or concave, decided
+    separately by is_convex); cos_dihed = 1 means coplanar/flush; anything
+    outside both tolerance bands is 'ambiguous', never guessed."""
+
+    def test_convex_90(self):
+        assert classify_dihedral(0.0, is_convex=True) == 'convex_90'
+
+    def test_concave_90(self):
+        assert classify_dihedral(0.0, is_convex=False) == 'concave_90'
+
+    def test_coplanar_regardless_of_convexity_flag(self):
+        # Near cos_dihed=1.0, the coplanar check fires first -- is_convex
+        # is irrelevant there (there's no "corner" to be convex/concave).
+        assert classify_dihedral(1.0, is_convex=True) == 'coplanar'
+        assert classify_dihedral(1.0, is_convex=False) == 'coplanar'
+
+    def test_folded_back_near_180_is_ambiguous_not_a_third_class(self):
+        # cos_dihed near -1 (normals nearly opposite) is neither a 90-degree
+        # corner nor coplanar -- must not be silently bucketed into either.
+        assert classify_dihedral(-1.0, is_convex=True) == 'ambiguous'
+
+    @pytest.mark.parametrize('cos_dihed,expected', [
+        (0.049, 'convex_90'),   # just below the 90-degree band's tolerance
+        (0.05,  'ambiguous'),   # exactly at threshold: `< tol` is strict
+        (0.051, 'ambiguous'),   # just above: outside the band
+    ])
+    def test_ninety_degree_band_threshold(self, cos_dihed, expected):
+        assert classify_dihedral(cos_dihed, is_convex=True, tol=0.05) == expected
+
+    @pytest.mark.parametrize('cos_dihed,expected', [
+        (0.951, 'coplanar'),    # dist from 1.0 = 0.049, just inside the band
+        (0.95,  'ambiguous'),   # dist = 0.05, exactly at threshold: excluded
+        (0.949, 'ambiguous'),   # dist = 0.051, just outside
+    ])
+    def test_coplanar_band_threshold(self, cos_dihed, expected):
+        assert classify_dihedral(cos_dihed, is_convex=True, tol=0.05) == expected
+
+
+class TestClassifyEdgePosition:
+    """A shared corner's coordinate along one face's own U axis, classified
+    as that face's Left (u~0) or Right (u~length) edge -- or ambiguous."""
+
+    def test_left_edge(self):
+        assert classify_edge_position(0.0, length=40.0) == 'left'
+
+    def test_right_edge(self):
+        assert classify_edge_position(40.0, length=40.0) == 'right'
+
+    def test_middle_of_wall_is_ambiguous(self):
+        assert classify_edge_position(20.0, length=40.0) == 'ambiguous'
+
+    @pytest.mark.parametrize('coord,expected', [
+        (0.0099, 'left'),       # just below tol: within the left band
+        (0.01,   'ambiguous'),  # exactly at threshold: `< tol` is strict
+        (0.0101, 'ambiguous'),  # just above: outside the left band
+    ])
+    def test_left_edge_threshold(self, coord, expected):
+        assert classify_edge_position(coord, length=40.0, tol=0.01) == expected
+
+    def test_right_edge_threshold(self):
+        # tol=0.01 is not exactly representable in binary floating point,
+        # so `(length - 0.01) - length` does not round-trip to bit-exact
+        # `-0.01` (catastrophic cancellation: confirmed 39.99 - 40.0 ==
+        # -0.00999999999999801, which is < 0.01 despite looking like it
+        # should equal the threshold) -- the same exact-representable-
+        # input trap this repo's other threshold tests document (see the
+        # closer-width boundary test in test_brick_geometry.py). Using
+        # tol=0.0625 (an exact power of two) instead makes
+        # `(length - tol) - length` bit-exact -tol, so the "exactly at
+        # threshold" case is unambiguous rather than accidentally
+        # rounding onto one side.
+        length, tol = 40.0, 0.0625
+        at_threshold = length - tol
+        assert classify_edge_position(at_threshold + 1e-6, length, tol) == 'right'
+        assert classify_edge_position(at_threshold, length, tol) == 'ambiguous'
+        assert classify_edge_position(at_threshold - 1e-6, length, tol) == 'ambiguous'
+
+    def test_narrow_face_overlapping_bands_is_ambiguous_not_left(self):
+        """A face narrower than 2*tol has Left and Right bands overlapping
+        at its midpoint -- must report ambiguous, not silently prefer
+        whichever check happens to run first (Syntactic-Semantic Seam
+        Rule: two conditions that can both match must not be resolved by
+        accident of check order)."""
+        length = 0.015  # < 2 * tol=0.01
+        midpoint = length / 2.0
+        assert classify_edge_position(midpoint, length=length, tol=0.01) == 'ambiguous'
