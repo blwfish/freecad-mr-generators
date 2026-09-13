@@ -188,6 +188,60 @@ If a checklist box would naturally be N/A for the function under test
 description rather than skipping silently.  "Didn't think about it" is
 the failure mode this rule exists to prevent.
 
+## Architecture rule: never chain a proxy's `Sources` onto another proxy's boolean-cut output
+
+**Trigger:** designing or reviewing any `*_proxy.py` feature where one
+FeaturePython's `Sources` (an `App::PropertyLinkSubList`) needs to reference
+a face on a shape that *another* FeaturePython proxy produced via a boolean
+operation (`.cut()`/`.fuse()`/`.common()`).
+
+**The rule:** don't. Source `Sources` faces only from a shape nothing
+downstream ever re-cuts — the original solid the wall/roof/etc. was built
+from (e.g. a `Part::Cut` upstream of any bricking/siding pass), never
+another proxy's own boolean output. If two different treatments are needed
+on faces of the same building (two bond patterns, two clapboard heights,
+whatever), create independent proxy objects that each source the *original*
+stable shape directly — this is already the documented pattern in
+`brick_proxy.py`'s own docstring ("one BrickedWall per face... no live link
+between the two BrickedWall objects") and is exactly how `clapboard_proxy.py`
+already works (each source face is read straight off a never-modified
+shape; results are combined with `Part.Compound`, not chained boolean cuts).
+
+**Why:** FreeCAD/OCCT does not guarantee stable `Face`/`Edge`/`Vertex` names
+across a recompute that runs a boolean operation (the "Topological Naming
+Problem," TNP) — a `.cut()`/`.fuse()` can silently renumber sub-elements.
+Any `PropertyLinkSubList` entry storing a name like `"Face169"` into a shape
+that later gets re-cut is a landmine: the reference can resolve to the wrong
+face, or fail to resolve at all, with no compile-time or type-level warning.
+
+This has already bitten the project twice for the identical reason:
+- **Quoin two-pass (2026-06-25 → 2026-08-08):** `quoin_proxy.py` took a
+  `BrickedWall`'s own (already mortar-cut) output as its `Source` and cut
+  corner columns into it. Once a wall was mortar-engraved, edge/face
+  selection on it resolved to tiny per-brick fragments instead of a whole
+  face. Abandoned in `34b12c6`: quoin corners are now computed directly
+  inside `brick_proxy.py`'s own single mortar cut — no second pass, ever.
+- **Per-wall bond pattern (2026-09-13):** a `BrickProxy` was chained onto
+  a *different* `BrickProxy`'s cut output to give one wall a different bond
+  pattern. Removing a face from the upstream object's `Sources` (to free it
+  up for the second pass) triggered a re-cut that renumbered the upstream
+  shape's faces, silently corrupting the downstream object's stored
+  `"Face169"` reference into an unresolvable `?Face169`. Required manual
+  geometric re-identification (matching by normal/centroid/area) to recover.
+
+**Mitigation, not a fix:** `shared/freecad_utils.py`'s `resolve_sources_faces()`
+resolves each `Sources` entry via FreeCAD's own `Shape.getElement()` inside
+a per-entry try/except, so a stale reference is skipped cleanly (one
+`PrintWarning`) instead of corrupting silently or crashing `execute()`
+outright. Every `*_proxy.py` with a `Sources` property must use it (11 of
+13 proxies did as of 2026-08-08; `brick_proxy.py` and
+`radial_brick_proxy.py` were hand-rolling their own resolution — parsing
+`"FaceN"` strings directly or calling `getElement()` unguarded — until
+fixed 2026-09-13). But this only changes *how gracefully* a stale reference
+is handled — it does not make chaining onto a boolean-cut output safe. The
+actual fix is architectural: don't create the stale reference in the first
+place by never chaining across a boolean cut.
+
 ## Environment notes
 
 - FreeCAD MCP socket: auto-discovered via `~/.cache/freecad-mcp/instances/`
