@@ -331,7 +331,7 @@ class ShingleProxy:
         if not hasattr(obj, 'WedgeThickness'):
             obj.addProperty(
                 "App::PropertyLength", "WedgeThickness", grp,
-                "Butt-edge wedge thickness (0 = auto: 3x material)")
+                "Butt-edge wedge thickness (0 = auto: 1x material)")
         if not hasattr(obj, 'Chamfer'):
             obj.addProperty(
                 "App::PropertyLength", "Chamfer", grp,
@@ -369,7 +369,10 @@ class ShingleProxy:
         mat_thick = float(obj.MaterialThickness)
         wedge = float(obj.WedgeThickness)
         if wedge == 0:
-            wedge = mat_thick * 3
+            # v5.4.0 fix (ported from the old macro): 1x, not 3x -- 3x
+            # produced a ~17-degree visible tilt of the exposed face;
+            # 1x gives the realistic ~6 degrees.
+            wedge = mat_thick * 1
         chamfer = float(obj.Chamfer)
         if chamfer == 0:
             chamfer = mat_thick * 1.5

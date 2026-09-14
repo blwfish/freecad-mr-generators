@@ -814,7 +814,9 @@ def find_spreadsheet(doc):
     for ss_name in preferred_names:
         # Try internal object name first
         obj = doc.getObject(ss_name)
+        matched_by_name = None
         if obj:
+            matched_by_name = obj.Name
             if obj.TypeId == 'App::Link':
                 target = obj.LinkedObject
                 if target and target.TypeId == 'Spreadsheet::Sheet':
@@ -832,8 +834,12 @@ def find_spreadsheet(doc):
                 return obj
             else:
                 _warn_typeid_mismatch(ss_name, obj.TypeId)
-        # Fall back to Label match
+        # Fall back to Label match -- skip the object already checked above
+        # (FreeCAD defaults Label=Name, so it would otherwise re-match the
+        # identical wrong-type object and warn about it twice).
         for obj in doc.Objects:
+            if obj.Name == matched_by_name:
+                continue
             if obj.Label == ss_name:
                 if obj.TypeId == 'App::Link':
                     target = obj.LinkedObject
