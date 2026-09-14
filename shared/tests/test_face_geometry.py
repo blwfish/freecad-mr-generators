@@ -21,6 +21,35 @@ class TestComputeFaceAxes:
         with pytest.raises(ValueError):
             compute_face_axes(0.0, 0.0, 0.0, (0.0, 0.0, 1.0))
 
+    def test_horizontal_face_valid_two_axes(self):
+        axes = compute_face_axes(50.0, 20.0, 0.0, (0.0, 0.0, 1.0))
+        assert axes['u_axis'] == 'x'
+        assert axes['v_axis'] == 'y'
+        assert axes['u_length'] == 50.0
+        assert axes['v_length'] == 20.0
+        assert axes['is_horizontal'] is True
+
+    def test_horizontal_sliver_face_raises_not_substitutes(self):
+        """Regression test: a horizontal face with one real extent and one
+        ~0 extent (a sliver) must raise, not silently set v_length equal
+        to u_length -- the code review on 2026-09-14 caught exactly this
+        silent-substitution bug (main..dev diff review, finding #2)."""
+        with pytest.raises(ValueError, match="degenerate sliver"):
+            compute_face_axes(50.0, 0.0005, 0.0, (0.0, 0.0, 1.0))
+
+    def test_horizontal_sliver_just_below_threshold_raises(self):
+        with pytest.raises(ValueError, match="degenerate sliver"):
+            compute_face_axes(50.0, 0.000999, 0.0, (0.0, 0.0, 1.0))
+
+    def test_horizontal_sliver_exactly_at_threshold_raises(self):
+        # Threshold is a strict '<' check: exactly 0.001 does NOT raise.
+        axes = compute_face_axes(50.0, 0.001, 0.0, (0.0, 0.0, 1.0))
+        assert axes['v_length'] == 0.001
+
+    def test_horizontal_sliver_just_above_threshold_does_not_raise(self):
+        axes = compute_face_axes(50.0, 0.001001, 0.0, (0.0, 0.0, 1.0))
+        assert axes['v_length'] == pytest.approx(0.001001)
+
 
 class TestSelectWidenEdge:
     def test_left_selects_minimum_u(self):

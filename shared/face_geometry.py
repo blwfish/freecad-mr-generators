@@ -72,7 +72,9 @@ def compute_face_axes(x_range: float, y_range: float, z_range: float,
     Raises:
         ValueError: the face has no meaningful horizontal extent (a
         horizontal face — floor/roof deck — with fewer than two axes
-        having non-trivial extent).
+        having non-trivial extent), or is a degenerate sliver (one
+        horizontal axis has extent but the other is ~0) — this never
+        silently substitutes u_length for a missing v_length.
     """
     axes = sorted([(x_range, 'x'), (y_range, 'y'), (z_range, 'z')], reverse=True)
 
@@ -96,9 +98,13 @@ def compute_face_axes(x_range: float, y_range: float, z_range: float,
         horiz.sort(reverse=True)
         if len(horiz) < 2 or horiz[0][0] < 0.001:
             raise ValueError("Face has no meaningful horizontal extent.")
+        if horiz[1][0] < 0.001:
+            raise ValueError(
+                f"Face is a degenerate sliver: {horiz[0][1]}_range="
+                f"{horiz[0][0]!r} but {horiz[1][1]}_range={horiz[1][0]!r} "
+                f"has no meaningful extent.")
         u_axis, u_length = horiz[0][1], horiz[0][0]
-        v_axis = horiz[1][1]
-        v_length = horiz[1][0] if horiz[1][0] > 0.001 else u_length
+        v_axis, v_length = horiz[1][1], horiz[1][0]
         is_horizontal = True
 
     return {
