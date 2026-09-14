@@ -29,7 +29,6 @@ from slate_geometry import (
     calculate_course_v_position,
     get_roof_coordinate_system,
     is_valid_clip_fragment,
-    is_top_course_complete,
     calculate_fitted_exposure,
 )
 from freecad_utils import resolve_sources_faces  # noqa: E402
@@ -137,15 +136,16 @@ def _generate_tiles_for_face(face, params):
     butt_thick   = params['butt_thickness']
     exposure     = params['exposure']
     stagger_pat  = params['stagger_pattern']
-    hide_incomplete_top = params.get('hide_incomplete_top_course', False)
 
     origin, u_vec, v_vec, normal, u_length, v_length = \
         _get_face_coordinate_system(face)
 
     # Rack the exposure so an integer number of courses spans exactly to
     # the ridge/hip line -- the last course's head then lands exactly at
-    # v_length instead of leaving a remainder that produces a gap
-    # (HideIncompleteTopCourse) or a clipped partial/sliver fragment.
+    # v_length instead of leaving a remainder that would otherwise produce
+    # a clipped partial/sliver fragment (or, before 2026-09-14, a
+    # redundant extra course past it -- see the stop_tolerance check
+    # below).
     exposure = calculate_fitted_exposure(v_length, exposure)
 
     layout = calculate_layout(u_length, v_length, tile_width, exposure, stagger_pat)
@@ -166,19 +166,58 @@ def _generate_tiles_for_face(face, params):
     )
     rotation = App.Rotation(rotation_matrix)
 
+    # Tolerance for the "should we stop generating rows" decision below --
+    # deliberately looser than is_top_course_complete()'s own exact `<=`
+    # (used as-is by the optional hide_incomplete_top_course feature,
+    # untouched here). calculate_fitted_exposure() computes exposure so
+    # that MATHEMATICALLY an integer number of courses lands exactly on
+    # v_length, but the actual float arithmetic in calculate_course_v_
+    # position (row * exposure - exposure) can land a few ULPs above the
+    # true value (confirmed live: row*exposure-exposure computed
+    # 15.400000000000002 for an intended-exact 15.4) -- is_top_course_
+    # complete()'s strict `<=` would then misclassify the intended-exact
+    # top course itself as "incomplete" and skip it, leaving a real gap
+    # at the ridge instead of eliminating a redundant stub. Same
+    # magnitude convention as calculate_course_v_position's own nudge.
+    stop_tolerance = abs(exposure) * 0.001
+
     shapes = []
     for row in range(num_courses):
         raw_v = calculate_course_v_position(row, exposure)
 
-        # Optional: skip this course entirely (never generate it) rather
-        # than generate-then-clip-then-maybe-discard, if its head pokes
-        # past the face's own top edge (ridge/hip line at V=v_length).
-        # Rows increase v monotonically, so once this trips, every
-        # subsequent row would too -- but check explicitly rather than
-        # break, in case that assumption ever stops holding. Uses the raw
-        # (un-nudged) position -- the boundary-safety nudge below must not
-        # change whether a course counts as "complete".
-        if hide_incomplete_top and not is_top_course_complete(raw_v, v_length):
+        # Skip this course entirely (never generate it) rather than
+        # generate-then-clip-then-maybe-discard, once its head already
+        # pokes past the face's own top edge (ridge/hip line at
+        # V=v_length) by more than stop_tolerance. Rows increase v
+        # monotonically, so once this trips, every subsequent row would
+        # too -- but check explicitly rather than break, in case that
+        # assumption ever stops holding. Uses the raw (un-nudged)
+        # position -- the boundary-safety nudge below must not change
+        # whether a course counts as complete.
+        #
+        # Unconditional as of 2026-09-14 (previously gated behind the
+        # optional hide_incomplete_top_course flag, generating every "+3
+        # buffer" row past the ridge by default and relying on clipping to
+        # trim them). Since exposure is *always* fitted just above,
+        # calculate_fitted_exposure() guarantees an integer number of
+        # courses lands the top course exactly on the ridge/hip line --
+        # every course past that one is therefore pure redundant overlap
+        # with zero legitimate new coverage, never a genuinely-needed
+        # partial course. For a flat tile that redundancy used to clip to
+        # a harmless thin sliver (caught by is_valid_clip_fragment's
+        # volume-ratio threshold). For a WEDGE tile (butt_thickness >
+        # material_thickness, the default whenever ButtThickness=0) it
+        # was NOT harmless: confirmed live on a real hip roof, the clip
+        # boundary can fall near the wedge's THICK butt end instead of its
+        # thin head, so a substantial, visually prominent stub survived
+        # well above the 5% discard threshold -- sitting right on top of
+        # the already-complete course below it, unhidden, at the ridge/hip
+        # line. hide_incomplete_top_course's own distinct behavior is now
+        # moot in practice (there is no longer a "genuinely incomplete"
+        # top course left for it to hide, since fitting always makes one
+        # exact) -- the property is left in place rather than removed, in
+        # case some future caller ever reaches this code without fitting.
+        if raw_v > v_length + stop_tolerance:
             continue
 
         # calculate_fitted_exposure() (above) deliberately makes an
