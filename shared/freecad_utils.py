@@ -295,6 +295,47 @@ import FreeCAD as App
 import Part
 
 from roof_geometry import best_matching_candidate
+from face_geometry import compute_face_axes
+
+_AXIS_VECTORS = {
+    'x': App.Vector(1, 0, 0),
+    'y': App.Vector(0, 1, 0),
+    'z': App.Vector(0, 0, 1),
+}
+
+
+def get_face_coordinate_system(face):
+    """
+    Establish U/V/normal coordinate system for a face.
+    Returns (origin, u_vec, v_vec, normal, u_length, v_length, is_horizontal).
+
+    Thin FreeCAD-facing wrapper: extracts the bbox/vertex/normal data and
+    delegates the actual axis-selection math to face_geometry's pure,
+    pytest-testable compute_face_axes(). Single source of truth for this
+    extraction -- previously duplicated independently in brick_proxy.py's
+    _get_face_coordinate_system() and corner_detection.py's
+    _outward_normal()/_face_u_axis() (2026-09-14 consolidation).
+    """
+    outer_wire = face.OuterWire
+    bbox = outer_wire.BoundBox
+    origin = App.Vector(bbox.XMin, bbox.YMin, bbox.ZMin)
+
+    pts = [v.Point for v in outer_wire.Vertexes]
+    x_range = max(p.x for p in pts) - min(p.x for p in pts)
+    y_range = max(p.y for p in pts) - min(p.y for p in pts)
+    z_range = max(p.z for p in pts) - min(p.z for p in pts)
+
+    uv = face.ParameterRange
+    normal = face.normalAt((uv[0] + uv[1]) / 2, (uv[2] + uv[3]) / 2)
+
+    axes = compute_face_axes(x_range, y_range, z_range,
+                              (normal.x, normal.y, normal.z))
+
+    u_vec = _AXIS_VECTORS[axes['u_axis']]
+    v_vec = _AXIS_VECTORS[axes['v_axis']]
+
+    return (origin, u_vec, v_vec, normal,
+            axes['u_length'], axes['v_length'], axes['is_horizontal'])
 
 
 def find_shared_edge(face1, face2, tol=0.1):

@@ -349,15 +349,27 @@ def classify_roof_intersection(
             'face1_other_z': f1z, 'face2_other_z': f2z, 'confidence': conf}
 
 
+def dihedral_radians_from_cos(cos_dihed: float) -> float:
+    """Clamp cos_dihed to [-1, 1] and return the dihedral angle in radians.
+
+    Single source of truth for the dot-product -> acos conversion: both
+    calculate_dihedral_angle (below, normals input) and
+    roof_seam_generator/roof_seam_geometry.calculate_hip_cap_profile (raw
+    cosine input, already validated to [-1,1] by its own precondition)
+    delegate to this instead of each reimplementing clamp+acos
+    independently, which risked the two silently drifting apart.
+    """
+    return math.acos(max(-1.0, min(1.0, cos_dihed)))
+
+
 def calculate_dihedral_angle(
         face1_normal: Tuple[float,float,float],
         face2_normal: Tuple[float,float,float]) -> Dict:
     """Return dihedral angle info between two face normals."""
-    dot = max(-1.0, min(1.0,
-        face1_normal[0]*face2_normal[0] +
-        face1_normal[1]*face2_normal[1] +
-        face1_normal[2]*face2_normal[2]))
-    angle_rad = math.acos(dot)
+    dot = (face1_normal[0]*face2_normal[0] +
+           face1_normal[1]*face2_normal[1] +
+           face1_normal[2]*face2_normal[2])
+    angle_rad = dihedral_radians_from_cos(dot)
     angle_deg = math.degrees(angle_rad)
     return {
         'angle_degrees':      angle_deg,
