@@ -91,7 +91,8 @@ def corner_doc():
 
 def _make_brick_wall(doc, base, face_idx, name, *, left_quoin=False,
                       left_quoin_primary=True, right_quoin=False,
-                      right_quoin_primary=True, skin_depth=0.3):
+                      right_quoin_primary=True, skin_depth=0.3,
+                      reverse_quoin_sides=False):
     obj = doc.addObject("Part::FeaturePython", name)
     brick_proxy.BrickProxy(obj)
     obj.Sources = [(base, (f"Face{face_idx + 1}",))]
@@ -107,6 +108,7 @@ def _make_brick_wall(doc, base, face_idx, name, *, left_quoin=False,
     obj.LeftQuoinPrimary = left_quoin_primary
     obj.RightQuoin = right_quoin
     obj.RightQuoinPrimary = right_quoin_primary
+    obj.ReverseQuoinSides = reverse_quoin_sides
     return obj
 
 
@@ -162,6 +164,70 @@ class TestCornerSeamGapClosed:
         corner_doc['doc'].recompute()
         assert not wall_a.Shape.isNull()
         assert wall_a.Shape.BoundBox.XMin >= 0.0 - 1e-6
+
+
+class TestReverseQuoinSides:
+    """ReverseQuoinSides (v7.4.0): swaps LeftQuoin<->RightQuoin and their
+    Primary flags for one face, applied after every other property is
+    resolved -- added because LeftQuoin/RightQuoin are u-axis labels
+    (independent of which way the face's normal points), not "your
+    left/right hand standing outside the building facing this wall," and
+    confirmed live to flip unpredictably per-face on a real 2-wall corner."""
+
+    def test_reversed_object_matches_swapped_plain_object(self, corner_doc):
+        """The core parity invariant: an object with ReverseQuoinSides=True
+        and (LeftQuoin, LeftQuoinPrimary, RightQuoin, RightQuoinPrimary) =
+        (False, False, True, True) must produce EXACTLY the shape a plain
+        (non-reversed) object with the swapped tuple (True, True, False,
+        False) produces -- proving the swap is complete (both quoin flags
+        AND both primary flags), not just one half of it."""
+        skin_depth = 0.3
+        plain = _make_brick_wall(
+            corner_doc['doc'], corner_doc['base'], corner_doc['wall_a_idx'], "Plain",
+            left_quoin=True, left_quoin_primary=True,
+            right_quoin=False, right_quoin_primary=False,
+            skin_depth=skin_depth,
+        )
+        reversed_obj = _make_brick_wall(
+            corner_doc['doc'], corner_doc['base'], corner_doc['wall_a_idx'], "Reversed",
+            left_quoin=False, left_quoin_primary=False,
+            right_quoin=True, right_quoin_primary=True,
+            skin_depth=skin_depth, reverse_quoin_sides=True,
+        )
+        corner_doc['doc'].recompute()
+
+        assert not plain.Shape.isNull()
+        assert not reversed_obj.Shape.isNull()
+        assert plain.Shape.Volume == pytest.approx(reversed_obj.Shape.Volume, rel=1e-9)
+        b1, b2 = plain.Shape.BoundBox, reversed_obj.Shape.BoundBox
+        for attr in ('XMin', 'XMax', 'YMin', 'YMax', 'ZMin', 'ZMax'):
+            assert getattr(b1, attr) == pytest.approx(getattr(b2, attr), abs=1e-9), (
+                f"{attr}: plain={getattr(b1, attr)} reversed={getattr(b2, attr)}")
+
+    def test_reverse_false_is_a_no_op(self, corner_doc):
+        """ReverseQuoinSides defaults to False -- existing documents (with
+        this property absent or unset) must be completely unaffected."""
+        obj = _make_brick_wall(
+            corner_doc['doc'], corner_doc['base'], corner_doc['wall_a_idx'], "NoReverse",
+            left_quoin=True, left_quoin_primary=True,
+        )
+        assert obj.ReverseQuoinSides is False
+        corner_doc['doc'].recompute()
+        assert not obj.Shape.isNull()
+        # Unreversed LeftQuoin=True/Primary=True still widens on the left,
+        # exactly as before this property existed.
+        assert obj.Shape.BoundBox.XMin <= -0.3 + 1e-6
+
+    def test_reverse_true_with_no_quoin_set_is_still_a_no_op(self, corner_doc):
+        """Reversing False<->False and True<->True (both quoin flags off)
+        changes nothing -- must not raise or otherwise misbehave."""
+        obj = _make_brick_wall(
+            corner_doc['doc'], corner_doc['base'], corner_doc['wall_a_idx'], "ReverseNoQuoin",
+            reverse_quoin_sides=True,
+        )
+        corner_doc['doc'].recompute()
+        assert not obj.Shape.isNull()
+        assert obj.Shape.BoundBox.XMin >= 0.0 - 1e-6
 
 
 class TestWidenFaceBoundaryDirect:

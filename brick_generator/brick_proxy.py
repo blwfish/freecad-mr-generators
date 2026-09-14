@@ -80,6 +80,26 @@ QUOIN CORNERS (LeftQuoin / RightQuoin):
   mechanism. quoin_generator/quoin_geometry.py remains: this module still
   imports QuoinGeometry/mirror_to_right_edge from it directly.)
 
+REVERSE QUOIN SIDES (v7.4.0):
+  LeftQuoin/RightQuoin are defined by compute_face_axes' u-axis (u=0 is
+  whichever end has the lower coordinate along the face's dominant
+  bounding-box axis) -- deliberately independent of which way the face's
+  normal points, since corner_detection.py's automatic corner-pairing
+  depends on that independence. The practical consequence, confirmed live
+  on a real building: "left"/"right" do NOT consistently match your own
+  left/right hand when standing outside facing a given wall -- it flips
+  per-face depending on that wall's own facing direction (one wall of a
+  corner matched, the adjacent wall at 90 degrees was exactly backwards).
+
+  ReverseQuoinSides (default False) swaps LeftQuoin<->RightQuoin and
+  LeftQuoinPrimary<->RightQuoinPrimary for one face, applied in execute()
+  right after resolve_quoin() -- after every other property (including the
+  per-face *QuoinFaces overrides) is already resolved, so every downstream
+  consumer (widen, mortar grid, corner-return joints) sees an
+  already-consistent pair and needed no changes. Matches the same pattern
+  as Part::Extrusion's own Reversed checkbox: flip a boolean rather than
+  reworking the underlying axis convention.
+
 CORNER RETURN-FACE JOINTS (v7.3.0):
   v7.1.0's corner-widen fix closed the 3D gap between two walls' skins by
   extending the Primary wall's own front (u/v) face outward -- but the
@@ -140,7 +160,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "7.3.0"
+VERSION = "7.4.0"
 GENERATOR_NAME = "brick_generator"
 
 _here = Path(__file__).parent
@@ -746,6 +766,29 @@ class BrickProxy:
                             "Right quoin Face A/B designation, same convention "
                             "as LeftQuoinPrimary. Ignored when RightQuoin=False.")
             obj.RightQuoinPrimary = True
+        if not hasattr(obj, 'ReverseQuoinSides'):
+            obj.addProperty(
+                "App::PropertyBool", "ReverseQuoinSides", grp,
+                "Swap which physical edge LeftQuoin/RightQuoin refer to on "
+                "this face. LeftQuoin/RightQuoin are defined by the face's "
+                "own bounding-box axis (u=0 is always whichever end has the "
+                "lower coordinate along that axis) -- entirely independent "
+                "of which way the face's normal points, so 'left'/'right' "
+                "do NOT reliably match your left/right hand when standing "
+                "outside the building facing this wall; it flips per-face "
+                "depending on which way that wall happens to face "
+                "(confirmed 2026-09-14: on a real 2-wall corner, one wall's "
+                "Right matched outside-facing-right, the adjacent wall's "
+                "Right was outside-facing-LEFT). Toggle this on any face "
+                "where the label feels backwards, matching Part::Extrusion's "
+                "own Reversed checkbox -- it swaps LeftQuoin<->RightQuoin "
+                "and LeftQuoinPrimary<->RightQuoinPrimary for THIS face "
+                "only, after every other property is resolved, so it needs "
+                "no changes anywhere else (compute_face_axes/"
+                "corner_detection.py's U-axis convention, which the "
+                "auto-corner-pairing in corner_detection.py depends on "
+                "staying normal-independent, is untouched).")
+            obj.ReverseQuoinSides = False
         if not hasattr(obj, 'LeftQuoinPrimaryFaces'):
             obj.addProperty(
                 "App::PropertyLinkSubList", "LeftQuoinPrimaryFaces", grp,
@@ -792,6 +835,7 @@ class BrickProxy:
         obj.LeftQuoinPrimary  = bool(p.get('left_quoin_primary',  True))
         obj.RightQuoin        = bool(p.get('right_quoin',         False))
         obj.RightQuoinPrimary = bool(p.get('right_quoin_primary', True))
+        obj.ReverseQuoinSides = bool(p.get('reverse_quoin_sides', False))
         obj.GeneratorVersion = VERSION
 
     def execute(self, obj):
@@ -887,6 +931,19 @@ class BrickProxy:
                 normal = face.normalAt(0, 0)
                 left_quoin, left_quoin_primary, right_quoin, right_quoin_primary = \
                     resolve_quoin(orig_idx)
+                if bool(getattr(obj, 'ReverseQuoinSides', False)):
+                    # See ReverseQuoinSides' own docstring for why this
+                    # exists: LeftQuoin/RightQuoin are u-axis labels, not
+                    # compass/outside-facing ones, and which one matches
+                    # your left/right hand flips per face depending on
+                    # which way that face happens to point. Swapping here,
+                    # after resolve_quoin() has already applied any
+                    # per-face override, means every downstream consumer
+                    # (widen, mortar grid, corner-return joints) sees an
+                    # already-consistent pair and needs no changes at all.
+                    left_quoin, right_quoin = right_quoin, left_quoin
+                    left_quoin_primary, right_quoin_primary = \
+                        right_quoin_primary, left_quoin_primary
                 face_params = dict(params)
                 face_params['left_quoin']          = left_quoin
                 face_params['left_quoin_primary']  = left_quoin_primary
