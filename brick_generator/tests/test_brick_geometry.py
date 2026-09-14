@@ -1933,20 +1933,20 @@ class TestComputeFaceAxes:
     ])
     def test_z_range_vertical_threshold(self, z_range, expect_vertical):
         # x_range=40, y_range=0: below/at the z threshold this falls into
-        # the horizontal-face branch (x becomes U, y falls back to V via
-        # the u_length fallback since y_range=0 isn't > 0.001 either) --
-        # NOT an error, since horiz still has 2 entries (x and y) even
-        # though one of them is degenerate.
-        result = compute_face_axes(x_range=40.0, y_range=0.0, z_range=z_range,
-                                    normal=(0.0, -1.0, 0.0))
+        # the horizontal-face branch (x becomes U). y_range=0 there is a
+        # degenerate sliver V extent, which compute_face_axes now rejects
+        # outright (2026-09-14 fix for a silent-substitution bug caught in
+        # code review) rather than silently setting v_length = u_length.
         if expect_vertical:
+            result = compute_face_axes(x_range=40.0, y_range=0.0, z_range=z_range,
+                                        normal=(0.0, -1.0, 0.0))
             assert result == {'u_axis': 'x', 'v_axis': 'z',
                                'u_length': 40.0, 'v_length': z_range,
                                'is_horizontal': False}
         else:
-            assert result == {'u_axis': 'x', 'v_axis': 'y',
-                               'u_length': 40.0, 'v_length': 40.0,
-                               'is_horizontal': True}
+            with pytest.raises(ValueError, match="degenerate sliver"):
+                compute_face_axes(x_range=40.0, y_range=0.0, z_range=z_range,
+                                   normal=(0.0, -1.0, 0.0))
 
     @pytest.mark.parametrize('nx,expect_x_excluded', [
         (0.5001, True),   # just above threshold: excluded (>= 0.5 is "too parallel")
