@@ -1226,27 +1226,29 @@ class TestLeftQuoinFlemishBond:
 
 
 class TestLeftQuoinCommonBond:
-    """Common bond with left_quoin: stretcher courses start from quoin offset."""
+    """Common bond with left_quoin: both stretcher AND header courses start
+    from the quoin offset (fixed 2026-09-14 -- header courses previously
+    ignored the quoin boundary entirely and could spatially overlap the
+    quoin's own corner brick; confirmed live on a real dual-quoin common-
+    bond wall before this fix, see brick_proxy.py's ReverseQuoinSides-
+    adjacent session notes)."""
 
-    def test_stretcher_courses_no_bricks_in_quoin_region(self):
+    def test_all_courses_no_bricks_in_quoin_region(self):
         bg = _make_bg('common', primary=True, W=30.0)
         result = bg.generate()
         S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
-        cbc = 5  # default
-        # Identify stretcher vs header courses: header every (cbc+1)th course
         for b in result['bricks']:
-            is_header = (b.course % (cbc + 1)) == cbc
-            if is_header:
-                continue  # header courses get no quoin treatment
             is_s = (b.course % 2 == 0)   # primary face parity
             quoin_w = S if is_s else H
             assert b.u >= quoin_w - 1e-6, (
-                f"stretcher course {b.course}: brick at u={b.u:.4f} "
+                f"course {b.course} ({b.brick_type}): brick at u={b.u:.4f} "
                 f"inside quoin [0,{quoin_w}]"
             )
 
-    def test_header_courses_tile_full_width(self):
-        """Header courses are unchanged — they should span from before 0 to past W."""
+    def test_header_courses_no_longer_tile_full_width(self):
+        """Regression guard for the fix: with left_quoin set, a header
+        course's leftmost brick must start at the quoin boundary, not
+        before u=0 -- the exact overlap the old full-width tile produced."""
         W = 30.0
         bg = _make_bg('common', primary=True, W=W)
         result = bg.generate()
@@ -1258,7 +1260,29 @@ class TestLeftQuoinCommonBond:
             is_header = (course % (cbc + 1)) == cbc
             if not is_header:
                 continue
-            leftmost  = min(b.u for b in bricks)
+            leftmost = min(b.u for b in bricks)
+            expected = bg._quoin_fill_start(course)
+            assert leftmost == pytest.approx(expected, abs=1e-9), (
+                f"header course {course}: leftmost brick at u={leftmost:.4f}, "
+                f"expected exactly _quoin_fill_start={expected:.4f}")
+
+    def test_header_courses_without_quoin_still_tile_full_width(self):
+        """Regression guard for the OTHER branch: a plain (no-quoin) common
+        bond wall's header courses must keep their previous unbounded
+        tile-and-clip behavior unchanged."""
+        W = 30.0
+        bg = BrickGeometry(u_length=W, v_length=20.0, bond_type='common',
+                            common_bond_count=5, **HO)
+        result = bg.generate()
+        cbc = 5
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+        for course, bricks in by_course.items():
+            is_header = (course % (cbc + 1)) == cbc
+            if not is_header:
+                continue
+            leftmost = min(b.u for b in bricks)
             rightmost = max(b.u + b.width for b in bricks)
             assert leftmost < 0.0, \
                 f"header course {course}: should start before 0, got {leftmost}"

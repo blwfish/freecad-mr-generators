@@ -1,5 +1,5 @@
 """
-Brick Geometry Generator Library v6.2.0
+Brick Geometry Generator Library v6.3.0
 
 Pure Python geometry generation for parametric brick walls.
 No FreeCAD dependencies - designed for testing and reuse.
@@ -12,8 +12,26 @@ Supported bond patterns:
 
 Returns lists of brick definitions ready for FreeCAD instantiation or other use.
 
-Version: 6.2.0
+Version: 6.3.0
 Date: 2026-09-14
+  6.3.0: Fixed _generate_common_bond()'s header course ignoring the quoin
+         boundary entirely -- confirmed live on a real dual-quoin
+         common-bond wall (user's own diagnosis, from an angled render:
+         "the corners do not properly account for the edge-on rows... the
+         problem ones are all with the common bond rows"): a header
+         course's field bricks tiled full-width starting at
+         u=-header_spacing_u, landing squarely inside the quoin's own
+         reserved region (e.g. a brick at u=0.0 while the quoin reserved
+         [0, 1.2]) and visibly overwriting the quoin's own alternating
+         corner brick for that course. This was already a documented gap
+         (this module's own changelog and brick_proxy.py's LeftQuoin
+         property both used to call it out) and the exact issue english
+         bond's header courses had before their 2026-09-13 fix -- common
+         bond just never got the matching treatment then. Fix: header
+         courses now route through _emit_bounded_run with the quoin
+         boundary, identically to stretcher courses and english bond's
+         header courses, when left_quoin is set; unchanged (unbounded
+         full-width tile-and-clip) when it isn't.
   6.2.0: Fixed a missing mortar joint in _emit_bounded_run() -- confirmed
          live on a real dual-face corner (header-quoin course forcing a
          nonzero left closer): the closer landed flush against the quoin
@@ -115,7 +133,7 @@ Date: 2026-09-14
          FreeCAD, and that call stays in the proxy.
 """
 
-__version__ = "6.2.0"
+__version__ = "6.3.0"
 
 import math
 from typing import List, Dict, Tuple, NamedTuple, Set
@@ -1031,11 +1049,22 @@ class BrickGeometry:
         Common Bond: N stretcher courses then 1 header course, repeating.
         N = self.common_bond_count.
 
-        With left_quoin: stretcher courses are bounded between the quoin and
-        the far boundary via _fit_run_between_boundaries (same convention as
-        _generate_stretcher_bond -- see its docstring). Header courses run
-        full-width (quoin treatment for header courses is deferred to a
-        future version -- pre-existing, documented, out of scope here).
+        With left_quoin: both stretcher AND header courses are bounded
+        between the quoin and the far boundary via _fit_run_between_
+        boundaries (same convention as _generate_stretcher_bond/
+        _generate_english_bond's own header courses). Header courses
+        previously ran full-width regardless of quoin state -- confirmed
+        live (2026-09-14, a real dual-quoin common-bond wall): at every
+        header course, field bricks starting at u=-header_spacing_u landed
+        squarely inside the quoin's own reserved region (e.g. quoin
+        reserving [0, 1.2] while a header brick occupied [0.0, 1.09]),
+        visibly overwriting the quoin's own alternating corner brick for
+        that course with a plain full-width header row instead. This was
+        the exact, already-documented gap english bond's header courses
+        had before their own 2026-09-13 fix (see _generate_english_bond's
+        docstring) -- common bond just never got the same treatment then.
+        Without any quoin, header courses keep their previous (unbounded,
+        full-width tile-and-clip) behavior unchanged.
         """
         bricks = []
         course = 0
@@ -1070,19 +1099,29 @@ class BrickGeometry:
                     u += self.stretcher_spacing_u
                 course += 1
 
-            # Header course — no quoin treatment (full-width tile-and-clip)
+            # Header course
             if course < self.num_courses:
                 v = course * self.course_spacing_v
-                u = -self.header_spacing_u
-                while u < self.u_length + self.header_spacing_u:
-                    bricks.append(BrickDef(
-                        index=0, u=u, v=v, course=course,
-                        brick_type='header',
-                        width=self.brick_depth,
-                        height=self.brick_height,
-                        depth=self.skin_depth,
-                    ))
-                    u += self.header_spacing_u
+                if self.left_quoin:
+                    # See _generate_stretcher_bond's comment on the same
+                    # -self.mortar adjustment.
+                    bricks.extend(self._emit_bounded_run(
+                        v, course, self._quoin_fill_start(course) - self.mortar,
+                        self._quoin_fill_end(course), self.brick_depth,
+                        'header', left_is_real_edge=False,
+                        right_is_real_edge=not self.right_quoin,
+                        max_closer=self.brick_depth))
+                else:
+                    u = -self.header_spacing_u
+                    while u < self.u_length + self.header_spacing_u:
+                        bricks.append(BrickDef(
+                            index=0, u=u, v=v, course=course,
+                            brick_type='header',
+                            width=self.brick_depth,
+                            height=self.brick_height,
+                            depth=self.skin_depth,
+                        ))
+                        u += self.header_spacing_u
                 course += 1
 
         return bricks
