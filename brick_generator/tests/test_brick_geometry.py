@@ -2051,6 +2051,72 @@ class TestQuoinAdjacentSliverFix:
                 f"below min_closer {min_closer:.4f}")
 
 
+class TestQuoinClosertMortarGap:
+    """Regression tests for the confirmed-live missing-mortar-joint bug
+    (v6.2.0): whenever a quoin-adjacent course's leftover forces a real
+    left closer (rather than the common zero-closer case), the closer must
+    still land with a full mortar joint separating it from the quoin's own
+    material -- not flush against it. Confirmed live on the real demo
+    model's West-equivalent wall (u_length=28.027586206873316,
+    left_quoin_primary=False): course 0's header-quoin closer was landing
+    only topo_eps (~0.011mm) from the quoin instead of a full mortar
+    (0.11mm) joint, while courses needing no closer showed the correct gap
+    -- visually reading as bricks "run up against the quoin with no
+    mortar" in a render.
+
+    The single invariant that captures this (and subsumes the old
+    zero-closer case, which already worked): the first fill element placed
+    in any quoin-adjacent course -- closer or regular brick, whichever
+    comes first -- must start exactly at _quoin_fill_start(course), the
+    one already-documented source of truth for "where fill begins,
+    including its mortar gap after the quoin." Before this fix, that only
+    held when no closer was needed.
+    """
+
+    REAL_WALL_WIDTH = 28.027586206873316  # equipment_hut_demo's West-equivalent wall
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'common', 'english'])
+    @pytest.mark.parametrize('primary', [True, False])
+    def test_first_fill_element_starts_exactly_at_quoin_fill_start(self, bond, primary):
+        bg = BrickGeometry(
+            u_length=self.REAL_WALL_WIDTH, v_length=20.0, bond_type=bond,
+            common_bond_count=5, left_quoin=True, left_quoin_primary=primary,
+            **HO,
+        )
+        result = bg.generate()
+        by_course = {}
+        for b in result['bricks']:
+            by_course.setdefault(b.course, []).append(b)
+
+        saw_forced_closer = False
+        for course, bricks in by_course.items():
+            if bond == 'common' and course % 6 == 5:
+                # common bond's header courses (every common_bond_count+1'th,
+                # i.e. every 6th here) run full-width and ignore quoin state
+                # entirely -- a pre-existing, documented gap
+                # (_generate_common_bond's own docstring: "quoin treatment
+                # for header courses is deferred to a future version"), not
+                # something this fix touches or this test should assert
+                # against.
+                continue
+            first = min(bricks, key=lambda b: b.u)
+            expected = bg._quoin_fill_start(course)
+            assert first.u == pytest.approx(expected, abs=1e-9), (
+                f"{bond} primary={primary} course={course}: first fill "
+                f"element ({first.brick_type}) starts at u={first.u:.4f}, "
+                f"expected exactly _quoin_fill_start={expected:.4f} -- a "
+                f"mismatch means the mortar joint after the quoin is "
+                f"missing or wrong-sized")
+            if first.brick_type == 'closer':
+                saw_forced_closer = True
+
+        assert saw_forced_closer, (
+            f"{bond} primary={primary}: fixture width "
+            f"{self.REAL_WALL_WIDTH} was expected to force at least one "
+            f"real left closer (confirmed live) -- fixture no longer "
+            f"exercises the case this regression test targets")
+
+
 class TestTopoEps:
     """topo_eps() -- the single canonical source for the TOPO_EPS = mortar
     * 0.1 convention, now shared by _emit_bounded_run,

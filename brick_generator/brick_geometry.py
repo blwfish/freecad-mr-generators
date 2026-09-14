@@ -1,5 +1,5 @@
 """
-Brick Geometry Generator Library v6.1.0
+Brick Geometry Generator Library v6.2.0
 
 Pure Python geometry generation for parametric brick walls.
 No FreeCAD dependencies - designed for testing and reuse.
@@ -12,8 +12,29 @@ Supported bond patterns:
 
 Returns lists of brick definitions ready for FreeCAD instantiation or other use.
 
-Version: 6.1.0
+Version: 6.2.0
 Date: 2026-09-14
+  6.2.0: Fixed a missing mortar joint in _emit_bounded_run() -- confirmed
+         live on a real dual-face corner (header-quoin course forcing a
+         nonzero left closer): the closer landed flush against the quoin
+         brick with zero gap, while courses that needed no closer (the
+         common case) showed a correct full mortar joint. Root cause: the
+         quoin-adjacent call sites pass left_boundary = quoin_fill_start()
+         - mortar specifically so _fit_run_between_boundaries' one internal
+         mortar reservation lands between the quoin and the first placed
+         element -- correct when that element is a regular brick (the
+         common case, left_closer == 0), but when it's a closer instead,
+         that single reservation was structurally repurposed to sit
+         between the closer and the brick run, leaving nothing between the
+         quoin's own material and the closer. Fix: when a nonzero left
+         closer lands on a quoin boundary, refit against a boundary
+         shifted right by one more mortar before placing anything, so the
+         quoin-to-closer gap is explicitly reserved rather than silently
+         dropped. Affects every quoin-adjacent caller of
+         _emit_bounded_run() (stretcher, common, english) uniformly, since
+         they all share the same call pattern; flemish's dual-quoin path
+         never places a left closer at all (by construction) and is
+         unaffected.
   6.1.0: Added topo_eps()/clamp_brick_to_segment() -- the pure-math half of
          a performance fix to brick_proxy.py's _create_mortar_grid, which
          used to boolean-intersect (Part.Shape.common()) every brick
@@ -94,7 +115,7 @@ Date: 2026-09-14
          FreeCAD, and that call stays in the proxy.
 """
 
-__version__ = "6.1.0"
+__version__ = "6.2.0"
 
 import math
 from typing import List, Dict, Tuple, NamedTuple, Set
@@ -575,6 +596,27 @@ class BrickGeometry:
         n, left_closer, right_closer = self._fit_run_between_boundaries(
             left_boundary, right_boundary, brick_width,
             target_left_closer=target_left_closer, max_closer=max_closer)
+
+        if not left_is_real_edge and left_closer > 0:
+            # A left closer landed at a quoin boundary. The single mortar
+            # _fit_run_between_boundaries reserves internally sits between
+            # the closer and the brick run -- that's the ONLY gap needed
+            # when left_closer is 0 (closer absent, so that gap serves as
+            # "quoin to first brick"). But a closer that DOES get emitted
+            # is real brick material, not a boundary -- it still needs its
+            # own mortar joint separating it from the quoin's own material,
+            # which nothing above reserves, so the closer was landing flush
+            # against the quoin with zero gap (confirmed live: a header-
+            # course quoin forcing a nonzero left closer, courses otherwise
+            # showing a full mortar joint). Refit against a boundary shifted
+            # right by one more mortar to reserve that second, physically
+            # required gap, then place everything (closer included) from
+            # the shifted boundary instead of the original one.
+            left_boundary = left_boundary + self.mortar
+            n, left_closer, right_closer = self._fit_run_between_boundaries(
+                left_boundary, right_boundary, brick_width,
+                target_left_closer=target_left_closer, max_closer=max_closer)
+
         eps = topo_eps(self.mortar)
         if left_is_real_edge and left_closer > 0:
             left_closer += eps

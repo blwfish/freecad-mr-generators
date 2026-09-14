@@ -80,6 +80,23 @@ QUOIN CORNERS (LeftQuoin / RightQuoin):
   mechanism. quoin_generator/quoin_geometry.py remains: this module still
   imports QuoinGeometry/mirror_to_right_edge from it directly.)
 
+CORNER RETURN-FACE JOINTS (v7.3.0):
+  v7.1.0's corner-widen fix closed the 3D gap between two walls' skins by
+  extending the Primary wall's own front (u/v) face outward -- but the
+  widened extension's own PERPENDICULAR side (the endcap of the extruded
+  skin) was never touched by anything: _create_mortar_grid only engraves
+  the front face. Confirmed live via screenshot: this endcap reads as a
+  single flat, unmortared strip -- a smooth "raised corner" -- even though
+  the extension's own front face already shows correct quoin coursing.
+
+  Fix: _cut_corner_return_joints() cuts a thin mortar-width notch into the
+  return face at every course boundary (same course positions the front
+  face uses, via the identical _get_face_coordinate_system/
+  _snap_origin_to_grid calls), so the return reads as coursed instead of
+  solid -- matching how a real quoin's return face shows joints wrapping
+  around the corner. Only runs when this face was actually widened; a
+  no-op for every plain (non-corner) face.
+
 MORTAR-GRID PERFORMANCE FIX (v7.2.0):
   `_create_mortar_grid` used to clip every brick to face_slab via a boolean
   intersection (Part.Shape.common()) before the final cut. Measured: 801.6
@@ -123,7 +140,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "7.2.0"
+VERSION = "7.3.0"
 GENERATOR_NAME = "brick_generator"
 
 _here = Path(__file__).parent
@@ -313,19 +330,22 @@ def _find_bay_boundaries(outer_wire, u_vec, v_vec, gap_threshold=0.0005, max_gap
     ]
 
 
-def _create_brick_from_def(brick_def, origin, u_vec, v_vec, normal):
-    """Build one brick solid from a BrickDef."""
-    u, v = brick_def.u, brick_def.v
-    w, h, d = brick_def.width, brick_def.height, brick_def.depth
+def _make_oriented_box(origin, u_vec, v_vec, normal, u0, u1, v0, v1, n0, n1):
+    """
+    Build a box in an arbitrary u/v/normal coordinate system: spans
+    [u0, u1] x [v0, v1] x [n0, n1] (the last measured along `normal`).
 
-    p0 = origin + _scale(u_vec, u)   + _scale(v_vec, v)
-    p1 = origin + _scale(u_vec, u+w) + _scale(v_vec, v)
-    p2 = origin + _scale(u_vec, u+w) + _scale(v_vec, v+h)
-    p3 = origin + _scale(u_vec, u)   + _scale(v_vec, v+h)
-    p4 = p0 + _scale(normal, -d)
-    p5 = p1 + _scale(normal, -d)
-    p6 = p2 + _scale(normal, -d)
-    p7 = p3 + _scale(normal, -d)
+    Shared by _create_brick_from_def (n0=0, n1=-brick_def.depth -- a brick
+    is one-sided, recessed into the material) and
+    _corner_return_joint_boxes (n spans the skin's full front-to-back
+    thickness, since a return-face joint needs to be visible from the
+    front proud surface all the way back to the embed depth).
+    """
+    def pt(u, v, n):
+        return origin + _scale(u_vec, u) + _scale(v_vec, v) + _scale(normal, n)
+
+    p0, p1, p2, p3 = pt(u0, v0, n0), pt(u1, v0, n0), pt(u1, v1, n0), pt(u0, v1, n0)
+    p4, p5, p6, p7 = pt(u0, v0, n1), pt(u1, v0, n1), pt(u1, v1, n1), pt(u0, v1, n1)
 
     edges = [
         Part.Edge(Part.LineSegment(p0, p1).toShape()),
@@ -351,6 +371,14 @@ def _create_brick_from_def(brick_def, origin, u_vec, v_vec, normal):
         Part.Face(Part.Wire([e1, e9, e5, e10])),
     ]
     return Part.Solid(Part.Shell(faces))
+
+
+def _create_brick_from_def(brick_def, origin, u_vec, v_vec, normal):
+    """Build one brick solid from a BrickDef."""
+    bd = brick_def
+    return _make_oriented_box(
+        origin, u_vec, v_vec, normal,
+        bd.u, bd.u + bd.width, bd.v, bd.v + bd.height, 0.0, -bd.depth)
 
 
 def _resolve_quoin_flags(obj, link_obj):
@@ -551,6 +579,82 @@ def _create_mortar_grid(face, params):
         return face_slab  # no bricks → full slab (all mortar)
 
     return face_slab.cut(Part.Compound(brick_shapes))
+
+
+def _cut_corner_return_joints(shape, outer_face, params, embed_offset,
+                               skin_depth, widen_left, widen_right):
+    """
+    Cut mortar-joint grooves into the RETURN (endcap) face(s) that Part 8's
+    corner-widen fix exposes at a real building corner.
+
+    _widen_face_boundary() extends the Primary wall's own boundary outward
+    by skin_depth so its proud FRONT face reaches the neighboring wall's
+    proud surface, closing the corner gap -- but the widened extension's
+    own PERPENDICULAR side (the endcap of the extruded skin, facing the
+    same direction as the neighboring wall's front face) is a single flat
+    plane with nothing cut into it: _create_mortar_grid only ever engraves
+    the front (u/v) face, never a side. Confirmed live via screenshot: this
+    reads as a smooth, unmortared "raised corner" block instead of coursing
+    wrapping around the corner the way real quoin masonry does — even
+    though the extension's own FRONT face already carries correct quoin
+    brick/mortar engraving from the ordinary _create_mortar_grid pass.
+
+    Fix: cut a thin (mortar_depth-wide) notch into the return face at every
+    course boundary, spanning the skin's full front-to-back thickness, so
+    the return reads as coursed instead of solid. Course positions are
+    derived via the SAME _get_face_coordinate_system/_snap_origin_to_grid
+    calls _create_mortar_grid uses internally (same inputs, same pure
+    functions) so the two can never drift apart -- the return face's joints
+    always line up with the front face's own course lines.
+
+    No-op (returns `shape` unchanged) when neither side was widened.
+    """
+    if not (widen_left or widen_right):
+        return shape
+
+    origin, u_vec, v_vec, normal, u_length, v_length, is_horizontal = \
+        _get_face_coordinate_system(outer_face)
+    brick_width  = params['brick_width']
+    brick_height = params['brick_height']
+    brick_depth  = params['brick_depth']
+    mortar       = params['mortar']
+    mortar_depth = params['mortar_depth']
+    gen_bh = brick_depth if is_horizontal else brick_height
+    origin = _snap_origin_to_grid(origin, u_vec, v_vec, brick_width, gen_bh, mortar)
+
+    course_spacing_v = gen_bh + mortar
+    num_courses = math.ceil(v_length / course_spacing_v) + 2
+
+    sides = []
+    if widen_left:
+        sides.append((0.0, mortar_depth))
+    if widen_right:
+        sides.append((u_length - mortar_depth, u_length))
+
+    # `origin` (from outer_face, the PROUD offset face) sits at n=0 with
+    # skin_solid's material extending in the NEGATIVE normal direction back
+    # to the embedded face -- the same front-is-zero, material-is-negative
+    # convention _create_brick_from_def uses (n0=0, n1=-depth). A small
+    # margin on both ends guarantees the box fully spans skin_solid's own
+    # front-to-back thickness rather than merely touching it.
+    margin = embed_offset
+    n_front = margin
+    n_back = -(skin_depth + embed_offset + margin)
+
+    joint_boxes = []
+    for u0, u1 in sides:
+        for course in range(num_courses):
+            joint_v0 = course * course_spacing_v + gen_bh
+            if joint_v0 >= v_length:
+                break
+            joint_v1 = joint_v0 + mortar
+            joint_boxes.append(_make_oriented_box(
+                origin, u_vec, v_vec, normal,
+                u0, u1, joint_v0, joint_v1, n_back, n_front))
+
+    if not joint_boxes:
+        return shape
+    return shape.cut(Part.Compound(joint_boxes))
 
 
 # =============================================================================
@@ -819,7 +923,18 @@ class BrickProxy:
                     skin_solid = embedded_face.extrude(
                         _scale(normal, skin_depth + embed_offset))
 
-                    skins.append(skin_solid.cut(mortar_grid))
+                    face_result = skin_solid.cut(mortar_grid)
+                    # Part 8 follow-up: at a widened corner, also cut
+                    # course-boundary mortar joints into the extension's
+                    # own return (endcap) face, which _create_mortar_grid
+                    # never touches -- see _cut_corner_return_joints'
+                    # docstring for the full "raised corner" symptom this
+                    # fixes. No-op when neither side was widened.
+                    face_result = _cut_corner_return_joints(
+                        face_result, outer_face, face_params, embed_offset,
+                        skin_depth, widen_left, widen_right)
+
+                    skins.append(face_result)
                 except Exception as e:
                     App.Console.PrintError(f"  BrickProxy face {orig_idx}: {e}\n")
 
