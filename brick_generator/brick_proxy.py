@@ -777,9 +777,9 @@ class BrickProxy:
 
             skins = []
             for orig_idx in orig_face_indices:
-                if orig_idx >= len(link_obj.Shape.Faces):
+                if orig_idx >= len(link_faces):
                     continue
-                face = link_obj.Shape.Faces[orig_idx]
+                face = link_faces[orig_idx]
                 normal = face.normalAt(0, 0)
                 left_quoin, left_quoin_primary, right_quoin, right_quoin_primary = \
                     resolve_quoin(orig_idx)
