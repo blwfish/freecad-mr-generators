@@ -154,7 +154,7 @@ try:
 except ImportError:
     face_geometry = None
 
-from freecad_utils import resolve_sources_faces
+from freecad_utils import resolve_sources_faces, get_face_coordinate_system
 
 
 # =============================================================================
@@ -263,43 +263,18 @@ def _widen_face_boundary(face, u_vec, v_vec, side, delta, angle_tol=5.0, edge_to
     return new_face
 
 
-_AXIS_VECTORS = {
-    'x': App.Vector(1, 0, 0),
-    'y': App.Vector(0, 1, 0),
-    'z': App.Vector(0, 0, 1),
-}
-
-
 def _get_face_coordinate_system(face):
     """
     Establish U/V/normal coordinate system for a face.
     Returns (origin, u_vec, v_vec, normal, u_length, v_length, is_horizontal).
 
-    Thin FreeCAD-facing wrapper: extracts the bbox/vertex/normal data and
-    delegates the actual axis-selection math to brick_geometry's pure,
-    pytest-testable compute_face_axes() (also the basis for
-    quoin_generator/corner_detection.py's corner classification).
+    Thin local alias for freecad_utils.get_face_coordinate_system(), kept
+    so this module's existing call sites don't need to change. That shared
+    function is the single source of truth for this extraction --
+    previously duplicated independently here and in corner_detection.py's
+    _outward_normal()/_face_u_axis() (2026-09-14 consolidation).
     """
-    outer_wire = face.OuterWire
-    bbox = outer_wire.BoundBox
-    origin = App.Vector(bbox.XMin, bbox.YMin, bbox.ZMin)
-
-    pts = [v.Point for v in outer_wire.Vertexes]
-    x_range = max(p.x for p in pts) - min(p.x for p in pts)
-    y_range = max(p.y for p in pts) - min(p.y for p in pts)
-    z_range = max(p.z for p in pts) - min(p.z for p in pts)
-
-    uv = face.ParameterRange
-    normal = face.normalAt((uv[0]+uv[1])/2, (uv[2]+uv[3])/2)
-
-    axes = _bg.compute_face_axes(x_range, y_range, z_range,
-                                  (normal.x, normal.y, normal.z))
-
-    u_vec = _AXIS_VECTORS[axes['u_axis']]
-    v_vec = _AXIS_VECTORS[axes['v_axis']]
-
-    return (origin, u_vec, v_vec, normal,
-            axes['u_length'], axes['v_length'], axes['is_horizontal'])
+    return get_face_coordinate_system(face)
 
 
 def _snap_origin_to_grid(origin, u_vec, v_vec, brick_width, brick_height, mortar):

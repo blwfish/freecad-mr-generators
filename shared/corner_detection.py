@@ -58,20 +58,10 @@ Left/Right) without computing it per-face.
 
 from typing import Dict, List
 
-import FreeCAD as App
-
 VERSION = "1.1.0"
 
-from freecad_utils import find_shared_edge  # noqa: E402
+from freecad_utils import find_shared_edge, get_face_coordinate_system  # noqa: E402
 from corner_geometry import classify_dihedral, classify_edge_position  # noqa: E402
-from face_geometry import compute_face_axes  # noqa: E402
-
-_AXIS_VECTORS = {
-    'x': App.Vector(1, 0, 0),
-    'y': App.Vector(0, 1, 0),
-    'z': App.Vector(0, 0, 1),
-}
-
 
 def _outward_normal(face):
     uv = face.ParameterRange
@@ -79,20 +69,13 @@ def _outward_normal(face):
 
 
 def _face_u_axis(face):
-    """(origin, u_vec, u_length) for face, via face_geometry.compute_face_axes."""
-    outer_wire = face.OuterWire
-    bbox = outer_wire.BoundBox
-    origin = App.Vector(bbox.XMin, bbox.YMin, bbox.ZMin)
-
-    pts = [v.Point for v in outer_wire.Vertexes]
-    x_range = max(p.x for p in pts) - min(p.x for p in pts)
-    y_range = max(p.y for p in pts) - min(p.y for p in pts)
-    z_range = max(p.z for p in pts) - min(p.z for p in pts)
-
-    normal = _outward_normal(face)
-    axes = compute_face_axes(x_range, y_range, z_range,
-                              (normal.x, normal.y, normal.z))
-    return origin, _AXIS_VECTORS[axes['u_axis']], axes['u_length']
+    """(origin, u_vec, u_length) for face, via
+    freecad_utils.get_face_coordinate_system -- previously an independent
+    duplicate of that same bbox/normal extraction (2026-09-14
+    consolidation)."""
+    origin, u_vec, _v_vec, _normal, u_length, _v_length, _is_horizontal = \
+        get_face_coordinate_system(face)
+    return origin, u_vec, u_length
 
 
 def find_corners(shape, face_indices: List[int],

@@ -67,9 +67,9 @@ def classify_seam(face1, face2, shared_edge):
 
     Delegates to shared/roof_geometry.classify_roof_intersection() -- a
     pure Z-coordinate-average heuristic (NOT dihedral-angle-based, despite
-    an earlier version of this docstring's claim -- dihedral angle is
-    computed separately by calculate_dihedral_angle() and never feeds this
-    classification decision, only human-readable text elsewhere) that
+    an earlier version of this docstring's claim -- the dihedral angle
+    computed elsewhere in this file, for the hip-cap profile, never feeds
+    this classification decision, only human-readable text) that
     slate_generator, standing_seam_generator, and slate_seam_generator all
     already use, instead of an independently-maintained duplicate with no
     'ambiguous' outcome of its own.

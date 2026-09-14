@@ -23,6 +23,8 @@ Version History:
 import math
 from typing import List, Tuple, Dict
 
+from roof_geometry import dihedral_radians_from_cos
+
 
 def validate_exposure(exposure: float, caller_name: str = "roof_seam_generator") -> None:
     """Raise ValueError if exposure is not strictly positive.
@@ -114,7 +116,7 @@ def calculate_hip_cap_profile(half_width: float, mat_thick: float,
 
     taper = angle_depth * mat_thick
 
-    dihed = math.acos(max(-1.0, min(1.0, cos_dihed)))
+    dihed = dihedral_radians_from_cos(cos_dihed)
     half_dihed = dihed / 2.0
     cap_lift = mat_thick * math.cos(half_dihed)
 
