@@ -740,11 +740,10 @@ class BrickProxy:
                             "starts after it. Set independently on each of "
                             "the two faces meeting at the corner (must share "
                             "matching brick params + opposite Primary). "
-                            "Supported on all bond types; english/common "
-                            "bond header courses do not yet respect the "
-                            "quoin boundary and can spatially overlap the "
-                            "real quoin brick there (see brick_geometry "
-                            "docstring).")
+                            "Supported on all bond types, including header "
+                            "courses (english/common bond's header courses "
+                            "respect the quoin boundary as of "
+                            "brick_geometry.py v6.3.0).")
             obj.LeftQuoin = False
         if not hasattr(obj, 'LeftQuoinPrimary'):
             obj.addProperty("App::PropertyBool", "LeftQuoinPrimary", grp,
