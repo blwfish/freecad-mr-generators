@@ -142,7 +142,13 @@ def find_corners(shape, face_indices: List[int],
     corners: List[Dict] = []
     ambiguous: List[Dict] = []
 
-    indices = sorted(face_indices)
+    # Dedupe: a duplicate index would otherwise compare a face to itself,
+    # trivially "sharing" every edge with itself and classifying as
+    # coplanar -- silently dropped rather than surfaced as the caller
+    # error it actually is. Deduplicating is a safe normalization (not a
+    # guess): two positions naming the same face carry no extra
+    # information to guess between.
+    indices = sorted(set(face_indices))
     for pos_a in range(len(indices)):
         for pos_b in range(pos_a + 1, len(indices)):
             i, j = indices[pos_a], indices[pos_b]

@@ -52,11 +52,14 @@ _DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES)
 # generation actually needs the font and it's still missing -- covers a
 # session where nothing triggered the load-time warning's visibility
 # (e.g. loaded before the user was looking at the console). _font_help_
-# shown_in_execute then suppresses further repeats: once the user has
-# seen it during this session's execute() calls, reprinting it on every
-# single recompute is just noise, not reinforcement (full-review finding
-# freecad-mr-generators-20260808-a0b9#42).
-_font_help_shown_in_execute = False
+# shown_for_objects then suppresses further repeats PER OBJECT: once a
+# given StationSign object has shown it once, reprinting on every single
+# recompute of THAT object is just noise, not reinforcement (full-review
+# finding freecad-mr-generators-20260808-a0b9#42) -- but a document with
+# several font-missing sign objects still gets the warning once each,
+# since each object's own diagnostic matters (2026-09-14 fix: a single
+# shared bool meant only the very first object in a session ever saw it).
+_font_help_shown_for_objects = set()
 
 _FONT_HELP = (
     "StationSignProxy: the C&O prototype font 'Station-font-AV-20-219.ttf' "
@@ -273,15 +276,15 @@ class StationSignProxy:
             return
         font_path = resolve_font_path(str(obj.FontPath), "StationSignProxy")
         if not font_path:
-            global _font_help_shown_in_execute
-            if not _font_help_shown_in_execute:
+            obj_key = f"{obj.Document.Name}/{obj.Name}"
+            if obj_key not in _font_help_shown_for_objects:
                 # Reinforces the load-time warning at the moment generation
                 # actually needs the font -- a user who skipped past that
                 # message still gets told why their sign looks wrong (or
-                # didn't generate). Shown once per session from here, not
-                # on every recompute -- see _FONT_HELP's own comment.
+                # didn't generate). Shown once per object, not on every
+                # recompute -- see _FONT_HELP's own comment.
                 App.Console.PrintWarning(_FONT_HELP + "\n")
-                _font_help_shown_in_execute = True
+                _font_help_shown_for_objects.add(obj_key)
         had_shape = obj.Shape is not None and not obj.Shape.isNull()
         try:
             shape, w, h = generate_sign_shape(

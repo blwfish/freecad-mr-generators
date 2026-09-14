@@ -179,6 +179,35 @@ class TestFindCornersRealBuilding:
         assert frozenset((building['s_pier'], building['n_pier'])) not in found_pairs
 
 
+class TestFindCornersDuplicateIndices:
+    """Regression test for a code-review finding (2026-09-14): a literal
+    duplicate index in face_indices used to compare a face to itself,
+    silently classifying as 'coplanar' and dropping it rather than
+    surfacing the malformed input. find_corners now dedupes instead."""
+
+    def test_duplicate_index_does_not_change_result(self, building):
+        # Compare on face_a/face_b/edge classification only -- each call
+        # to find_corners constructs fresh Part.Edge wrapper objects, so
+        # the 'edge' field is never == across two separate calls even for
+        # identical geometry (Part.Edge has no value equality).
+        def _key(result):
+            return sorted(
+                (c['face_a'], c['face_b'], c['face_a_edge'], c['face_b_edge'])
+                for c in result['corners']
+            )
+
+        indices = [building[k] for k in ('south', 'west', 'north', 's_pier', 'n_pier')]
+        clean = find_corners(building['shape'], indices)
+        with_dupe = find_corners(building['shape'], indices + [building['south']])
+        assert _key(with_dupe) == _key(clean)
+        assert with_dupe['ambiguous'] == clean['ambiguous']
+
+    def test_all_duplicates_of_one_face_finds_no_corners(self, building):
+        south = building['south']
+        result = find_corners(building['shape'], [south, south, south])
+        assert result == {'corners': [], 'ambiguous': []}
+
+
 class TestAssignPrimary:
     def test_lower_index_is_primary(self, building):
         indices = [building[k] for k in ('south', 'west', 'north', 's_pier', 'n_pier')]
