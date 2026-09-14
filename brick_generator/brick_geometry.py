@@ -1,5 +1,5 @@
 """
-Brick Geometry Generator Library v5.1.0
+Brick Geometry Generator Library v6.1.0
 
 Pure Python geometry generation for parametric brick walls.
 No FreeCAD dependencies - designed for testing and reuse.
@@ -12,8 +12,63 @@ Supported bond patterns:
 
 Returns lists of brick definitions ready for FreeCAD instantiation or other use.
 
-Version: 5.2.0
-Date: 2026-09-13
+Version: 6.1.0
+Date: 2026-09-14
+  6.1.0: Added topo_eps()/clamp_brick_to_segment() -- the pure-math half of
+         a performance fix to brick_proxy.py's _create_mortar_grid, which
+         used to boolean-intersect (Part.Shape.common()) every brick
+         against face_slab to clip the deliberate overflow this module's
+         course generation produces (TOPO_EPS nudges, the +2-course V
+         overflow, stretcher bond's plain-path overflow). Measured: 801s
+         for one 756-brick wall's mortar cut, vs 2.9s with no boolean
+         intersection at all. Since every brick's position is exact
+         arithmetic, clipping it to a boundary doesn't need OCCT --
+         clamp_brick_to_segment() does it numerically instead, so
+         brick_proxy.py's final mortar cut is a plain
+         face_slab.cut(brick_compound) with no .common() call at any
+         brick count. topo_eps() also consolidates the TOPO_EPS = mortar
+         * 0.1 formula that was previously hand-copied at two separate
+         call sites in this file into one canonical function. No change
+         to course-generation output -- this only affects how the
+         resulting overflow gets clipped downstream.
+  6.0.0: Dual-quoin (both left_quoin AND right_quoin on one wall) now works
+         on every bond type, not just flemish -- confirmed live that any
+         multi-wall building has at least one wall needing dual-quoin (a
+         middle wall between two real corners), so restricting that to one
+         bond was a basic capability gap. Enabled by two bug fixes to
+         quoin-adjacent closer sizing, both confirmed live against a real
+         building before and after:
+         - New _fit_run_between_boundaries()/_emit_bounded_run(), replacing
+           the old _calculate_course_layout() (removed -- fully subsumed):
+           generalizes its symmetric two-closer algebra to two independent,
+           arbitrary boundaries (a quoin's own _quoin_fill_start/_end, not
+           just a plain wall edge), bounded to [min_closer, max_closer]
+           instead of relying entirely on downstream OCCT clipping.
+           Previously stretcher/common/english's quoin-adjacent fill had
+           NO closer sizing at all when left_quoin was set (or right_quoin
+           standalone, via the mirror trick) -- confirmed live: ~0.27-
+           0.36mm slivers on every course of both a demo building's door
+           piers. English bond's header courses additionally never
+           consulted quoin state at all (a previously-undocumented
+           instance of the same gap), now fixed as a side effect of the
+           same change.
+         - _generate_flemish_bond's dual-quoin closer had a minimum bound
+           only, no maximum -- confirmed live: 3.82mm/5.05mm closers
+           (bigger than a full 2.32mm stretcher brick) on a real
+           28.0276mm wall. A shared-n search bounding both course parities
+           together was tried and confirmed ineffective (n only moves in
+           whole stretcher+header pairs, a step too coarse to always land
+           in a tight window); the actual fix inserts one extra single
+           brick per-course when that course's own closer would exceed
+           max(S,H)+m, shrinking it by that brick's width+mortar -- a
+           half-pair-granularity adjustment the shared-n search can't
+           reach. Brought the same real wall's closer down to a uniform
+           2.62mm. Documented residual limitation: for some wall-width/
+           brick-size combinations the per-step swing between candidate
+           brick counts can still exceed any reasonably tight bound with
+           no single-brick insertion able to close the gap; the fix falls
+           back to the original (larger but still valid) closer rather
+           than raising in that case.
   5.2.0: right_quoin no longer requires left_quoin=True or flemish bond --
          a standalone right-edge quoin on any bond is built by generating
          the mirror-image left_quoin problem and reflecting every brick's
@@ -39,7 +94,7 @@ Date: 2026-09-13
          FreeCAD, and that call stays in the proxy.
 """
 
-__version__ = "5.2.0"
+__version__ = "6.1.0"
 
 import math
 from typing import List, Dict, Tuple, NamedTuple, Set
@@ -131,6 +186,127 @@ def resolve_quoin_flags_for_face(
 from face_geometry import compute_face_axes  # noqa: E402,F401
 
 
+# =============================================================================
+# Mortar-grid boundary clamping (pure logic, used by brick_proxy.py's
+# _create_mortar_grid)
+# =============================================================================
+# BrickGeometry deliberately builds bricks that overflow a wall's real
+# boundary in several ways (TOPO_EPS nudges, the +2-course V overflow,
+# stretcher bond's plain-path overflow -- see _emit_bounded_run/
+# _generate_flemish_bond docstrings) so that OCCT's mortar-grid cut never
+# sees a brick edge exactly coincident with the wall's own face_slab
+# boundary (a real, previously-hit OCCT crash). brick_proxy.py used to
+# reconcile this by boolean-intersecting every brick against face_slab
+# (Part.Shape.common()) before cutting -- correct, but catastrophically
+# slow (measured: 801s for one 756-brick wall) since boolean intersection
+# is by far OCCT's most expensive operation at this shape count.
+# clamp_brick_to_segment() replaces that: since every brick's position is
+# exact, known arithmetic, the same "clip to boundary" question has a
+# pure-Python answer that needs no OCCT geometry at all -- brick_proxy.py
+# now clamps every BrickDef's numbers to its own segment's bounds before
+# building any OCCT solid, so the final mortar cut is a plain
+# face_slab.cut(brick_compound) with no boolean-intersection step at any
+# brick count.
+
+TOPO_EPS_FACTOR = 0.1
+
+
+def topo_eps(mortar: float) -> float:
+    """The nudge used throughout this module to push a boundary-adjacent
+    brick edge past (never exactly onto) a real wall edge, avoiding an
+    OCCT coincident-face crash. Single source of truth for this constant
+    -- see _emit_bounded_run/_generate_flemish_bond for its original uses,
+    and clamp_brick_to_segment below for its newest one."""
+    return mortar * TOPO_EPS_FACTOR
+
+
+def clamp_brick_to_segment(bd: BrickDef, seg_width: float, v_length: float,
+                            eps: float):
+    """
+    Shrink `bd`'s (u, width)/(v, height) to fit within
+    [0, seg_width] x [0, v_length], nudging any clamped edge `eps` inward
+    (never exactly to the boundary).
+
+    BrickGeometry's course-generation deliberately lets bricks overflow a
+    wall's real edge (see this section's own docstring above) on the
+    understanding that *something* will clip them back before they reach
+    a final OCCT boolean. This is that "something," done analytically
+    instead of via an OCCT boolean intersection -- a fully-interior brick
+    (the common case) is returned unchanged; only a brick whose (u, v)
+    extent actually exceeds the segment's bounds is modified, and only on
+    the side(s) that overflow.
+
+    Some generated bricks don't just overflow a boundary -- they land
+    ENTIRELY outside it (zero overlap with [0, seg_width] x [0,
+    v_length]), not merely poking past one edge. This is expected, not a
+    bug in the caller: BrickGeometry's own "+2 extra courses" V-direction
+    buffer and stretcher bond's plain-tiling loop tail both deliberately
+    over-generate past what a wall could ever use. Clamping such a brick
+    would produce a negative-size result (its far edge, once clamped,
+    lands before its near edge); there is nothing to clip, so this
+    function returns None for it instead -- the caller should drop it
+    from the brick list entirely.
+
+    The `eps` inward nudge on a clamped (but still overlapping) edge
+    matters for the same reason the overflow existed in the first place:
+    landing the clamped edge EXACTLY on the boundary would make it
+    exactly coincident with face_slab's own edge in the eventual OCCT cut
+    -- precisely the crash this module's TOPO_EPS convention exists to
+    avoid (see topo_eps() above). Pass topo_eps(mortar) for `eps` to reuse
+    that same convention rather than a second hand-picked value.
+
+    Returns:
+        A new BrickDef clamped to the segment, or None if `bd` has zero
+        overlap with [0, seg_width] x [0, v_length] (drop it).
+
+    Raises:
+        ValueError: `bd` overlaps the segment but clamping still produced
+        a non-positive width or height -- the segment is too narrow for
+        this brick/mortar combination to ever fit, regardless of clipping
+        (a real infeasibility, distinct from the "no overlap at all"
+        drop-it case above).
+    """
+    u0, u1 = bd.u, bd.u + bd.width
+    v0, v1 = bd.v, bd.v + bd.height
+    if u0 >= seg_width or u1 <= 0 or v0 >= v_length or v1 <= 0:
+        return None
+
+    # Each axis is only touched (and its width/height only recomputed via
+    # subtraction) if that axis actually overflows -- keeping the untouched
+    # axis's original float value exactly, rather than reconstructing it
+    # via (end - start) arithmetic that can reintroduce a bit of float
+    # noise even when the value doesn't conceptually change.
+    new_u, new_width = bd.u, bd.width
+    u_start, u_end = bd.u, bd.u + bd.width
+    u_changed = False
+    if u_start < 0:
+        u_start, u_changed = eps, True
+    if u_end > seg_width:
+        u_end, u_changed = seg_width - eps, True
+    if u_changed:
+        new_u, new_width = u_start, u_end - u_start
+
+    new_v, new_height = bd.v, bd.height
+    v_start, v_end = bd.v, bd.v + bd.height
+    v_changed = False
+    if v_start < 0:
+        v_start, v_changed = eps, True
+    if v_end > v_length:
+        v_end, v_changed = v_length - eps, True
+    if v_changed:
+        new_v, new_height = v_start, v_end - v_start
+
+    if new_width <= 0 or new_height <= 0:
+        raise ValueError(
+            f"clamping brick (u={bd.u:.4f}, width={bd.width:.4f}, "
+            f"v={bd.v:.4f}, height={bd.height:.4f}) to segment "
+            f"{seg_width:.4f} x {v_length:.4f} produced a non-positive "
+            f"size -- segment too narrow for this brick/mortar combination")
+    if not u_changed and not v_changed:
+        return bd
+    return bd._replace(u=new_u, width=new_width, v=new_v, height=new_height)
+
+
 class BrickGeometry:
     """
     Generates brick wall geometry for a rectangular wall face.
@@ -205,16 +381,19 @@ class BrickGeometry:
         if self.bond_type == 'common' and common_bond_count < 1:
             raise ValueError("common_bond_count must be at least 1")
 
-        # Only the dual-quoin-simultaneously case (both edges quoined on one
-        # wall) is flemish-only -- that's the only path with real bespoke
-        # meet-in-the-middle math (_generate_flemish_bond's worst_right_reserve
-        # search). A standalone right_quoin (left_quoin=False) is handled by
-        # generate() via the mirror trick, on any bond type.
-        if self.left_quoin and self.right_quoin and self.bond_type != 'flemish':
-            raise ValueError(
-                "left_quoin and right_quoin together (a wall spanning two "
-                "quoin corners) is only implemented for flemish bond")
-        
+        # Dual-quoin (both edges quoined on one wall) now works on every
+        # bond type: stretcher/common/english route both quoin boundaries
+        # through _fit_run_between_boundaries/_emit_bounded_run (their
+        # left_quoin branch already computes _quoin_fill_end via
+        # right_quoin's own state, needing no special-casing for "both");
+        # flemish keeps its bespoke meet-in-the-middle search
+        # (_generate_flemish_bond's worst_right_reserve) since its
+        # alternating-type structure isn't a fit for the shared
+        # single-brick-type helper. Previously flemish-only -- any
+        # multi-wall building has at least one wall needing dual-quoin (a
+        # middle wall between two real corners), so restricting that to one
+        # bond type was a basic capability gap, not an edge case.
+
         # Pre-calculate spacing
         self.stretcher_spacing_u = brick_width + mortar
         self.header_spacing_u = brick_depth + mortar
@@ -257,69 +436,185 @@ class BrickGeometry:
         quoin_w = self.stretcher_width if this_face_is_stretcher else self.header_width
         return self.u_length - quoin_w - self.mortar
 
-    def _calculate_course_layout(self, wall_width: float, brick_width: float) -> Tuple[int, float]:
+    def _fit_run_between_boundaries(
+            self, left_boundary: float, right_boundary: float,
+            brick_width: float, target_left_closer: float = None,
+            max_closer: float = None) -> Tuple[int, float, float]:
         """
-        Calculate how many whole bricks fit in a course and the closer width needed.
+        Fit N repeating bricks of one width between two arbitrary boundaries
+        (0/u_length for a plain wall edge, or a quoin's _quoin_fill_start/
+        _quoin_fill_end for a quoin edge), with a closer at each end.
 
-        For a wall of given width, calculates how many whole bricks fit and what
-        size queen closer bricks are needed at each end to fill the remaining space.
+        Generalizes _calculate_course_layout's symmetric two-closer algebra
+        to two independent boundaries -- a dual quoin (both ends quoined) is
+        then just "both boundaries happen to be quoin-shaped instead of one
+        being a plain wall edge," not a separate problem.
+
+        Layout: left_closer + mortar + [brick + mortar] * n + right_closer
+        spans exactly (right_boundary - left_boundary). With
+        target_left_closer=None and max_closer=None, this reduces to
+        EXACTLY _calculate_course_layout's own search and even split (same
+        reduction loop, same floor-at-0 fallback) -- verified by
+        TestFitRunBetweenBoundaries's equivalence sweep. That fallback (a
+        single n=1 course relying entirely on downstream OCCT clipping) only
+        applies when max_closer is None; a bounded caller that hits genuine
+        infeasibility raises ValueError instead (see below), matching the
+        existing dual-quoin infeasibility precedent rather than silently
+        emitting an out-of-bounds closer.
 
         Args:
-            wall_width: Width of the wall (mm)
-            brick_width: Width of the brick type being laid (stretcher or header width)
+            left_boundary, right_boundary: u-coordinates the fill must span
+                between (right_boundary > left_boundary).
+            brick_width: width of the single repeated brick type.
+            target_left_closer: if given, bias the leftover split toward
+                this left-closer value (clamped into whatever range keeps
+                both closers in bounds) instead of always splitting evenly
+                -- lets a caller preserve a course-parity stagger offset
+                (e.g. running bond's half-brick alternation) through the
+                switch from raw tile-and-clip to bounded fitting.
+            max_closer: if given, neither closer may exceed this. When the
+                naturally-selected n would produce an oversized closer,
+                more brick+mortar pairs are added until both closers fit in
+                [min_closer, max_closer], where min_closer = mortar * 2
+                (the existing convention). Feasibility requires
+                max_closer >= min_closer + (brick_width + mortar) / 2 --
+                true by a wide margin for every real brick/mortar ratio;
+                raises ValueError on genuine infeasibility (a pathological
+                brick/mortar ratio, or a boundary span too narrow for even
+                one brick between two bounded closers) rather than emitting
+                a closer outside the requested bounds.
 
         Returns:
-            Tuple of (n_whole_bricks, closer_width)
-            - n_whole_bricks: Number of full-size bricks in the middle
-            - closer_width: Width of queen closer bricks at each end (same on both sides)
-
-        Narrow-wall fallback: for a wall too narrow to fit even one whole
-        brick plus two minimum-size closers, the reduction loop below
-        bottoms out at n_bricks=1 (its own `n_bricks > 1` guard prevents
-        going lower) and closer_width can still come out negative; the
-        final clamp below floors it at 0. This produces a single course
-        with zero-width "closers" -- geometrically a single brick relying
-        entirely on downstream OCCT clipping against the wall boundary,
-        the same over-generate-then-clip pattern this module uses
-        throughout (contrast with the flemish dual-quoin path, which
-        documents this same fallback shape explicitly at its own call
-        site). See TestCalculateCourseLayoutNarrowWall in
-        tests/test_brick_geometry.py for the exact boundary behavior.
+            (n_bricks, left_closer, right_closer)
         """
+        span = right_boundary - left_boundary
+        m = self.mortar
+        min_closer = m * 2
+
+        def leftover_for(n):
+            return span - n * brick_width - (n + 1) * m
+
+        spacing = brick_width + m
+        n = int((span + m) / spacing)
+        if n < 1:
+            n = 1
+
+        leftover = leftover_for(n)
+        while leftover < 2 * min_closer and n > 1:
+            n -= 1
+            leftover = leftover_for(n)
+
+        if max_closer is not None:
+            while leftover > 2 * max_closer:
+                n += 1
+                leftover = leftover_for(n)
+                if leftover < 2 * min_closer:
+                    raise ValueError(
+                        f"Cannot fit brick_width={brick_width} between "
+                        f"boundaries spanning {span:.4f}mm with both "
+                        f"closers bounded to [{min_closer:.4f}, "
+                        f"{max_closer:.4f}]: no course count satisfies "
+                        f"both bounds.")
+
+        if leftover < 0:
+            # Unbounded (max_closer=None) narrow-span fallback, matching
+            # _calculate_course_layout's own floor-at-0 -- a bounded caller
+            # can never reach here (it would have raised above instead).
+            leftover = 0
+            n = max(n, 1)
+
+        if target_left_closer is None:
+            left_closer = leftover / 2.0
+        else:
+            hi = min(leftover, max_closer) if max_closer is not None else leftover
+            lo = max(0.0, leftover - hi)
+            if 0 < lo < min_closer:
+                # `lo` is the smallest left_closer that keeps right_closer
+                # within max_closer -- but a positive value below
+                # min_closer is itself a sliver (the exact bug this
+                # function exists to prevent). Bumping it up to min_closer
+                # is always safe here: leftover >= 2*min_closer is already
+                # guaranteed by the reduction loop above, so
+                # right_closer = leftover - min_closer >= min_closer too.
+                lo = min_closer
+            left_closer = min(max(target_left_closer, lo), hi)
+        right_closer = leftover - left_closer
+
+        return n, left_closer, right_closer
+
+    def _emit_bounded_run(self, v: float, course: int, left_boundary: float,
+                           right_boundary: float, brick_width: float,
+                           brick_type: str, left_is_real_edge: bool,
+                           right_is_real_edge: bool,
+                           target_left_closer: float = 0.0,
+                           max_closer: float = None) -> List['BrickDef']:
+        """
+        Build one course's BrickDefs for a run of `brick_type` bricks
+        between two boundaries, via _fit_run_between_boundaries.
+
+        target_left_closer=0.0 (the quoin-adjacent default): never insert a
+        closer right at a quoin boundary (a real masonry quoin's own width
+        already occupies its edge; a left closer only appears here if
+        leftover would otherwise force the right closer past max_closer).
+        Callers with two plain (non-quoin) boundaries should pass
+        target_left_closer=None for an even split instead.
+
+        max_closer bounds both closers to a whole brick's width by default
+        for quoin-adjacent callers (this session's confirmed-live
+        oversized-closer bug); plain-wall callers needing bit-for-bit
+        equivalence with the old (unbounded) behavior should pass
+        max_closer=None explicitly.
+
+        left_is_real_edge/right_is_real_edge: True when that boundary is
+        the actual wall edge, not an internal quoin reservation -- nudges
+        that closer past the edge by TOPO_EPS (mortar * 0.1, matching
+        _generate_flemish_bond's identical convention) so brick_proxy.py's
+        mortar-grid cut never sees a boundary face exactly coincident with
+        face_slab's.
+        """
+        n, left_closer, right_closer = self._fit_run_between_boundaries(
+            left_boundary, right_boundary, brick_width,
+            target_left_closer=target_left_closer, max_closer=max_closer)
+        eps = topo_eps(self.mortar)
+        if left_is_real_edge and left_closer > 0:
+            left_closer += eps
+            left_boundary -= eps
+        if right_is_real_edge:
+            right_closer += eps
+
+        bricks = []
+        u = left_boundary
+        if left_closer > 0:
+            bricks.append(BrickDef(
+                index=0, u=u, v=v, course=course,
+                brick_type='closer', width=left_closer,
+                height=self.brick_height, depth=self.skin_depth,
+            ))
+        # Always consume the closer's mortar-gap slot, even when left_closer
+        # is exactly 0 (no BrickDef emitted) -- _fit_run_between_boundaries'
+        # leftover formula structurally reserves (n+1) mortars regardless of
+        # whether the left closer ends up 0 or positive (it can't know in
+        # advance which, since target_left_closer is only a bias, not a
+        # guarantee). Skipping this advance when left_closer==0 left the
+        # whole run exactly one mortar short of right_boundary -- confirmed
+        # live via TestStandaloneRightQuoinBoundaryOverflow before this fix.
+        u += left_closer + self.mortar
         spacing = brick_width + self.mortar
+        for _ in range(n):
+            bricks.append(BrickDef(
+                index=0, u=u, v=v, course=course,
+                brick_type=brick_type, width=brick_width,
+                height=self.brick_height, depth=self.skin_depth,
+            ))
+            u += spacing
+        if right_closer > 0:
+            bricks.append(BrickDef(
+                index=0, u=u, v=v, course=course,
+                brick_type='closer', width=right_closer,
+                height=self.brick_height, depth=self.skin_depth,
+            ))
+        return bricks
 
-        # Calculate whole bricks that fit
-        # Layout: closer + mortar + [brick + mortar] * n + closer
-        # wall_width = 2 * closer + mortar + n * (brick + mortar)
-        # Solving for n: n = (wall_width - 2*closer - mortar) / spacing
-
-        # Start by seeing how many whole bricks fit if we use the remaining space for closers
-        n_bricks = int((wall_width + self.mortar) / spacing)
-        if n_bricks < 1:
-            n_bricks = 1
-
-        # Width used by whole bricks with mortar between them
-        used_width = n_bricks * brick_width + (n_bricks - 1) * self.mortar
-
-        # Leftover space for closers (split between both ends)
-        # We need mortar on each side of the closer too
-        leftover = wall_width - used_width - 2 * self.mortar
-        closer_width = leftover / 2.0
-
-        # If closer would be negative or very small, reduce brick count
-        min_closer = self.mortar * 2  # Minimum practical closer width
-        while closer_width < min_closer and n_bricks > 1:
-            n_bricks -= 1
-            used_width = n_bricks * brick_width + (n_bricks - 1) * self.mortar
-            leftover = wall_width - used_width - 2 * self.mortar
-            closer_width = leftover / 2.0
-
-        # Ensure closer is at least 0
-        if closer_width < 0:
-            closer_width = 0
-
-        return (n_bricks, closer_width)
-        
     def generate(self) -> Dict:
         """
         Generate complete brick layout.
@@ -397,9 +692,18 @@ class BrickGeometry:
         Each course offset by half brick width.
         All bricks are stretchers.
 
-        With left_quoin=True the quoin column occupies [0, quoin_width]; fill
-        tiles from quoin_width + mortar rightward, overflowing the right edge
-        for OCCT to clip.
+        With left_quoin=True (right_quoin can only be True together with
+        left_quoin here -- generate()'s dispatch routes a standalone
+        right_quoin through the mirror trick before reaching this method):
+        the run starts flush after the quoin (target_left_closer=0.0,
+        matching the established quoin convention of never inserting a
+        closer right at the quoin itself) and is bounded to
+        [min_closer, brick_width] via _fit_run_between_boundaries -- for a
+        single quoin the far boundary is the real wall edge
+        (_quoin_fill_end returns u_length when right_quoin=False); for a
+        dual quoin it's the second quoin's own boundary. No plain-wall
+        behavior change: without any quoin this still overflows both edges
+        for OCCT to clip, exactly as before.
         """
         bricks = []
 
@@ -407,10 +711,23 @@ class BrickGeometry:
             v = course * self.course_spacing_v
 
             if self.left_quoin:
-                u = self._quoin_fill_start(course)
-            else:
-                offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
-                u = offset - self.stretcher_spacing_u  # Start before wall edge
+                # _quoin_fill_start already includes the mortar gap after
+                # the quoin; subtract it back out since _emit_bounded_run's
+                # own leftover formula unconditionally reserves that same
+                # gap (whether or not a left closer ends up emitted) --
+                # passing quoin_fill_start directly double-counts it and
+                # leaves the whole run one mortar short of right_boundary
+                # (confirmed live via TestStandaloneRightQuoinBoundaryOverflow).
+                bricks.extend(self._emit_bounded_run(
+                    v, course, self._quoin_fill_start(course) - self.mortar,
+                    self._quoin_fill_end(course), self.brick_width,
+                    'stretcher', left_is_real_edge=False,
+                    right_is_real_edge=not self.right_quoin,
+                    max_closer=self.brick_width))
+                continue
+
+            offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
+            u = offset - self.stretcher_spacing_u  # Start before wall edge
 
             while u < self.u_length + self.stretcher_spacing_u:
                 bricks.append(BrickDef(
@@ -425,7 +742,7 @@ class BrickGeometry:
                 u += self.stretcher_spacing_u
 
         return bricks
-    
+
     def _generate_english_bond(self) -> List[BrickDef]:
         """
         English Bond with proper queen closers.
@@ -436,117 +753,40 @@ class BrickGeometry:
 
         The closers ensure the pattern fits exactly within the wall width.
         Headers are positioned to center over the joints between stretchers below.
+
+        With left_quoin: both stretcher AND header courses are bounded
+        between the quoin and the far boundary via _fit_run_between_boundaries
+        (previously only stretcher courses had ANY quoin awareness at all --
+        header courses ignored left_quoin/right_quoin entirely, a
+        previously-undocumented gap fixed here as a side effect of the same
+        change). Without any quoin, both course types keep their previous
+        (unbounded, symmetric two-closer) behavior -- verified equivalent to
+        the old _calculate_course_layout-based computation.
         """
         bricks = []
-
-        # Calculate layouts for both course types
-        n_stretchers, stretcher_closer = self._calculate_course_layout(
-            self.u_length, self.stretcher_width
-        )
-        n_headers, header_closer = self._calculate_course_layout(
-            self.u_length, self.header_width
-        )
-
-        # TOPO_EPS: same coincident-face overflow fix as _generate_flemish_bond.
-        # English bond closers also sum exactly to wall width; add a small overflow
-        # so common() in _create_mortar_grid never sees coincident boundary faces.
-        TOPO_EPS = self.mortar * 0.1
-        stretcher_closer += TOPO_EPS
-        header_closer += TOPO_EPS
 
         for course in range(self.num_courses):
             v = course * self.course_spacing_v
             is_header_course = (course % 2) == 1
+            width = self.header_width if is_header_course else self.stretcher_width
+            brick_type = 'header' if is_header_course else 'stretcher'
 
-            if is_header_course:
-                # Header course
-                # Layout: closer + mortar + header + mortar + ... + header + mortar + closer
-
-                u = -TOPO_EPS  # start slightly before left wall edge
-
-                # Left closer (if any)
-                if header_closer > 0:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='closer',
-                        width=header_closer,
-                        height=self.brick_height,
-                        depth=self.skin_depth  # Same surface depth as stretchers
-                    )
-                    bricks.append(brick)
-                    u += header_closer + self.mortar
-
-                # Full headers
-                for i in range(n_headers):
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='header',
-                        width=self.header_width,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
-                    u += self.header_width + self.mortar
-
-                # Right closer (if any)
-                if header_closer > 0:
-                    brick = BrickDef(
-                        index=0,
-                        u=u,
-                        v=v,
-                        course=course,
-                        brick_type='closer',
-                        width=header_closer,
-                        height=self.brick_height,
-                        depth=self.skin_depth
-                    )
-                    bricks.append(brick)
-
+            if self.left_quoin:
+                # See _generate_stretcher_bond's comment on the same
+                # -self.mortar adjustment.
+                bricks.extend(self._emit_bounded_run(
+                    v, course, self._quoin_fill_start(course) - self.mortar,
+                    self._quoin_fill_end(course), width, brick_type,
+                    left_is_real_edge=False, right_is_real_edge=not self.right_quoin,
+                    max_closer=width))
             else:
-                # Stretcher course.
-                # With left_quoin: skip left closer; tile from quoin edge rightward.
-                if self.left_quoin:
-                    u = self._quoin_fill_start(course)
-                    while u < self.u_length + self.stretcher_spacing_u:
-                        bricks.append(BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='stretcher',
-                            width=self.stretcher_width,
-                            height=self.brick_height,
-                            depth=self.skin_depth,
-                        ))
-                        u += self.stretcher_spacing_u
-                else:
-                    u = -TOPO_EPS
-                    if stretcher_closer > 0:
-                        bricks.append(BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='closer', width=stretcher_closer,
-                            height=self.brick_height, depth=self.skin_depth,
-                        ))
-                        u += stretcher_closer + self.mortar
-                    for i in range(n_stretchers):
-                        bricks.append(BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='stretcher', width=self.stretcher_width,
-                            height=self.brick_height, depth=self.skin_depth,
-                        ))
-                        u += self.stretcher_width + self.mortar
-                    if stretcher_closer > 0:
-                        bricks.append(BrickDef(
-                            index=0, u=u, v=v, course=course,
-                            brick_type='closer', width=stretcher_closer,
-                            height=self.brick_height, depth=self.skin_depth,
-                        ))
+                bricks.extend(self._emit_bounded_run(
+                    v, course, 0.0, self.u_length, width, brick_type,
+                    left_is_real_edge=True, right_is_real_edge=True,
+                    target_left_closer=None, max_closer=None))
 
         return bricks
-    
+
     def _generate_flemish_bond(self) -> List[BrickDef]:
         """
         Flemish Bond with queen closers.
@@ -581,7 +821,7 @@ class BrickGeometry:
         m = self.mortar
         W = self.u_length
         min_closer = m * 2
-        TOPO_EPS = m * 0.1
+        TOPO_EPS = topo_eps(m)
 
         if self.left_quoin:
             # Quoin handles the left edge; the right edge is either the real
@@ -650,6 +890,33 @@ class BrickGeometry:
                     # (base_C - R - m) across course parities and primary/W
                     # combinations before this refactor landed.
                     C_right = self._quoin_fill_end(course) - u
+
+                    # Bound the closer's upper size: without this, C_right
+                    # can end up bigger than a full stretcher brick (3.82mm/
+                    # 5.05mm confirmed live on a real 28.0276mm wall with
+                    # brick_width=2.32) -- n is shared across both course
+                    # parities (by design, for a uniform alternating count),
+                    # but each parity's ACTUAL reservation varies with its
+                    # own quoin width, so the leftover this shared n produces
+                    # isn't itself bounded. Rather than search for a
+                    # different global n (tried and confirmed ineffective --
+                    # n only moves in whole stretcher+header PAIRS, a step
+                    # of S+H+2m, which can jump straight over any reasonably
+                    # tight window), insert ONE more single `other_type`
+                    # brick on just this course when its own closer is
+                    # oversized, shrinking it by that brick's own width -- a
+                    # half-pair-granularity adjustment the shared-n search
+                    # can't reach. Skipped if it would drop the closer below
+                    # min_closer (a genuinely narrow case where the plain
+                    # oversized closer is the only valid option).
+                    if C_right > max(S, H) + m:
+                        shrunk = C_right - (other_w + m)
+                        if shrunk >= min_closer:
+                            bricks.append(BrickDef(0, u, v, course,
+                                                   other_type, other_w,
+                                                   self.brick_height, self.skin_depth))
+                            u += other_w + m
+                            C_right = shrunk
                 else:
                     C_right = base_C + TOPO_EPS  # push right edge slightly past wall boundary
 
@@ -722,9 +989,11 @@ class BrickGeometry:
         Common Bond: N stretcher courses then 1 header course, repeating.
         N = self.common_bond_count.
 
-        With left_quoin: stretcher courses start from the quoin fill offset;
-        header courses run full-width (quoin treatment for header courses is
-        deferred to a future version).
+        With left_quoin: stretcher courses are bounded between the quoin and
+        the far boundary via _fit_run_between_boundaries (same convention as
+        _generate_stretcher_bond -- see its docstring). Header courses run
+        full-width (quoin treatment for header courses is deferred to a
+        future version -- pre-existing, documented, out of scope here).
         """
         bricks = []
         course = 0
@@ -736,10 +1005,18 @@ class BrickGeometry:
                     break
                 v = course * self.course_spacing_v
                 if self.left_quoin:
-                    u = self._quoin_fill_start(course)
-                else:
-                    offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
-                    u = offset - self.stretcher_spacing_u
+                    # See _generate_stretcher_bond's comment on the same
+                    # -self.mortar adjustment.
+                    bricks.extend(self._emit_bounded_run(
+                        v, course, self._quoin_fill_start(course) - self.mortar,
+                        self._quoin_fill_end(course), self.brick_width,
+                        'stretcher', left_is_real_edge=False,
+                        right_is_real_edge=not self.right_quoin,
+                        max_closer=self.brick_width))
+                    course += 1
+                    continue
+                offset = (self.stretcher_spacing_u / 2) if (course % 2) else 0
+                u = offset - self.stretcher_spacing_u
                 while u < self.u_length + self.stretcher_spacing_u:
                     bricks.append(BrickDef(
                         index=0, u=u, v=v, course=course,

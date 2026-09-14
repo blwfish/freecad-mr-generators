@@ -80,6 +80,40 @@ QUOIN CORNERS (LeftQuoin / RightQuoin):
   mechanism. quoin_generator/quoin_geometry.py remains: this module still
   imports QuoinGeometry/mirror_to_right_edge from it directly.)
 
+MORTAR-GRID PERFORMANCE FIX (v7.2.0):
+  `_create_mortar_grid` used to clip every brick to face_slab via a boolean
+  intersection (Part.Shape.common()) before the final cut. Measured: 801.6
+  seconds for one 756-brick wall's mortar cut alone -- boolean intersection
+  is by far OCCT's most expensive operation at this shape count, confirmed
+  both by direct measurement and independently by domain experience. Since
+  every brick's position is exact, known arithmetic, the same "clip to the
+  boundary" question has a pure-Python answer: brick_geometry.py's new
+  clamp_brick_to_segment() shrinks each overflowing brick's numbers to its
+  own segment's real bounds (nudged slightly inward, never exactly onto
+  the boundary, for the same coincident-face-avoidance reason TOPO_EPS
+  exists) before any OCCT solid is built. The final mortar cut is now a
+  plain face_slab.cut(brick_compound) with no .common() call at any brick
+  count -- measured at 2.9 seconds for the same 756-brick wall. No change
+  to brick_geometry.py's course-generation output; only how the resulting
+  overflow gets clipped downstream.
+
+CORNER SEAM GAP FIX (v7.1.0):
+  v7.0.0's independent per-face skins each offset outward along their OWN
+  face normal. At a real 90-degree corner, two adjacent walls' normals are
+  perpendicular, so their independently-offset skins move apart in
+  different 3D directions instead of toward each other, leaving a visible
+  gap/step between them (confirmed live via render).
+
+  Fix: at a quoin edge where THIS face is the Primary side (LeftQuoin +
+  LeftQuoinPrimary, or RightQuoin + RightQuoinPrimary), this face's own
+  boundary is widened outward by SkinDepth before the skin is built (see
+  _widen_face_boundary()) -- enough to reach the neighboring wall's own
+  proud skin at an axis-aligned 90-degree corner. The Secondary side is
+  left untouched, so there's no double-coverage between the two walls'
+  volumes. Everything downstream (_offset_face, _create_mortar_grid,
+  BrickGeometry) needs no changes: it just sees a wider face and lays
+  bricks out from the new, extended edge.
+
 This module must be importable by FreeCAD (installed alongside the macro).
 """
 
@@ -89,7 +123,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "7.0.0"
+VERSION = "7.2.0"
 GENERATOR_NAME = "brick_generator"
 
 _here = Path(__file__).parent
@@ -102,6 +136,7 @@ try:
     from brick_geometry import (
         BrickGeometry, BrickDef,
         face_index_set, find_dual_listed_faces, resolve_quoin_flags_for_face,
+        topo_eps, clamp_brick_to_segment,
     )
 except ImportError:
     _bg = None
@@ -113,6 +148,11 @@ try:
 except ImportError:
     QuoinGeometry = None
     mirror_to_right_edge = None
+
+try:
+    import face_geometry
+except ImportError:
+    face_geometry = None
 
 from freecad_utils import resolve_sources_faces
 
@@ -139,6 +179,88 @@ def _offset_face(face, normal, offset):
     wire = face.OuterWire.copy()
     wire.translate(_scale(normal, offset))
     return Part.Face(wire)
+
+
+def _widen_face_boundary(face, u_vec, v_vec, side, delta, angle_tol=5.0, edge_tol=0.01):
+    """
+    Return a Face whose OuterWire matches `face`'s, except the specific
+    wire edge running parallel to v_vec at the U extreme named by `side`
+    ('left' = minimum U, 'right' = maximum U) has its two endpoints
+    translated outward along u_vec by `delta`.
+
+    Used at a real building corner (LeftQuoin/RightQuoin set together with
+    the matching *Primary flag -- see execute()) so the proud skin built
+    from the returned face (via _offset_face) reaches the neighboring
+    wall's own skin instead of stopping short at the real edge and leaving
+    a visible gap. See this module's ARCHITECTURAL CHANGE docstring note
+    above and the project's corner-fix design ("Part 8") for the full
+    root-cause explanation: each wall's skin is offset along its OWN face
+    normal, so at a 90-degree corner the two proud skins move apart in
+    different 3D directions and never actually meet.
+
+    Only the identified edge's two vertices move; every other vertex is
+    left untouched. The wire is rebuilt from scratch via Part.makePolygon
+    from the full ordered vertex list (via OuterWire.OrderedVertexes,
+    confirmed empirically -- not assumed -- to give true wire-traversal
+    order regardless of any individual edge's own Orientation flag, unlike
+    edge.Vertexes[0]/[-1] which does NOT respect wire-traversal direction
+    for a 'Reversed' edge, as boolean-cut-derived faces commonly have)
+    rather than edited in place, so there's no dangling-vertex mismatch
+    between the moved edge and its unmoved neighbors.
+
+    Raises:
+        ValueError: the wire isn't closed or well-formed; no V-parallel
+        edge exists to widen; the widen target is ambiguous (see
+        face_geometry.select_widen_edge); or the widened result is an
+        invalid (e.g. self-intersecting) face -- checked via Face.isValid()
+        on the REBUILT FACE, not the wire (confirmed empirically: a
+        self-intersecting wire's own .isValid() still returns True; only
+        the resulting Face catches it).
+    """
+    if face_geometry is None:
+        raise ValueError("face_geometry module not found -- cannot widen face boundary")
+
+    outer_wire = face.OuterWire
+    if not outer_wire.isClosed():
+        raise ValueError("Face outer wire is not closed -- cannot widen it")
+
+    ordered_edges = outer_wire.OrderedEdges
+    ordered_points = [v.Point for v in outer_wire.OrderedVertexes]
+    n = len(ordered_points)
+    if n < 3 or len(ordered_edges) != n:
+        raise ValueError(
+            f"Outer wire has {len(ordered_edges)} edges and {n} ordered "
+            f"vertices -- not a simple closed polygon, refusing to widen it")
+
+    candidates = []
+    for i, edge in enumerate(ordered_edges):
+        if edge.Length < 0.01:
+            continue
+        try:
+            d = edge.tangentAt(edge.FirstParameter)
+            d.normalize()
+        except Exception:
+            continue
+        angle = math.degrees(math.acos(min(1.0, abs(d.dot(v_vec)))))
+        if angle < angle_tol:
+            candidates.append((i, ordered_points[i].dot(u_vec)))
+
+    edge_idx = face_geometry.select_widen_edge(candidates, side, tol=edge_tol)
+
+    offset_vec = _scale(u_vec, face_geometry.widen_offset_sign(side) * delta)
+    j = (edge_idx + 1) % n
+    new_points = list(ordered_points)
+    new_points[edge_idx] = new_points[edge_idx] + offset_vec
+    new_points[j] = new_points[j] + offset_vec
+
+    new_wire = Part.makePolygon(new_points + [new_points[0]])
+    new_face = Part.Face(new_wire)
+    if not new_face.isValid():
+        raise ValueError(
+            f"Widening the {side} boundary by {delta} produced an invalid "
+            f"(likely self-intersecting) face -- check SkinDepth against "
+            f"this face's own U extent")
+    return new_face
 
 
 _AXIS_VECTORS = {
@@ -374,7 +496,28 @@ def _create_mortar_grid(face, params):
             right_quoin=seg_right_quoin, right_quoin_primary=right_quoin_primary,
         )
         result = bg.generate()
+        # Clamp each brick to this segment's own [0, seg_w] x [0, v_length]
+        # in LOCAL coordinates, before the += seg_start offset below --
+        # BrickGeometry deliberately lets bricks overflow a real edge
+        # (TOPO_EPS, the +2-course V overflow, stretcher's plain-path
+        # overflow) on the assumption something will clip them back before
+        # the final OCCT cut; clamp_brick_to_segment does that clip
+        # analytically (no OCCT boolean intersection needed -- see its
+        # docstring and brick_geometry.py's 6.1.0 changelog for why this
+        # replaced a previous Part.Shape.common()-based clip that measured
+        # 801s for one 756-brick wall). Segment-local bounds specifically
+        # (not the whole face's global u_length) so a bay-adjacent
+        # segment's own overflow clips to ITS OWN boundary, not the far
+        # edge of the whole face.
+        eps = topo_eps(mortar)
         for bd in result['bricks']:
+            bd = clamp_brick_to_segment(bd, seg_w, v_length, eps)
+            if bd is None:
+                # Zero overlap with this segment -- one of BrickGeometry's
+                # own deliberate over-generation buffers (the +2-course V
+                # overflow, stretcher bond's plain-tiling loop tail), not
+                # a real brick. Nothing to clip; drop it.
+                continue
             all_bricks.append(BrickDef(
                 index=len(all_bricks),
                 u=bd.u + seg_start, v=bd.v,
@@ -395,6 +538,9 @@ def _create_mortar_grid(face, params):
             if seg_left_quoin:
                 side = qresult['face_a_bricks'] if left_quoin_primary else qresult['face_b_bricks']
                 for bd in side:
+                    bd = clamp_brick_to_segment(bd, seg_w, v_length, eps)
+                    if bd is None:
+                        continue
                     quoin_defs.append(BrickDef(
                         index=len(quoin_defs),
                         u=bd.u + seg_start, v=bd.v,
@@ -404,6 +550,9 @@ def _create_mortar_grid(face, params):
             if seg_right_quoin:
                 side = qresult['face_a_bricks'] if right_quoin_primary else qresult['face_b_bricks']
                 for bd in mirror_to_right_edge(side, span=seg_w):
+                    bd = clamp_brick_to_segment(bd, seg_w, v_length, eps)
+                    if bd is None:
+                        continue
                     quoin_defs.append(BrickDef(
                         index=len(quoin_defs),
                         u=bd.u + seg_start, v=bd.v,
@@ -416,20 +565,17 @@ def _create_mortar_grid(face, params):
 
     # Brick shapes — field bricks plus real quoin-column bricks, all
     # excluded from the mortar cut below (see quoin_defs comment above).
+    # Every brick is already clamped to its own segment's real bounds
+    # above, so no brick can extend past face_slab -- the cut below needs
+    # no preceding boolean-intersection clip (Part.Shape.common()) at any
+    # brick count. See brick_geometry.py's clamp_brick_to_segment and its
+    # 6.1.0 changelog entry for the full rationale/measurement.
     brick_shapes = [_create_brick_from_def(bd, origin, u_vec, v_vec, normal)
                     for bd in all_bricks + quoin_defs]
     if not brick_shapes:
         return face_slab  # no bricks → full slab (all mortar)
 
-    brick_compound = Part.Compound(brick_shapes)
-
-    # mortar_grid = face_slab - (bricks clipped to face_slab)
-    try:
-        clipped = brick_compound.common(face_slab)
-        return face_slab.cut(clipped)
-    except Exception as clip_err:
-        App.Console.PrintWarning(f"  Brick clipping failed ({clip_err}), unclipped fallback\n")
-        return face_slab.cut(brick_compound)
+    return face_slab.cut(Part.Compound(brick_shapes))
 
 
 # =============================================================================
@@ -668,6 +814,29 @@ class BrickProxy:
                 face_params['right_quoin']         = right_quoin
                 face_params['right_quoin_primary'] = right_quoin_primary
                 try:
+                    # Part 8 corner-seam-gap fix: at a real corner, widen
+                    # THIS face's own boundary outward by skin_depth on
+                    # whichever side is both a quoin edge AND this face's
+                    # Primary side -- the existing LeftQuoin/RightQuoin +
+                    # *Primary properties already encode "real corner
+                    # here" + "am I the side that should visually cover
+                    # it" (the same Primary/Secondary convention
+                    # quoin_geometry.py uses to pick which brick type wins
+                    # each course). Only the Primary side widens, so
+                    # there's no double-coverage with the untouched
+                    # Secondary wall. Everything downstream (_offset_face,
+                    # _create_mortar_grid, BrickGeometry) is unchanged --
+                    # it just sees a wider face and lays bricks out from
+                    # its new, extended edge.
+                    widen_left = left_quoin and left_quoin_primary
+                    widen_right = right_quoin and right_quoin_primary
+                    if widen_left or widen_right:
+                        _, u_vec, v_vec, _, _, _, _ = _get_face_coordinate_system(face)
+                        if widen_left:
+                            face = _widen_face_boundary(face, u_vec, v_vec, 'left', skin_depth)
+                        if widen_right:
+                            face = _widen_face_boundary(face, u_vec, v_vec, 'right', skin_depth)
+
                     outer_face = _offset_face(face, normal, skin_depth)
                     mortar_grid = _create_mortar_grid(outer_face, face_params)
 

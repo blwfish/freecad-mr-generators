@@ -10,7 +10,7 @@ import math
 from brick_geometry import (
     BrickGeometry, BrickDef,
     face_index_set, find_dual_listed_faces, resolve_quoin_flags_for_face,
-    compute_face_axes,
+    compute_face_axes, topo_eps, clamp_brick_to_segment,
 )
 from boundary_assertions import assert_overflows_boundary
 from quoin_geometry import QuoinGeometry, mirror_to_right_edge
@@ -676,35 +676,39 @@ class TestBoundaryOverflow:
                 label=f"bond={bond} u_length={u_length} course={course_idx}: ",
             )
 
-    def test_calculate_course_layout_closer_at_min_closer_boundary(self):
-        """Mutation guard for `_calculate_course_layout`'s own
-        `while closer_width < min_closer` (the shared helper english bond
-        calls) -- NOT the same boundary as the flemish-bond test below.
+    def test_fit_run_closer_at_min_closer_boundary(self):
+        """Mutation guard for `_fit_run_between_boundaries`'s own
+        `while leftover < 2 * min_closer` (the shared helper english bond,
+        stretcher bond, and common bond all call, and the successor to the
+        now-removed `_calculate_course_layout`) -- NOT the same boundary as
+        the flemish-bond test below.
 
-        This is a real, previously-confirmed surviving mutant: mutating
-        this line's `<` to `<=` and rerunning the full suite left every
-        test passing, because `_generate_flemish_bond` never calls
-        `_calculate_course_layout` at all -- it has its own, independent
-        closer-feasibility search (test_C0 >= min_closer, a different
-        operator and a different code path), so a test exercised only via
-        flemish bond (like the one below, despite its former misleading
-        name/docstring) cannot catch a mutation here (full-review finding
+        This is a real, previously-confirmed surviving mutant against the
+        predecessor function: mutating this line's `<` to `<=` and
+        rerunning the full suite left every test passing, because
+        `_generate_flemish_bond` never called `_calculate_course_layout` at
+        all -- it has its own, independent closer-feasibility search
+        (test_C0 >= min_closer, a different operator and a different code
+        path), so a test exercised only via flemish bond (like the one
+        below, despite its former misleading name/docstring) cannot catch
+        a mutation here (full-review finding
         freecad-mr-generators-20260808-a0b9#22).
 
-        Chosen so the loop's SECOND iteration lands closer_width exactly
-        at min_closer: with the correct `<`, the loop stops there
-        (n_bricks=3, closer_width=1.0); with the `<=` mutant, it reduces
-        once more (n_bricks=2, closer_width=2.25). English bond is the
-        real caller, so exercise it through that path.
+        Chosen so the loop's SECOND iteration lands leftover exactly at
+        2*min_closer: with the correct `<`, the loop stops there (n=3,
+        even-split closer=1.0); with the `<=` mutant, it reduces once more
+        (n=2, closer=2.25).
         """
         bw, m = 2.0, 0.5
         W = 10.0  # see brick_generator/tests/test_brick_geometry.py history for the derivation
         bg = BrickGeometry(u_length=W, v_length=5.0,
                            brick_width=bw, brick_height=0.65, brick_depth=bw,
                            mortar=m, bond_type='stretcher')
-        n_bricks, closer_width = bg._calculate_course_layout(W, bw)
-        assert n_bricks == 3
-        assert closer_width == pytest.approx(1.0)
+        n, left_closer, right_closer = bg._fit_run_between_boundaries(
+            0.0, W, bw, target_left_closer=None, max_closer=None)
+        assert n == 3
+        assert left_closer == pytest.approx(1.0)
+        assert right_closer == pytest.approx(1.0)
 
     def test_flemish_closer_at_min_closer_boundary(self):
         """Mutation guard for `_generate_flemish_bond`'s OWN, independent
@@ -784,73 +788,76 @@ class TestBoundaryOverflow:
                 )
 
 
-class TestCalculateCourseLayoutNarrowWallClamps:
-    """_calculate_course_layout's two defensive clamps for walls too
-    narrow to fit even one whole brick plus two minimum-size closers --
-    previously undocumented and uncovered (full-review finding
-    freecad-mr-generators-20260808-a0b9#36, #43).
+class TestFitRunBetweenBoundariesNarrowWallClamps:
+    """_fit_run_between_boundaries's narrow-span fallback (max_closer=None,
+    matching the now-removed _calculate_course_layout's own two defensive
+    clamps for spans too narrow to fit even one whole brick plus two
+    minimum-size closers -- previously undocumented and uncovered,
+    full-review finding freecad-mr-generators-20260808-a0b9#36, #43).
 
-    In this narrow-wall regime the two clamps are correlated, not
-    independent: a wall too narrow to fit `n_bricks=1` worth of spacing
-    (triggering the `n_bricks < 1 -> 1` floor) is also too narrow to leave
-    a non-negative closer (triggering the final `closer_width < 0 -> 0`
-    clamp) -- there's no wall_width that hits one without the other, so
-    both are asserted together rather than pretending they're separable.
+    In this narrow-span regime the two clamps are correlated, not
+    independent: a span too narrow to fit `n=1` worth of spacing
+    (triggering the `n < 1 -> 1` floor) is also too narrow to leave a
+    non-negative leftover (triggering the final `leftover < 0 -> 0`
+    clamp) -- there's no span that hits one without the other, so both are
+    asserted together rather than pretending they're separable.
     """
 
     BG = BrickGeometry(u_length=20.0, v_length=10.0, brick_width=2.32,
                         brick_height=0.65, brick_depth=1.09, mortar=0.11,
                         bond_type='stretcher')
 
+    def _fit(self, span, brick_width):
+        return self.BG._fit_run_between_boundaries(
+            0.0, span, brick_width, target_left_closer=None, max_closer=None)
+
     def test_wall_narrower_than_one_brick_floors_n_bricks_to_one(self):
-        # wall_width < brick_width -> int((W+m)/spacing) computes to 0
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=1.0, brick_width=2.32)
-        assert n_bricks == 1  # floored, never 0
-        assert closer_width == 0.0  # also hits the final clamp -- see class docstring
+        # span < brick_width -> int((span+m)/spacing) computes to 0
+        n, left_closer, right_closer = self._fit(1.0, 2.32)
+        assert n == 1  # floored, never 0
+        assert left_closer == 0.0  # also hits the final clamp -- see class docstring
+        assert right_closer == 0.0
 
     def test_wall_much_narrower_than_one_brick_still_floors_to_one(self):
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=0.01, brick_width=2.32)
-        assert n_bricks == 1
-        assert closer_width == 0.0
+        n, left_closer, right_closer = self._fit(0.01, 2.32)
+        assert n == 1
+        assert left_closer == 0.0
+        assert right_closer == 0.0
 
     def test_closer_width_never_negative_at_the_narrow_extreme(self):
-        # A wall narrower than even one brick's own width (not just too
+        # A span narrower than even one brick's own width (not just too
         # narrow for closers) -- leftover is deeply negative before the
         # final clamp.
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=0.5, brick_width=2.32)
-        assert closer_width >= 0.0
-        assert n_bricks == 1
+        n, left_closer, right_closer = self._fit(0.5, 2.32)
+        assert left_closer >= 0.0 and right_closer >= 0.0
+        assert n == 1
 
     def test_wall_exactly_at_brick_width_boundary(self):
-        # wall_width == brick_width: at/below/above coverage for the
-        # n_bricks<1 floor's implicit threshold.
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=2.32, brick_width=2.32)
-        assert n_bricks == 1
+        # span == brick_width: at/below/above coverage for the
+        # n<1 floor's implicit threshold.
+        n, _, _ = self._fit(2.32, 2.32)
+        assert n == 1
 
     def test_wall_just_above_brick_width_can_still_hit_final_clamp(self):
-        # Just above brick_width: n_bricks still floors to 1 via the
-        # initial int() truncation (spacing includes a mortar term the
-        # wall doesn't have room for either), and closer_width is still
-        # negative before the final clamp -- confirms the two clamps stay
+        # Just above brick_width: n still floors to 1 via the initial
+        # int() truncation (spacing includes a mortar term the span
+        # doesn't have room for either), and leftover is still negative
+        # before the final clamp -- confirms the two clamps stay
         # correlated a little past the exact brick_width boundary too.
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=2.35, brick_width=2.32)
-        assert n_bricks == 1
-        assert closer_width == 0.0
+        n, left_closer, right_closer = self._fit(2.35, 2.32)
+        assert n == 1
+        assert left_closer == 0.0
+        assert right_closer == 0.0
 
     def test_normal_wide_wall_triggers_neither_clamp(self):
-        # Sanity check: a comfortably wide wall doesn't hit either
-        # defensive clamp -- n_bricks lands above 1 via the reduction
-        # loop's own exit condition, and closer_width stays comfortably
-        # positive without needing the floor-at-0 clamp.
-        n_bricks, closer_width = self.BG._calculate_course_layout(
-            wall_width=20.0, brick_width=2.32)
-        assert n_bricks > 1
-        assert closer_width > 0.0
+        # Sanity check: a comfortably wide span doesn't hit either
+        # defensive clamp -- n lands above 1 via the reduction loop's own
+        # exit condition, and the closers stay comfortably positive
+        # without needing the floor-at-0 clamp.
+        n, left_closer, right_closer = self._fit(20.0, 2.32)
+        assert n > 1
+        assert left_closer > 0.0
+        assert right_closer > 0.0
 
 
 # =============================================================================
@@ -858,6 +865,122 @@ class TestCalculateCourseLayoutNarrowWallClamps:
 # =============================================================================
 
 HO = dict(brick_width=2.32, brick_height=0.65, brick_depth=1.09, mortar=0.11)
+
+
+class TestFitRunBetweenBoundaries:
+    """_fit_run_between_boundaries: the shared two-boundary closer-fitting
+    algorithm behind stretcher/common/english's quoin-adjacent fill and
+    (via max_closer=None) english bond's plain courses."""
+
+    BG = BrickGeometry(u_length=20.0, v_length=10.0, brick_width=2.32,
+                        brick_height=0.65, brick_depth=1.09, mortar=0.11,
+                        bond_type='stretcher')
+
+    @pytest.mark.parametrize('span', [
+        30.0,                      # round number
+        14 * 2.32 + 13 * 0.11,     # exact integer multiple of brick_width
+    ])
+    def test_symmetric_boundaries_bounded_split(self, span):
+        """max_closer=brick_width, target_left_closer=None: both closers
+        stay within [min_closer, max_closer] and sum with n bricks to
+        exactly span."""
+        bw, m = 2.32, 0.11
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            0.0, span, bw, target_left_closer=None, max_closer=bw)
+        min_closer = m * 2
+        assert min_closer - 1e-9 <= left_closer <= bw + 1e-9
+        assert min_closer - 1e-9 <= right_closer <= bw + 1e-9
+        # Reconstruct total consumed span the same way _emit_bounded_run
+        # lays it out: left_closer, mortar, n*(brick+mortar), right_closer
+        # -- holds even at n=0, since n*(bw+m) is then just 0.
+        consumed = left_closer + m + n * (bw + m) + right_closer
+        assert consumed == pytest.approx(span, abs=1e-6)
+
+    def test_single_stretcher_minimum_degenerate_but_valid(self):
+        """span = exactly one brick + two minimum mortars: leftover comes
+        out to ~0 (below min_closer) -- the same documented narrow-span
+        degenerate case _calculate_course_layout used to floor at 0, not a
+        violation of the general [min_closer, max_closer] bound (that
+        bound only applies when there's genuinely leftover space to
+        allocate)."""
+        bw, m = 2.32, 0.11
+        span = bw + 2 * m
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            0.0, span, bw, target_left_closer=None, max_closer=bw)
+        assert n == 1
+        assert left_closer == pytest.approx(0.0, abs=1e-9)
+        assert right_closer == pytest.approx(0.0, abs=1e-9)
+        consumed = left_closer + m + n * (bw + m) + right_closer
+        assert consumed == pytest.approx(span, abs=1e-6)
+
+    def test_target_left_closer_zero_biases_leftover_to_the_right(self):
+        """target_left_closer=0.0 (the quoin convention): left_closer stays
+        0 as long as the whole leftover fits within max_closer on the
+        right alone."""
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            0.0, 30.0, 2.32, target_left_closer=0.0, max_closer=10.0)
+        assert left_closer == 0.0
+        assert right_closer > 0.0
+
+    def test_target_left_closer_zero_still_splits_when_forced_by_max(self):
+        """When the full leftover would exceed max_closer on its own (here:
+        leftover=2.24 at span=14.5, but max_closer=2.0), the target=0.0
+        bias is overridden just enough to keep the right closer within
+        bounds -- never left unbounded even though 0.0 was requested."""
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            0.0, 14.5, 2.32, target_left_closer=0.0, max_closer=2.0)
+        assert left_closer == pytest.approx(0.24, abs=1e-6)
+        assert right_closer == pytest.approx(2.0, abs=1e-6)
+
+    def test_forced_left_closer_below_min_closer_bumped_up_not_left_as_sliver(self):
+        """Regression test for a real bug found live this session: when the
+        forced minimum left_closer (to keep right_closer within max_closer)
+        itself lands strictly between 0 and min_closer, it must be bumped
+        up to min_closer, not left as a sub-min_closer sliver -- exactly
+        the class of bug this function exists to prevent, but reintroduced
+        by the target_left_closer clamping logic itself. Reproduces the
+        exact boundaries from equipment-hut-demo.FCStd's West wall, course
+        0, english bond, where this originally surfaced as a 0.2076mm
+        closer (min_closer=0.22)."""
+        bw, m = 2.32, 0.11
+        min_closer = m * 2
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            1.09, 25.5976, bw, target_left_closer=0.0, max_closer=bw)
+        assert left_closer == pytest.approx(min_closer, abs=1e-9)
+        assert right_closer >= min_closer - 1e-9
+        assert right_closer <= bw + 1e-9
+
+    @pytest.mark.parametrize('max_closer,expect_raise', [
+        (2.32, False),   # a real, comfortable bound: feasible
+        (0.001, True),   # far below what any brick spacing can satisfy: infeasible
+    ])
+    def test_infeasible_max_closer_raises(self, max_closer, expect_raise):
+        if expect_raise:
+            with pytest.raises(ValueError, match='no course count satisfies'):
+                self.BG._fit_run_between_boundaries(
+                    0.0, 30.0, 2.32, target_left_closer=None, max_closer=max_closer)
+        else:
+            n, lc, rc = self.BG._fit_run_between_boundaries(
+                0.0, 30.0, 2.32, target_left_closer=None, max_closer=max_closer)
+            assert lc <= max_closer + 1e-9
+            assert rc <= max_closer + 1e-9
+
+    def test_equivalent_to_removed_calculate_course_layout_for_plain_boundaries(self):
+        """Regression-locks the exact values the now-removed
+        _calculate_course_layout produced for this exact (span, brick_width)
+        pair against self.BG's own dimensions, confirming max_closer=None +
+        target_left_closer=None is a bit-for-bit equivalent replacement for
+        english bond's plain (non-quoin) courses. (A second, differently-
+        mortared case is already covered by
+        test_fit_run_closer_at_min_closer_boundary above, using its own
+        correctly-matched BrickGeometry instance -- self.BG's fixed mortar
+        can't be reused for a case computed with a different one.)
+        """
+        n, left_closer, right_closer = self.BG._fit_run_between_boundaries(
+            0.0, 20.0, 2.32, target_left_closer=None, max_closer=None)
+        assert n == 8
+        assert left_closer == pytest.approx(0.22500000000000064)
+        assert right_closer == pytest.approx(0.22500000000000064)
 
 
 def _make_bg(bond, primary=True, W=30.0, H=20.0, **extra):
@@ -1164,21 +1287,23 @@ def _dual_narrow_threshold():
 
 
 class TestDualQuoinValidation:
-    """Constructor guards for combining left_quoin AND right_quoin on one
-    wall (a wall spanning two quoin corners) -- flemish-only, since that's
-    the only path with real bespoke meet-in-the-middle math. A *standalone*
-    right_quoin (left_quoin=False) has no such restriction -- see
-    TestStandaloneRightQuoin below."""
+    """Dual-quoin (both left_quoin AND right_quoin on one wall) now works
+    on every bond type (2026-09-13, v6.0.0) -- previously flemish-only.
+    A *standalone* right_quoin (left_quoin=False) has always had no such
+    restriction -- see TestStandaloneRightQuoin below."""
 
-    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'common'])
-    def test_dual_quoin_non_flemish_raises(self, bond):
-        with pytest.raises(ValueError, match='only implemented for flemish'):
-            BrickGeometry(u_length=30, v_length=20, bond_type=bond,
-                          left_quoin=True, right_quoin=True, **HO)
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'common', 'flemish'])
+    def test_dual_quoin_works_on_every_bond(self, bond):
+        bg = BrickGeometry(u_length=30, v_length=20, bond_type=bond,
+                            left_quoin=True, right_quoin=True, **HO)
+        bricks = bg.generate()['bricks']
+        assert len(bricks) > 0
+        assert any(b.brick_type == 'closer' for b in bricks), (
+            f"{bond}: expected at least one closer brick for a dual-quoin wall")
 
     def test_dual_quoin_flemish_unaffected(self):
-        """The combined-quoins case is unaffected by the guard-clause
-        narrowing -- flemish + both quoins must still construct cleanly."""
+        """The combined-quoins case is unaffected by the surrounding
+        refactor -- flemish + both quoins must still construct cleanly."""
         bg = BrickGeometry(u_length=30, v_length=20, bond_type='flemish',
                             left_quoin=True, right_quoin=True, **HO)
         assert len(bg.generate()['bricks']) > 0
@@ -1375,7 +1500,10 @@ class TestDualQuoinFillExclusion:
 
 
 class TestDualQuoinCloserFormula:
-    """The right closer shrinks per-course by the actual right-quoin width."""
+    """The right closer shrinks per-course by the actual right-quoin width,
+    and is additionally shrunk by one extra other_type brick+mortar whenever
+    the raw formula would exceed max(S,H)+m (the oversized-closer fix --
+    see _generate_flemish_bond's inline comment at the C_right bound check)."""
 
     def test_closer_formula_matches_right_parity(self):
         S, H, m = HO['brick_width'], HO['brick_depth'], HO['mortar']
@@ -1404,6 +1532,20 @@ class TestDualQuoinCloserFormula:
             right_is_s = (course % 2 == 0) == False  # right_primary=False
             R = S if right_is_s else H
             expected_C = base_C - R - m
+
+            # Mirror the production oversized-closer shrink exactly: one
+            # extra other_type brick (per THIS course's own left-primary-
+            # driven alternation, independent of the right-quoin parity
+            # above) is inserted whenever the raw closer exceeds
+            # max(S,H)+m, provided the shrink doesn't drop it below
+            # min_closer.
+            this_face_is_stretcher = (course % 2 == 0) == True  # left_primary=True
+            other_w = S if this_face_is_stretcher else H
+            if expected_C > max(S, H) + m:
+                shrunk = expected_C - (other_w + m)
+                if shrunk >= min_closer:
+                    expected_C = shrunk
+
             assert closer[0].width == pytest.approx(expected_C, abs=1e-6), (
                 f"course {course}: closer={closer[0].width:.6f} "
                 f"expected={expected_C:.6f}"
@@ -1495,6 +1637,31 @@ class TestDualQuoinRealWidths:
         result = bg.generate()
         for b in result['bricks']:
             assert b.width > 1e-9, f"course {b.course}: zero/negative-width brick"
+
+    def test_closer_bounded_on_the_actual_broken_west_wall_width(self):
+        """Regression test for the exact case found live this session:
+        equipment-hut-demo.FCStd's West wall, rebuilt at 28.0276mm (not the
+        27.628mm above -- the wall was rebuilt during this same session),
+        produced 3.82mm/5.05mm closers -- bigger than a full 2.32mm
+        stretcher brick -- before the oversized-closer fix. Locks the fixed
+        value (2.6176mm, verified by hand) rather than just "some bound",
+        since the fix's own bound isn't perfectly tight (see
+        _generate_flemish_bond's inline comment) and a looser assertion
+        would silently tolerate a regression back toward the old behavior."""
+        bg = BrickGeometry(
+            u_length=28.0276, v_length=20.0, bond_type='flemish',
+            left_quoin=True, left_quoin_primary=False,
+            right_quoin=True, right_quoin_primary=True, **HO,
+        )
+        result = bg.generate()
+        closers = sorted(set(round(b.width, 4) for b in result['bricks']
+                              if b.brick_type == 'closer'))
+        # Exact value verified by hand: 2.6176mm -- a big improvement over
+        # the old 3.82mm/5.05mm (bigger than a full 2.32mm stretcher), even
+        # though it's not itself under one full brick width (the fix's
+        # documented residual limitation -- see _generate_flemish_bond's
+        # inline comment on the C_right bound check).
+        assert closers == [2.6176]
 
 
 def _merge_dual_quoin_population(left_primary, right_primary, W, v_length=20.0, **extra):
@@ -1836,6 +2003,191 @@ class TestComputeFaceAxes:
         with pytest.raises(ValueError, match='no meaningful horizontal extent'):
             compute_face_axes(x_range=0.0005, y_range=0.0005, z_range=0.0005,
                                normal=(0.0, 0.0, 1.0))
+
+
+class TestQuoinAdjacentSliverFix:
+    """Regression tests for the confirmed-live sliver bug: stretcher/common/
+    english's left_quoin fill had NO closer sizing at all at the far (open)
+    boundary before this session's fix -- ~0.27-0.36mm slivers on every
+    course of a real building's door piers (single left_quoin, u_length
+    8.758620689628025mm, matching equipment-hut-demo.FCStd's actual pier
+    width). Also proves dual-quoin (previously flemish-only) now works for
+    these bonds at the same real widths."""
+
+    PIER_WIDTH = 8.758620689628025
+    MAIN_WALL_WIDTH = 28.0276  # the West wall, for dual-quoin coverage
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'common', 'english'])
+    def test_single_quoin_field_edge_no_sliver(self, bond):
+        bg = BrickGeometry(
+            u_length=self.PIER_WIDTH, v_length=20.0, bond_type=bond,
+            left_quoin=True, left_quoin_primary=True, **HO,
+        )
+        result = bg.generate()
+        closers = [b for b in result['bricks'] if b.brick_type == 'closer']
+        min_closer = HO['mortar'] * 2
+        assert closers, f"{bond}: expected at least one closer near the field edge"
+        for c in closers:
+            assert c.width >= min_closer - 1e-9, (
+                f"{bond} course {c.course}: closer width {c.width:.4f} "
+                f"below min_closer {min_closer:.4f} -- the sliver bug")
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'common', 'english'])
+    def test_dual_quoin_now_works_at_real_wall_width(self, bond):
+        """Previously raised ValueError for every bond except flemish."""
+        bg = BrickGeometry(
+            u_length=self.MAIN_WALL_WIDTH, v_length=20.0, bond_type=bond,
+            left_quoin=True, left_quoin_primary=False,
+            right_quoin=True, right_quoin_primary=True, **HO,
+        )
+        result = bg.generate()
+        bricks = result['bricks']
+        assert len(bricks) > 0
+        min_closer = HO['mortar'] * 2
+        closers = [b for b in bricks if b.brick_type == 'closer']
+        for c in closers:
+            assert c.width >= min_closer - 1e-9, (
+                f"{bond} course {c.course}: closer width {c.width:.4f} "
+                f"below min_closer {min_closer:.4f}")
+
+
+class TestTopoEps:
+    """topo_eps() -- the single canonical source for the TOPO_EPS = mortar
+    * 0.1 convention, now shared by _emit_bounded_run,
+    _generate_flemish_bond, and clamp_brick_to_segment (previously
+    hand-copied at the first two call sites)."""
+
+    def test_matches_documented_formula(self):
+        assert topo_eps(0.11) == pytest.approx(0.011)
+
+    def test_zero_mortar_is_zero(self):
+        assert topo_eps(0.0) == 0.0
+
+    def test_scales_linearly(self):
+        assert topo_eps(0.22) == pytest.approx(2 * topo_eps(0.11))
+
+
+class TestClampBrickToSegment:
+    """clamp_brick_to_segment() -- the pure-math replacement for
+    brick_proxy.py's old Part.Shape.common()-based clipping (Part 9's
+    performance fix: .common() measured at 801s for one 756-brick wall;
+    this needs no OCCT geometry at all)."""
+
+    EPS = topo_eps(0.11)
+
+    def _brick(self, u, v, width, height):
+        return BrickDef(index=0, u=u, v=v, course=0, brick_type='stretcher',
+                         width=width, height=height, depth=1.09)
+
+    def test_fully_interior_brick_is_unchanged(self):
+        """The common case: a brick strictly inside the segment's bounds
+        must come back byte-identical -- this is what keeps the fix's
+        cost proportional to boundary bricks, not total brick count."""
+        bd = self._brick(u=5.0, v=2.0, width=2.32, height=0.65)
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result == bd
+
+    def test_left_overflow_clamped_with_eps_nudge(self):
+        """A brick starting before u=0 (TOPO_EPS-scale or larger) gets its
+        left edge pulled in to exactly `eps`, not exactly 0 -- landing
+        exactly on the boundary would recreate the coincident-face crash
+        TOPO_EPS exists to avoid."""
+        bd = self._brick(u=-0.05, v=2.0, width=2.37, height=0.65)
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result.u == pytest.approx(self.EPS)
+        assert result.u + result.width == pytest.approx(bd.u + bd.width)  # right edge untouched
+        assert result.v == bd.v and result.height == bd.height
+
+    def test_right_overflow_clamped_with_eps_nudge(self):
+        bd = self._brick(u=28.0, v=2.0, width=2.5, height=0.65)  # ends at 30.5, past seg_width=30
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result.u == bd.u  # left edge untouched
+        assert (result.u + result.width) == pytest.approx(30.0 - self.EPS)
+
+    def test_top_overflow_clamped_with_eps_nudge(self):
+        """The +2-extra-course V overflow -- much larger than TOPO_EPS
+        scale, but the same clamp handles it uniformly."""
+        bd = self._brick(u=5.0, v=19.0, width=2.32, height=1.95)  # ends at v=20.95, past v_length=20
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result.v == bd.v
+        assert (result.v + result.height) == pytest.approx(20.0 - self.EPS)
+
+    def test_bottom_overflow_clamped_with_eps_nudge(self):
+        """Confirmed by review that no bond ever actually produces this in
+        practice (every course loop starts at v=0), but guarded anyway --
+        exercise it directly since production code will never hit it."""
+        bd = self._brick(u=5.0, v=-0.02, width=2.32, height=0.65)
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result.v == pytest.approx(self.EPS)
+
+    def test_overflow_on_two_sides_at_once_clamps_both_independently(self):
+        """A single run-length brick spanning a narrow segment can overflow
+        left AND right simultaneously -- each side must clamp on its own,
+        not just the larger/first one found."""
+        bd = self._brick(u=-0.05, v=2.0, width=2.6, height=0.65)  # spans -0.05 to 2.55, segment is [0, 2.5]
+        result = clamp_brick_to_segment(bd, seg_width=2.5, v_length=20.0, eps=self.EPS)
+        assert result.u == pytest.approx(self.EPS)
+        assert (result.u + result.width) == pytest.approx(2.5 - self.EPS)
+
+    def test_segment_too_narrow_raises(self):
+        """Clamping both sides of an oversized brick into a segment
+        narrower than 2*eps produces a non-positive width -- must fail
+        loudly (matching this project's established infeasibility-error
+        precedent) rather than emit a degenerate/inverted brick solid."""
+        bd = self._brick(u=-1.0, v=2.0, width=3.0, height=0.65)  # spans -1.0 to 2.0, overflows both sides
+        with pytest.raises(ValueError, match="non-positive"):
+            clamp_brick_to_segment(bd, seg_width=0.01, v_length=20.0, eps=self.EPS)  # < 2*eps
+
+    def test_zero_eps_still_clamps_but_lands_exactly_on_boundary(self):
+        """eps=0 is a degenerate-but-valid input (the caller's
+        responsibility to pass a real eps) -- confirms the clamp math
+        itself doesn't assume eps > 0."""
+        bd = self._brick(u=-0.05, v=2.0, width=2.37, height=0.65)
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=0.0)
+        assert result.u == 0.0
+
+    # -------------------------------------------------------------------
+    # "Entirely outside" cases -- distinct from partial overflow above.
+    # Regression: BrickGeometry's own "+2 extra courses" V buffer and
+    # stretcher bond's plain-tiling loop tail both genuinely produce
+    # bricks with ZERO overlap with the segment, not just bricks that
+    # poke slightly past one edge. Clamping those naively (as an earlier
+    # version of this function did) produces a negative width/height
+    # instead of correctly recognizing there's nothing to clip -- caught
+    # live against the real demo model's dual-quoin West wall and a
+    # bay-opening + stretcher-bond fixture, both via FreeCADCmd.
+    # -------------------------------------------------------------------
+
+    def test_entirely_past_right_edge_returns_none(self):
+        """A brick from the +2-extra-course V buffer, or a stretcher-bond
+        tiling-loop brick, whose entire span starts at or past the
+        boundary -- nothing to clip, must not be forced into a
+        negative-size shape."""
+        bd = self._brick(u=5.0, v=15.2, width=2.32, height=0.65)  # v in [15.2, 15.85], v_length=15.0
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=15.0, eps=self.EPS)
+        assert result is None
+
+    def test_entirely_before_left_edge_returns_none(self):
+        bd = self._brick(u=-2.43, v=2.0, width=2.32, height=0.65)  # u in [-2.43, -0.11]
+        result = clamp_brick_to_segment(bd, seg_width=6.0, v_length=20.0, eps=self.EPS)
+        assert result is None
+
+    def test_exactly_touching_right_edge_with_zero_width_returns_none(self):
+        """Boundary case: a brick whose span ends exactly at 0 (or starts
+        exactly at seg_width) has zero overlap by definition -- pin which
+        side of the < / <= line this falls on."""
+        bd = self._brick(u=-2.32, v=2.0, width=2.32, height=0.65)  # ends exactly at u=0
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result is None
+
+    def test_partial_overlap_just_inside_is_still_clamped_not_dropped(self):
+        """A real (if small) overlap -- comfortably larger than eps, so
+        the clamp-and-nudge is representable -- must still be clamped,
+        not dropped, unlike the entirely-outside cases above."""
+        bd = self._brick(u=-1.32, v=2.0, width=2.32, height=0.65)  # spans [-1.32, 1.0]: 1.0 unit of real overlap
+        result = clamp_brick_to_segment(bd, seg_width=30.0, v_length=20.0, eps=self.EPS)
+        assert result is not None
+        assert result.u == pytest.approx(self.EPS)
 
 
 if __name__ == '__main__':
