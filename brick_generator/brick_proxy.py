@@ -642,8 +642,25 @@ def _cut_corner_return_joints(shape, outer_face, params, embed_offset,
     gen_bh = brick_depth if is_horizontal else brick_height
     origin = _snap_origin_to_grid(origin, u_vec, v_vec, brick_width, gen_bh, mortar)
 
-    course_spacing_v = gen_bh + mortar
-    num_courses = math.ceil(v_length / course_spacing_v) + 2
+    # Full-review finding freecad-mr-generators-20260915-e612#09: this used
+    # to inline `course_spacing_v = gen_bh + mortar; num_courses =
+    # ceil(v_length/course_spacing_v)+2` as a second, hand-copied formula
+    # -- textually identical to BrickGeometry.__init__'s own
+    # self.course_spacing_v/self.num_courses, but with no structural link
+    # between them (only coincidentally equivalent because the call sites
+    # happened to pass matching arguments). A throwaway BrickGeometry
+    # instance (u_length is unused by the v-axis attributes read below)
+    # now reads the SAME __init__ code path the front-face mortar grid
+    # pass already uses, so a future change to either formula can't
+    # silently desync the return-face joint cuts from the front-face
+    # coursing -- there is no longer a second formula to drift.
+    course_geom = BrickGeometry(
+        u_length=1.0, v_length=v_length,
+        brick_width=brick_width, brick_height=gen_bh, brick_depth=brick_depth,
+        mortar=mortar, bond_type=params['bond_type'],
+    )
+    course_spacing_v = course_geom.course_spacing_v
+    num_courses = course_geom.num_courses
 
     sides = []
     if widen_left:

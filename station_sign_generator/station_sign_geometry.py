@@ -1,5 +1,5 @@
 """
-Station Sign Geometry Library v1.0.0
+Station Sign Geometry Library v1.1.0
 
 Pure Python geometry functions for the station sign generator, extracted
 2026-08-08 (full-review finding #29) from station_sign_proxy.py, the one
@@ -12,80 +12,27 @@ No FreeCAD dependencies -- fully testable with pytest. Bounding boxes are
 plain (xmin, xmax, ymin, ymax) tuples here rather than FreeCAD BoundBox
 objects, so station_sign_proxy.py's real Part.Wire.BoundBox values are
 converted to tuples at the call site before reaching this module.
+
+v1.1.0 (full-review finding freecad-mr-generators-20260915-e612#06):
+bbox_contains()/group_wire_bboxes_into_islands() moved to
+shared/face_geometry.py -- this disconnected-glyph-island logic isn't
+station-sign-specific (label_generator needs the identical algorithm and
+had drifted into its own untested, buggy inline copy). Re-exported here so
+existing `from station_sign_geometry import bbox_contains,
+group_wire_bboxes_into_islands` call sites and tests keep working
+unchanged.
 """
 
 import math
+import sys
+from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-BBox = Tuple[float, float, float, float]  # (xmin, xmax, ymin, ymax)
+_shared_path = str(Path(__file__).parent.parent / 'shared')
+if _shared_path not in sys.path:
+    sys.path.insert(0, _shared_path)
 
-
-# ---------------------------------------------------------------------------
-# Disconnected-glyph-island bbox containment
-# ---------------------------------------------------------------------------
-
-def bbox_contains(outer: BBox, inner: BBox, eps: float = 1e-6) -> bool:
-    """
-    Return True if *inner* is contained within *outer*, to within *eps*.
-
-    *eps* is a tolerance in both directions (an inner bbox extending
-    infinitesimally past outer's edge, within eps, still counts as
-    contained) -- matches Part.Wire.BoundBox comparisons where floating-
-    point glyph coordinates rarely land on an exact boundary.
-    """
-    o_xmin, o_xmax, o_ymin, o_ymax = outer
-    i_xmin, i_xmax, i_ymin, i_ymax = inner
-    return (i_xmin >= o_xmin - eps and i_xmax <= o_xmax + eps and
-            i_ymin >= o_ymin - eps and i_ymax <= o_ymax + eps)
-
-
-def group_wire_bboxes_into_islands(bboxes: Sequence[BBox],
-                                    eps: float = 1e-6) -> List[List[int]]:
-    """
-    Group wire indices into (outer, [holes...]) islands by bounding-box
-    containment, the way a glyph like 'i' or 'j' (a stem plus a separate
-    dot) or a glyph with a true hole (like 'o' or 'e') needs to be
-    interpreted: bboxes with no containing parent are "outer" wires; every
-    bbox contained within an outer wire's bbox joins that outer wire's
-    group (so Part.Face(group) treats it as a hole, not a separate face).
-
-    Returns a list of groups, each group a list of indices into *bboxes*
-    with the outer wire's index first. A bbox that is both an "outer" wire
-    (nothing contains it) and not contained by anything starts its own
-    singleton group if it has no contained children.
-
-    Degenerate inputs:
-    - Fewer than 2 bboxes: every non-empty input is its own single-element
-      group (there's nothing for it to contain or be contained by).
-    - A single bbox: same as above, returns [[0]] (or [] for empty input).
-    """
-    n = len(bboxes)
-    if n == 0:
-        return []
-    if n == 1:
-        return [[0]]
-
-    is_outer = [True] * n
-    for i in range(n):
-        for j in range(n):
-            if i != j and bbox_contains(bboxes[j], bboxes[i], eps):
-                is_outer[i] = False
-                break
-
-    used = [False] * n
-    groups = []
-    for i in range(n):
-        if not is_outer[i] or used[i]:
-            continue
-        used[i] = True
-        group = [i]
-        for j in range(n):
-            if not used[j] and not is_outer[j] and bbox_contains(bboxes[i], bboxes[j], eps):
-                group.append(j)
-                used[j] = True
-        groups.append(group)
-
-    return groups
+from face_geometry import BBox, bbox_contains, group_wire_bboxes_into_islands  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------

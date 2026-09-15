@@ -1,11 +1,16 @@
 """Tests for shared/face_geometry.py's pure math -- compute_face_axes plus
 the corner-seam-gap widen-selection helpers (select_widen_edge,
-widen_offset_sign). No FreeCAD import needed; these are plain-Python.
+widen_offset_sign), and the disconnected-glyph-island bbox-containment
+helpers (bbox_contains, group_wire_bboxes_into_islands). No FreeCAD import
+needed; these are plain-Python.
 """
 
 import pytest
 
-from face_geometry import compute_face_axes, select_widen_edge, widen_offset_sign
+from face_geometry import (
+    compute_face_axes, select_widen_edge, widen_offset_sign,
+    bbox_contains, group_wire_bboxes_into_islands,
+)
 
 
 class TestComputeFaceAxes:
@@ -126,6 +131,71 @@ class TestWidenOffsetSign:
     def test_empty_string_raises(self):
         with pytest.raises(ValueError, match="side must be"):
             widen_offset_sign('')
+
+
+class TestGroupWireBboxesIntoIslands:
+    """Moved here from station_sign_generator/tests/test_station_sign_geometry.py
+    (full-review finding freecad-mr-generators-20260915-e612#06) -- that
+    file's own equivalent tests still pass via the re-export, this is the
+    canonical location now that the implementation lives here."""
+
+    def test_empty_input(self):
+        assert group_wire_bboxes_into_islands([]) == []
+
+    def test_single_bbox(self):
+        assert group_wire_bboxes_into_islands([(0.0, 1.0, 0.0, 1.0)]) == [[0]]
+
+    def test_hole_like_letter_o(self):
+        outer_ring = (0.0, 10.0, 0.0, 10.0)
+        inner_ring = (2.0, 8.0, 2.0, 8.0)
+        groups = group_wire_bboxes_into_islands([outer_ring, inner_ring])
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1}
+        assert groups[0][0] == 0  # outer wire's index listed first
+
+    def test_two_disjoint_islands(self):
+        stem = (0.0, 1.0, 0.0, 5.0)
+        dot = (0.0, 1.0, 6.0, 7.0)
+        groups = group_wire_bboxes_into_islands([stem, dot])
+        assert sorted(groups) == [[0], [1]]
+
+    def test_mutually_equal_bboxes_do_not_vanish(self):
+        """Two bboxes that mutually contain each other (equal, or
+        near-equal within eps) each saw the OTHER as their container, so
+        BOTH were marked non-outer and neither ever started a group --
+        confirmed live: this exact input previously returned [] (both
+        wires silently vanished, no error). Must now keep both: one
+        designated outer, the other its hole."""
+        box = (0.0, 1.0, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box, box])
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1}
+
+    def test_three_mutually_equal_bboxes_do_not_vanish(self):
+        box = (0.0, 1.0, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box, box, box])
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1, 2}
+
+    def test_near_equal_bboxes_within_eps_do_not_vanish(self):
+        eps = 1e-6
+        box_a = (0.0, 1.0, 0.0, 1.0)
+        box_b = (0.0 + eps / 2, 1.0 - eps / 2, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box_a, box_b], eps=eps)
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1}
+
+
+class TestBboxContains:
+    def test_identical_boxes_contained(self):
+        box = (0.0, 1.0, 0.0, 1.0)
+        assert bbox_contains(box, box) is True
+
+    def test_disjoint_not_contained(self):
+        assert bbox_contains((0.0, 1.0, 0.0, 1.0), (5.0, 6.0, 5.0, 6.0)) is False
 
     def test_case_sensitive(self):
         with pytest.raises(ValueError, match="side must be"):

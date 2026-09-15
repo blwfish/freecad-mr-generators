@@ -294,7 +294,7 @@ def log_global_placement(obj, label=None):
 import FreeCAD as App
 import Part
 
-from roof_geometry import best_matching_candidate
+from roof_geometry import best_matching_candidate, get_roof_coordinate_system
 from face_geometry import compute_face_axes
 
 _AXIS_VECTORS = {
@@ -336,6 +336,78 @@ def get_face_coordinate_system(face):
 
     return (origin, u_vec, v_vec, normal,
             axes['u_length'], axes['v_length'], axes['is_horizontal'])
+
+
+def get_roof_face_coordinate_system(face):
+    """
+    Extract U/V/normal coordinate system from a roof face, preferring an
+    eave-level corner vertex (2 edges meeting) as origin.
+    Returns (origin, u_vec, v_vec, normal, u_length, v_length).
+
+    Full-review finding freecad-mr-generators-20260915-e612#11: this used
+    to be independently copy-pasted near-verbatim across five roof-facing
+    proxies (shingle, slate, snow_guard, standing_seam,
+    standing_seam_snow_guard) with no shared function and no parity test,
+    despite the analogous WALL-facing case (get_face_coordinate_system,
+    just above) already being consolidated here in the 2026-09-14 pass --
+    the roof-facing sibling was simply missed by that consolidation.
+    Diffing all five proxies' copies confirmed the divergence was purely
+    cosmetic (variable names, comment wording) with identical arithmetic
+    -- consolidated here as the single source of truth going forward.
+
+    Deliberately named differently from get_face_coordinate_system (7-tuple
+    return, bbox/axis-aligned, wall-facing) rather than overloading that
+    name -- the two serve different roof-vs-wall face conventions and
+    return different tuple shapes; the prior per-proxy duplicate shared
+    its name with THIS module's own get_face_coordinate_system despite
+    being a completely different, unrelated function -- a naming
+    collision trap for any future reader who'd assume the roof proxies
+    already delegated to the wall version.
+    """
+    verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face.Vertexes]
+    n = face.normalAt(0.5, 0.5).normalize()
+    if n.z < 0:
+        n = App.Vector(-n.x, -n.y, -n.z)
+    normal_t = (n.x, n.y, n.z)
+
+    cs = get_roof_coordinate_system(verts, normal_t)
+    origin = App.Vector(*cs['origin'])
+    u_vec  = App.Vector(*cs['u_vec'])
+    v_vec  = App.Vector(*cs['v_vec'])
+    normal = App.Vector(*cs['normal'])
+
+    # Prefer corner vertex (2 edges) at eave level as origin.
+    # Key by rounded coordinates -- FreeCAD returns new wrapper objects on
+    # each Vertexes iteration, so object identity is not stable across loops.
+    def _vkey(v):
+        return (round(v.Point.x, 4), round(v.Point.y, 4), round(v.Point.z, 4))
+
+    vertex_edge_count = {}
+    for vertex in face.Vertexes:
+        count = sum(
+            1 for edge in face.Edges
+            if (edge.Vertexes[0].Point.distanceToPoint(vertex.Point) < 0.001 or
+                edge.Vertexes[1].Point.distanceToPoint(vertex.Point) < 0.001)
+        )
+        vertex_edge_count[_vkey(vertex)] = count
+
+    eave_z = cs['eave_ridge_info']['eave_z']
+    corner_at_eave = [
+        v for v in face.Vertexes
+        if vertex_edge_count.get(_vkey(v), 0) == 2 and abs(v.Point.z - eave_z) <= 0.1
+    ]
+    if corner_at_eave:
+        origin = min(corner_at_eave, key=lambda v: v.Point.dot(u_vec)).Point
+
+    u_projs = [vtx.Point.sub(origin).dot(u_vec) for vtx in face.Vertexes]
+    v_projs = [vtx.Point.sub(origin).dot(v_vec) for vtx in face.Vertexes]
+    min_u, min_v = min(u_projs), min(v_projs)
+    if min_u < 0 or min_v < 0:
+        origin = origin + u_vec * min_u + v_vec * min_v
+
+    u_length = max(u_projs) - min(u_projs)
+    v_length = max(v_projs) - min(v_projs)
+    return origin, u_vec, v_vec, normal, u_length, v_length
 
 
 def find_shared_edge(face1, face2, tol=0.1):

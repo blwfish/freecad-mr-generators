@@ -55,9 +55,7 @@ for _p in (_bg_path, _shared_path):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from brick_geometry import BrickDef  # noqa: E402
-
-_TOPO_EPS_FACTOR = 0.1  # fraction of mortar — matches brick_geometry convention
+from brick_geometry import BrickDef, topo_eps  # noqa: E402
 
 
 class QuoinGeometry:
@@ -108,7 +106,14 @@ class QuoinGeometry:
         self.skin_depth = skin_depth if skin_depth is not None else mortar
         self.course_spacing_v = brick_height + mortar
         self.num_courses = math.ceil(wall_height / self.course_spacing_v) + 2
-        self._topo_eps = mortar * _TOPO_EPS_FACTOR
+        # Full-review finding freecad-mr-generators-20260915-e612#07: this
+        # used to re-derive its own copy of brick_geometry's topo_eps()
+        # formula (`mortar * 0.1`) instead of importing the function --
+        # despite already importing BrickDef from the same module on the
+        # line above, and brick_geometry.topo_eps() being explicitly
+        # documented as this repo's single source of truth for this
+        # constant. Now imports and calls it directly.
+        self._topo_eps = topo_eps(mortar)
 
     def generate(self) -> Dict:
         """

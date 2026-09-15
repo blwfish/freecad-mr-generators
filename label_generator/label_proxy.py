@@ -26,6 +26,7 @@ for p in (str(_here), str(_here / '_lib')):
 
 from label_geometry import compute_font_size, build_frame_matrix
 from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
+from face_geometry import group_wire_bboxes_into_islands  # noqa: E402
 
 VERSION = "1.0.0"
 GENERATOR_NAME = "label_generator"
@@ -69,6 +70,17 @@ def _wires_to_faces(char_wires):
     bounding box fits entirely inside another wire's bounding box is treated as
     a hole of that outer wire.  Wires that are not contained in any other wire
     are outer contours and each seed a new face group.
+
+    Full-review finding freecad-mr-generators-20260915-e612#06: this used
+    to be an independent, untested, FreeCAD-only reimplementation of the
+    same bbox-island-grouping algorithm station_sign_generator already had
+    -- including that generator's own now-fixed mutual-bbox-containment
+    bug (two wires with equal/near-equal bounding boxes both silently
+    vanishing instead of one becoming the other's hole). Now delegates to
+    shared/face_geometry.group_wire_bboxes_into_islands, the single tested
+    source of truth for this algorithm, converting FreeCAD BoundBox
+    objects to plain tuples at the boundary the same way
+    station_sign_proxy.py already does.
     """
     if not char_wires:
         return []
@@ -79,37 +91,14 @@ def _wires_to_faces(char_wires):
         except Exception:
             return []
 
-    eps = 1e-6
-    bbs = [w.BoundBox for w in char_wires]
+    bboxes = [(w.BoundBox.XMin, w.BoundBox.XMax, w.BoundBox.YMin, w.BoundBox.YMax)
+              for w in char_wires]
+    groups = group_wire_bboxes_into_islands(bboxes)
 
-    def contains(outer_bb, inner_bb):
-        return (inner_bb.XMin >= outer_bb.XMin - eps and
-                inner_bb.XMax <= outer_bb.XMax + eps and
-                inner_bb.YMin >= outer_bb.YMin - eps and
-                inner_bb.YMax <= outer_bb.YMax + eps)
-
-    # A wire is "outer" if no other wire's bbox contains it
-    n = len(char_wires)
-    is_outer = [True] * n
-    for i in range(n):
-        for j in range(n):
-            if i != j and contains(bbs[j], bbs[i]):
-                is_outer[i] = False
-                break
-
-    used = [False] * n
     faces = []
-    for i in range(n):
-        if not is_outer[i] or used[i]:
-            continue
-        used[i] = True
-        group = [char_wires[i]]
-        for j in range(n):
-            if not used[j] and not is_outer[j] and contains(bbs[i], bbs[j]):
-                group.append(char_wires[j])
-                used[j] = True
+    for group in groups:
         try:
-            f = Part.Face(group)
+            f = Part.Face([char_wires[i] for i in group])
             if not f.isNull():
                 faces.append(f)
         except Exception:

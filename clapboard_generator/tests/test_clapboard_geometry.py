@@ -24,6 +24,7 @@ from clapboard_geometry import (
     calculate_clapboard_courses,
     validate_parameters,
     get_face_orientation_description,
+    CLAPBOARD_TRIM_OFFSET,
 )
 
 
@@ -251,6 +252,30 @@ class TestParameterValidation:
         is_valid, errors = validate_parameters(-1.0, 0.5)
         assert not is_valid
 
+    def test_thickness_at_trim_offset_invalid(self):
+        """Full-review finding freecad-mr-generators-20260915-e612#05:
+        thickness == CLAPBOARD_TRIM_OFFSET makes actual_thick exactly 0 in
+        the proxy, a degenerate offset. Must be rejected, not silently
+        accepted as a zero-thickness course."""
+        is_valid, errors = validate_parameters(1.0, CLAPBOARD_TRIM_OFFSET)
+        assert not is_valid
+        assert any('CLAPBOARD_TRIM_OFFSET' in e for e in errors)
+
+    def test_thickness_below_trim_offset_invalid(self):
+        """thickness < CLAPBOARD_TRIM_OFFSET makes actual_thick negative,
+        silently flipping the outer-wire offset direction with no
+        exception -- the live bug this finding closes."""
+        is_valid, errors = validate_parameters(1.0, CLAPBOARD_TRIM_OFFSET - 0.01)
+        assert not is_valid
+        assert any('CLAPBOARD_TRIM_OFFSET' in e for e in errors)
+
+    def test_thickness_just_above_trim_offset_valid(self):
+        """thickness strictly greater than CLAPBOARD_TRIM_OFFSET must stay
+        valid -- this rule should not reject reasonable thin siding."""
+        is_valid, errors = validate_parameters(1.0, CLAPBOARD_TRIM_OFFSET + 0.01)
+        assert is_valid
+        assert len(errors) == 0
+
 
 class TestOrientationDescription:
     """Test face orientation descriptions"""
@@ -342,24 +367,67 @@ class TestBoundaryOverflow:
         )
 
     def test_post_loop_guarantee_is_load_bearing(self):
-        """Mutation guard: the post-loop fixup block is the real safety net.
+        """Mutation guard: the post-loop fixup block (lines ~264-270) is
+        the ONLY thing that guarantees positions[0]/positions[-1] overflow
+        the wall boundary in this specific case.
 
-        Three mechanisms overlap: snap guard, +1 course count, post-loop fixup.
-        All three survived mutation because the post-loop block rescues every
-        case.  This test uses wall_v_min=0.8 on a 0.8 grid (no snap fires,
-        +1 produces one extra course that ends exactly at wall_v_max=1.6)
-        to force the post-loop guarantee to do real work.
+        Full-review finding freecad-mr-generators-20260915-e612#12:
+        the PREVIOUS version of this test used wall_v_min=0.8 on a 0.8
+        grid, which is a case where the in-loop snap block ALSO fires (the
+        natural v_bot/v_top land exactly on the boundary, well within
+        topo_eps) — so disabling the post-loop block alone left this test
+        passing (the in-loop snap already produced the same overflowing
+        value first). The docstring's claim that "removing the block would
+        leave OCCT exposed" was therefore false for that input: it
+        described what the post-loop block is FOR, not a property this
+        specific test actually exercised. Verified live via mutation
+        (disabling the post-loop block and re-running): the old input
+        produced IDENTICAL output with and without it.
+
+        This input (wall_v_min=0.7, clapboard_height=1.0) is different:
+        round(0.7/1.0)*1.0 = 1.0, so the first course's *natural* v_bot is
+        1.0 -- a full 0.3mm inside the wall, nowhere near the in-loop
+        snap's topo_eps=1e-3 trigger radius. Only the post-loop
+        unconditional fixup rescues it. Verified live: disabling the
+        post-loop block on THIS input changes v_bot from 0.699 to 1.0,
+        which does not overflow wall_v_min=0.7 at all.
         """
-        positions = calculate_course_v_positions(0.8, 1.6, 0.8)
-        last_top = positions[-1][1]
-        assert last_top > 1.6, (
-            f"Post-loop guarantee must push last course above wall_v_max=1.6, "
-            f"got v_top={last_top} — removing the block would leave OCCT exposed"
-        )
+        positions = calculate_course_v_positions(0.7, 5.0, 1.0)
         first_bot = positions[0][0]
-        assert first_bot < 0.8, (
-            f"First course must start below wall_v_min=0.8, got v_bot={first_bot}"
+        assert first_bot < 0.7, (
+            f"First course must start below wall_v_min=0.7, got v_bot={first_bot} "
+            f"— removing the post-loop block would leave OCCT exposed here"
         )
+
+    def test_in_loop_snap_is_load_bearing(self):
+        """Mutation guard: the in-loop snap block (lines ~247-250) matters
+        independently of the post-loop fixup for an INTERIOR course.
+
+        Full-review finding freecad-mr-generators-20260915-e612#12: the
+        post-loop block only ever touches positions[0] and positions[-1]
+        -- it cannot rescue a middle course whose v_top happens to land
+        within topo_eps of wall_v_max while a later course also survives
+        the drop check (so that middle course is not positions[-1]).
+
+        wall_v_max=2.9905 with clapboard_height=1.0, overlap=0.01 (default)
+        is chosen so course index 2's *natural* v_top is exactly 2.99 --
+        0.0005 inside topo_eps=1e-3 of wall_v_max -- while course index 3
+        also survives and becomes positions[-1], so the post-loop fixup
+        never touches course 2 at all. Verified live: disabling the
+        in-loop snap block leaves course 2's v_top at the near-coincident
+        natural value 2.99 instead of the pushed-out 2.9915.
+        """
+        positions = calculate_course_v_positions(0.0, 2.9905, 1.0)
+        middle_course_v_top = positions[2][1]
+        assert middle_course_v_top > 2.9905 + 1e-3 - 1e-9, (
+            f"Interior course 2's v_top must be pushed strictly past "
+            f"wall_v_max + topo_eps = 2.9915, got {middle_course_v_top} "
+            f"— removing the in-loop snap block would leave this course's "
+            f"edge near-coincident with the wall boundary"
+        )
+        # positions[-1] is a later, unrelated course -- confirms the
+        # post-loop fixup is not what produced the value asserted above.
+        assert positions[-1] != positions[2]
 
     def test_course_count_matches_calculate_clapboard_courses(self):
         """calculate_course_v_positions returns count consistent with

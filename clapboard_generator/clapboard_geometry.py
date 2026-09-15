@@ -272,28 +272,50 @@ def calculate_course_v_positions(wall_v_min: float, wall_v_max: float,
     return positions
 
 
+# mm -- clapboard bottom inboard of trim edge. Single source of truth for
+# this constant: clapboard_proxy.py's `_make_course` subtracts this from
+# `clapboard_thickness` to get `actual_thick`, whose SIGN picks the outward-
+# offset direction for the course loft. Previously this constant was
+# defined only in clapboard_proxy.py with no corresponding check here, so
+# a ClapboardThickness in (0, CLAPBOARD_TRIM_OFFSET) passed validation but
+# made `actual_thick` negative, silently flipping the offset direction
+# (clapboard recessed into the wall instead of projecting outward) with no
+# exception raised (full-review finding
+# freecad-mr-generators-20260915-e612#05).
+CLAPBOARD_TRIM_OFFSET = 0.05
+
+
 def validate_parameters(clapboard_height: float, clapboard_thickness: float) -> Tuple[bool, List[str]]:
     """
     Validate clapboard parameters.
-    
+
     Args:
         clapboard_height: Height of each course in mm
         clapboard_thickness: Thickness at bottom edge in mm
-    
+
     Returns:
         Tuple of (is_valid, error_messages)
     """
     errors = []
-    
+
     if clapboard_height <= 0:
         errors.append(f"clapboard_height must be positive, got {clapboard_height}")
-    
+
     if clapboard_thickness <= 0:
         errors.append(f"clapboard_thickness must be positive, got {clapboard_thickness}")
-    
+
     if clapboard_thickness > clapboard_height:
         errors.append(f"clapboard_thickness ({clapboard_thickness}) cannot exceed height ({clapboard_height})")
-    
+
+    if 0 < clapboard_thickness <= CLAPBOARD_TRIM_OFFSET:
+        errors.append(
+            f"clapboard_thickness ({clapboard_thickness}) must exceed "
+            f"CLAPBOARD_TRIM_OFFSET ({CLAPBOARD_TRIM_OFFSET}) -- thickness "
+            "at or below this trims to zero or negative actual thickness, "
+            "silently reversing which side of the wall the clapboard "
+            "projects from"
+        )
+
     return len(errors) == 0, errors
 
 

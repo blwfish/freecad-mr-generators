@@ -27,6 +27,7 @@ from bead_board_geometry import (  # noqa: E402
     validate_parameters,
     calculate_bead_positions,
     calculate_gap_positions,
+    detect_face_orientation,
 )
 from freecad_utils import resolve_sources_faces  # noqa: E402
 
@@ -34,6 +35,45 @@ from freecad_utils import resolve_sources_faces  # noqa: E402
 # =============================================================================
 # Geometry helpers
 # =============================================================================
+
+def _check_for_degenerate_edges(wire):
+    return [(i, e.Length) for i, e in enumerate(wire.Edges) if e.Length < 0.001]
+
+
+def _check_for_duplicate_edges(wire):
+    edges = wire.Edges
+    dupes = []
+    tol = 0.001
+    for i in range(len(edges)):
+        for j in range(i + 1, len(edges)):
+            e1, e2 = edges[i], edges[j]
+            s1 = e1.valueAt(e1.FirstParameter)
+            t1 = e1.valueAt(e1.LastParameter)
+            s2 = e2.valueAt(e2.FirstParameter)
+            t2 = e2.valueAt(e2.LastParameter)
+            if ((s1.distanceToPoint(s2) < tol and t1.distanceToPoint(t2) < tol) or
+                    (s1.distanceToPoint(t2) < tol and t1.distanceToPoint(s2) < tol)):
+                dupes.append((i, j))
+    return dupes
+
+
+def _validate_wire(wire, name="Wire"):
+    """Full-review finding freecad-mr-generators-20260915-e612#08: this
+    generator previously extracted the source face's wires without ever
+    checking them for degenerate (near-zero-length) or duplicate edges --
+    the exact OCCT-crash class this repo's CLAUDE.md flags for
+    Part.Solid(Part.Shell(faces)) -- despite the sibling clapboard_proxy.py
+    already doing this check (see its own _validate_wire). Ported that
+    same check here rather than leaving it unwired."""
+    degen = _check_for_degenerate_edges(wire)
+    if degen:
+        msgs = [f"  Edge {i}: length={l:.6f}mm" for i, l in degen]
+        raise ValueError(f"{name} has degenerate edge(s):\n" + "\n".join(msgs))
+    dupes = _check_for_duplicate_edges(wire)
+    if dupes:
+        msgs = [f"  Edges {i} and {j}" for i, j in dupes]
+        raise ValueError(f"{name} has duplicate edge(s):\n" + "\n".join(msgs))
+
 
 def _face_wires(face):
     wires = face.Wires
@@ -43,6 +83,11 @@ def _face_wires(face):
     holes = [w for w in wires if w is not outer]
     if not outer.isClosed():
         raise ValueError("Outer wire is not closed!")
+    _validate_wire(outer, "Outer wire")
+    for i, hw in enumerate(holes):
+        if not hw.isClosed():
+            raise ValueError(f"Hole wire {i} not closed!")
+        _validate_wire(hw, f"Hole wire {i}")
     return outer, holes
 
 
@@ -52,19 +97,18 @@ def _face_normal(face):
 
 
 def _detect_orientation(bbox):
-    xe = bbox.XMax - bbox.XMin
-    ye = bbox.YMax - bbox.YMin
-    ze = bbox.ZMax - bbox.ZMin
-    tol = 0.1
-    if xe < tol:
-        return 'z', 'y', 'x'
-    if ye < tol:
-        return 'z', 'x', 'y'
-    if ze < tol:
-        return 'y', 'x', 'z'
-    if ze >= ye and ze >= xe:
-        return ('z', 'x', 'y') if xe > ye else ('z', 'y', 'x')
-    return 'y', 'x', 'z'
+    """Full-review finding freecad-mr-generators-20260915-e612#10: this
+    used to be an independent inline reimplementation of
+    bead_board_geometry.detect_face_orientation() with a strict `<`
+    where the geometry module uses `<=` at the same 0.1mm tolerance
+    boundary -- execution-confirmed to disagree at exactly that boundary,
+    with no parity test to catch it. Now a thin FreeCAD-BoundBox-to-dict
+    adapter around the tested geometry function."""
+    return detect_face_orientation({
+        'x_min': bbox.XMin, 'x_max': bbox.XMax,
+        'y_min': bbox.YMin, 'y_max': bbox.YMax,
+        'z_min': bbox.ZMin, 'z_max': bbox.ZMax,
+    })
 
 
 def _make_gap(gap_start, gap_end, v_min, v_max, depth, horiz_axis, vert_axis, bbox, normal):
