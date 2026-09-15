@@ -65,14 +65,15 @@ def _make_rotation_matrix(x_axis, y_axis, z_axis):
 def classify_seam(face1, face2, shared_edge):
     """Classify seam as 'hip' or 'valley'.
 
-    Delegates to shared/roof_geometry.classify_roof_intersection() -- a
-    pure Z-coordinate-average heuristic (NOT dihedral-angle-based, despite
-    an earlier version of this docstring's claim -- the dihedral angle
-    computed elsewhere in this file, for the hip-cap profile, never feeds
-    this classification decision, only human-readable text) that
-    slate_generator, standing_seam_generator, and slate_seam_generator all
-    already use, instead of an independently-maintained duplicate with no
-    'ambiguous' outcome of its own.
+    Delegates to shared/roof_geometry.classify_roof_intersection() -- the
+    same classifier slate_generator, standing_seam_generator, and
+    slate_seam_generator all already use, instead of an
+    independently-maintained duplicate with no 'ambiguous' outcome of its
+    own. Passes both faces' own normals (2026-09-14) so the classifier uses
+    its normal-based convex/reflex-edge test rather than its older,
+    narrower Z-coordinate-average fallback -- the dihedral angle computed
+    elsewhere in this file, for the hip-cap profile, still never feeds this
+    classification decision, only human-readable text.
 
     Raises RuntimeError on the shared classifier's own 'ambiguous' result
     instead of silently defaulting to 'hip'. This previously defaulted to
@@ -92,7 +93,11 @@ def classify_seam(face1, face2, shared_edge):
     e0, e1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
     shared_edge_tuple = ((e0.x, e0.y, e0.z), (e1.x, e1.y, e1.z))
 
-    result = classify_roof_intersection(face1_verts, face2_verts, shared_edge_tuple)
+    n1 = _face_normal_at_center(face1)
+    n2 = _face_normal_at_center(face2)
+    result = classify_roof_intersection(
+        face1_verts, face2_verts, shared_edge_tuple,
+        face1_normal=(n1.x, n1.y, n1.z), face2_normal=(n2.x, n2.y, n2.z))
     classification = result['classification']
     if classification == 'ridge':
         return 'hip'

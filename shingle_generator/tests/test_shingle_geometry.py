@@ -872,7 +872,16 @@ class TestAnalyzeRoofIntersection:
             (50, 100, 50),
             (50, 0, 50),
         ]
-        face1_normal = (0.707, 0, 0.707)
+        # The left panel rises (in +Z) toward the ridge as X increases, so
+        # its real outward normal (verified via the cross product of its
+        # own edges, 2026-09-14) points up-and-LEFT, not up-and-right --
+        # (0.707, 0, 0.707) as originally written here doesn't actually
+        # match this face's own plane at all (its true normal, either
+        # winding direction, is (+-0.707, 0, -+0.707): X and Z always
+        # opposite sign, never both positive). This only mattered once
+        # classify_roof_intersection started using normals for a real
+        # geometric side test instead of ignoring them.
+        face1_normal = (-0.707, 0, 0.707)
         face1_edges = [
             ((0, 0, 0), (0, 100, 0)),
             ((0, 100, 0), (50, 100, 50)),
@@ -887,7 +896,7 @@ class TestAnalyzeRoofIntersection:
             (100, 100, 0),
             (100, 0, 0),
         ]
-        face2_normal = (-0.707, 0, 0.707)
+        face2_normal = (0.707, 0, 0.707)
         face2_edges = [
             ((50, 0, 50), (50, 100, 50)),
             ((50, 100, 50), (100, 100, 0)),
