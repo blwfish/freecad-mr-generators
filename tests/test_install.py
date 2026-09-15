@@ -33,6 +33,39 @@ class TestGeneratorsList:
     def test_no_duplicate_entries(self):
         assert len(install.GENERATORS) == len(set(install.GENERATORS))
 
+    def test_every_generator_directory_on_disk_is_listed(self):
+        """Full-review finding freecad-mr-generators-20260915-e612#16:
+        test_ashlar_generator_present above pins the ONE past incident
+        (ashlar_generator omitted, silently never installed) but only
+        checks that direction -- nothing asserted the reverse, that every
+        real generator directory on disk actually appears in GENERATORS.
+        A newly-added generator directory that's never added to the list
+        would reproduce the exact same bug class with every other test in
+        this file still green. Detect a real generator directory the same
+        way install.py's own collect_lib_files()/collect_macros() do:
+        it must actually contain at least one *_geometry.py or *_proxy.py
+        or *.FCMacro file -- not just have a name ending in "_generator"
+        (avoids false positives from an empty or in-progress directory)."""
+        on_disk = set()
+        for entry in install.REPO_ROOT.iterdir():
+            if not entry.is_dir() or not entry.name.endswith("_generator"):
+                continue
+            has_generator_files = (
+                list(entry.glob("*_geometry.py")) or
+                list(entry.glob("*_proxy.py")) or
+                list(entry.glob("*.FCMacro"))
+            )
+            if has_generator_files:
+                on_disk.add(entry.name)
+
+        missing_from_list = on_disk - set(install.GENERATORS)
+        assert not missing_from_list, (
+            f"{missing_from_list} exist on disk with real generator files "
+            f"but are not listed in install.GENERATORS -- they would ship "
+            f"silently uninstalled, the same bug class "
+            f"test_ashlar_generator_present exists to prevent"
+        )
+
 
 class TestCollectMacros:
     def test_no_duplicate_destination_filenames(self):
@@ -58,6 +91,21 @@ class TestCollectMacros:
             has_macro_file = bool(list((install.REPO_ROOT / gen).glob("*.FCMacro")))
             if has_macro_file:
                 assert gen in found_dirs, f"{gen} has a .FCMacro but collect_macros() missed it"
+
+    def test_missing_generator_directory_warns_instead_of_silently_dropping(
+            self, monkeypatch, capsys):
+        """Full-review finding freecad-mr-generators-20260915-e612#24:
+        a GENERATORS entry with no matching directory previously vanished
+        from the output with zero indication anything was skipped."""
+        monkeypatch.setattr(install, "GENERATORS",
+                            install.GENERATORS + ["totally_made_up_generator"])
+        macros = install.collect_macros()
+        captured = capsys.readouterr()
+        assert "totally_made_up_generator" in captured.out
+        assert "WARNING" in captured.out
+        # The other, real generators must still be collected -- one bad
+        # entry shouldn't take down collection for everything else.
+        assert len(macros) > 0
 
 
 class TestCollectLibFiles:
@@ -90,6 +138,32 @@ class TestCollectLibFiles:
         names = {name for _, name in files}
         assert "freecad_utils.py" in names
         assert "boundary_assertions.py" in names
+
+    def test_missing_generator_directory_warns_instead_of_silently_dropping(
+            self, monkeypatch, capsys):
+        """Full-review finding freecad-mr-generators-20260915-e612#24."""
+        monkeypatch.setattr(install, "GENERATORS",
+                            install.GENERATORS + ["totally_made_up_generator"])
+        files = install.collect_lib_files()
+        captured = capsys.readouterr()
+        assert "totally_made_up_generator" in captured.out
+        assert "WARNING" in captured.out
+        assert len(files) > 0
+
+    def test_missing_shared_directory_warns_instead_of_silently_dropping(
+            self, monkeypatch, capsys):
+        """Full-review finding freecad-mr-generators-20260915-e612#25:
+        SHARED_DIR missing entirely previously produced an empty file list
+        with no warning -- higher stakes than a single missing generator
+        since most generators import from shared/."""
+        monkeypatch.setattr(install, "SHARED_DIR",
+                            install.REPO_ROOT / "totally_made_up_shared_dir")
+        files = install.collect_lib_files()
+        captured = capsys.readouterr()
+        assert "totally_made_up_shared_dir" in captured.out
+        assert "WARNING" in captured.out
+        # Per-generator files must still be collected even with shared/ gone.
+        assert len(files) > 0
 
     def test_includes_ashlar_geometry(self):
         # Regression test for the same GENERATORS-list bug as above, from

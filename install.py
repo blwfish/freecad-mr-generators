@@ -168,24 +168,50 @@ def _find_freecad_paths_heuristic():
 
 
 def collect_macros():
-    """Return list of (src_path, dest_filename) for all FCMacro files."""
+    """Return list of (src_path, dest_filename) for all FCMacro files.
+
+    Full-review finding freecad-mr-generators-20260915-e612#24: a missing
+    or misspelled generator directory previously made `glob()` silently
+    return an empty iterator instead of raising -- that generator's macros
+    just never appeared in the output, with no indication anywhere that
+    anything was skipped, and the script still reported success. Now warns
+    explicitly so a GENERATORS/directory drift is visible immediately
+    instead of discovered later as "why isn't this macro in FreeCAD's
+    Tools menu."
+    """
     macros = []
     for gen in GENERATORS:
         gen_dir = REPO_ROOT / gen
+        if not gen_dir.is_dir():
+            print(f"WARNING: generator directory not found, skipping: {gen_dir}")
+            continue
         for f in sorted(gen_dir.glob("*.FCMacro")):
             macros.append((f, f.name))
     return macros
 
 
 def collect_lib_files():
-    """Return list of (src_path, dest_filename) for all Python library files."""
+    """Return list of (src_path, dest_filename) for all Python library files.
+
+    Full-review finding freecad-mr-generators-20260915-e612#24/#25: same
+    silent-glob-drop issue as collect_macros() above, for both SHARED_DIR
+    (higher stakes -- most generators import from shared/, so a missing
+    shared/ would cascade into multiple broken generators at runtime) and
+    each per-generator directory.
+    """
     files = []
     # Shared utilities
-    for f in sorted(SHARED_DIR.glob("*.py")):
-        files.append((f, f.name))
+    if not SHARED_DIR.is_dir():
+        print(f"WARNING: shared directory not found, skipping: {SHARED_DIR}")
+    else:
+        for f in sorted(SHARED_DIR.glob("*.py")):
+            files.append((f, f.name))
     # Per-generator geometry and proxy files
     for gen in GENERATORS:
         gen_dir = REPO_ROOT / gen
+        if not gen_dir.is_dir():
+            print(f"WARNING: generator directory not found, skipping: {gen_dir}")
+            continue
         for f in sorted(gen_dir.glob("*.py")):
             if f.name.startswith("test_") or f.stem == "conftest":
                 continue

@@ -27,7 +27,10 @@ from clapboard_geometry import (  # noqa: E402
     CLAPBOARD_TRIM_OFFSET,
     detect_face_orientation,
 )
-from freecad_utils import resolve_sources_faces  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces,
+    face_normal_at_center as _face_normal,
+)
 
 
 # =============================================================================
@@ -80,11 +83,6 @@ def _get_face_wires(face):
             raise ValueError(f"Hole wire {i} not closed!")
         _validate_wire(hw, f"Hole wire {i}")
     return outer, holes
-
-
-def _face_normal(face):
-    ur, vr = face.ParameterRange[:2], face.ParameterRange[2:]
-    return face.normalAt((ur[0] + ur[1]) / 2, (vr[0] + vr[1]) / 2)
 
 
 def _detect_orientation(bbox):

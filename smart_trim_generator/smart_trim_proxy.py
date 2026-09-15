@@ -48,8 +48,20 @@ def _get_document_centroid(doc, exclude_names=None):
     return avg * (1.0 / len(centers))
 
 
-def _resolve_outward_face(selected_face, parent_shape, doc=None):
-    """Return the outward-facing face of the wall, given any face on it."""
+def _resolve_outward_face(selected_face, parent_shape, doc=None, ref_center=None):
+    """Return the outward-facing face of the wall, given any face on it.
+
+    ref_center: pre-computed document centroid, if the caller already has
+    one. Full-review finding freecad-mr-generators-20260915-e612#20: doc's
+    centroid doesn't change within one execute() call, but this function
+    used to recompute it (an O(document-objects) CenterOfMass loop) on
+    every call from generate_trim's per-face loop, and generate_trim
+    recomputed it AGAIN right after calling this -- up to 2xNxM redundant
+    mass-property computations for N faces and M document objects. Pass
+    ref_center to skip recomputation; omitted (None), this still computes
+    it itself so existing callers that don't have one yet keep working
+    unchanged.
+    """
     sel_area = selected_face.Area
     uv = selected_face.Surface.parameter(selected_face.CenterOfMass)
     sel_normal = selected_face.normalAt(uv[0], uv[1])
@@ -67,7 +79,9 @@ def _resolve_outward_face(selected_face, parent_shape, doc=None):
             break
 
     # Reference point for "outward" direction
-    if doc is not None:
+    if ref_center is not None:
+        pass  # caller already computed it
+    elif doc is not None:
         ref_center = _get_document_centroid(doc)
     else:
         try:
@@ -126,6 +140,12 @@ def generate_trim(face_entries, params, doc=None):
     else:
         profile = tg.create_simple_rectangular_profile(w, h)
 
+    # Full-review finding freecad-mr-generators-20260915-e612#20: doc's
+    # centroid is invariant across this whole call -- compute it once here
+    # instead of once per face (twice per face, previously: once inside
+    # _resolve_outward_face, again immediately after).
+    doc_ref_center = _get_document_centroid(doc) if doc is not None else None
+
     for i, entry in enumerate(face_entries, 1):
         # Support both (face, parent_shape) and (face, parent_shape, parent_obj)
         if len(entry) == 3:
@@ -146,12 +166,12 @@ def generate_trim(face_entries, params, doc=None):
         try:
             if parent_shape is not None:
                 original_face = face
-                face = _resolve_outward_face(face, parent_shape, doc=doc)
+                face = _resolve_outward_face(face, parent_shape, doc=doc,
+                                              ref_center=doc_ref_center)
 
                 # Outward hint from document centroid
-                if doc is not None:
-                    ref_center = _get_document_centroid(doc)
-                    hint_vec = face.CenterOfMass - ref_center
+                if doc_ref_center is not None:
+                    hint_vec = face.CenterOfMass - doc_ref_center
                     if hint_vec.Length > 1e-6:
                         outward_hint = hint_vec
 

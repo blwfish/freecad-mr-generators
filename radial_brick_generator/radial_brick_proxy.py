@@ -25,17 +25,15 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from radial_brick_geometry import RadialBrickGeometry, RadialBrickDef
-from freecad_utils import resolve_sources_faces
+from freecad_utils import (
+    resolve_sources_faces,
+    face_normal_at_center as _face_normal_at_center,
+)
 
 
 # =============================================================================
 # Face analysis helpers
 # =============================================================================
-
-def _face_normal_at_center(face):
-    ur, vr = face.ParameterRange[:2], face.ParameterRange[2:]
-    return face.normalAt((ur[0] + ur[1]) / 2, (vr[0] + vr[1]) / 2)
-
 
 def analyze_cylindrical_face(face):
     """

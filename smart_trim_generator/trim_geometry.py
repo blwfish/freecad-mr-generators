@@ -570,7 +570,7 @@ def _is_perimeter_edge(edge, face_bbox, vertical_axis: str = 'z',
 
 
 def apply_miter_cut_at_corner(solid, corner: Corner, face_normal,
-                              keep_direction, cut_size: float = 200.0):
+                              keep_direction, cut_size: float = None):
     """
     Boolean-cut a trim solid along the miter bisector plane at a corner.
 
@@ -584,13 +584,31 @@ def apply_miter_cut_at_corner(solid, corner: Corner, face_normal,
         face_normal:    FreeCAD.Vector — wall face outward normal
         keep_direction: FreeCAD.Vector — direction from the corner toward
                         the part of the solid we want to keep
-        cut_size:       half-extent of the cutting plane (mm)
+        cut_size:       half-extent of the cutting plane (mm). Full-review
+                        finding freecad-mr-generators-20260915-e612#21:
+                        previously a hardcoded 200.0 "big enough for HO
+                        scale" constant with no derivation from the actual
+                        solid being cut and no check that it really was
+                        big enough. Default (None) now derives it from the
+                        solid's own BoundBox.DiagonalLength (doubled, so
+                        the cutting plane's half-extent comfortably spans
+                        the solid regardless of corner position within
+                        it) -- pass an explicit value only to override.
 
     Returns:
         Cut FreeCAD solid, or original solid on failure
     """
     import Part
     import FreeCAD as App
+
+    if cut_size is None:
+        try:
+            cut_size = max(solid.BoundBox.DiagonalLength * 2.0, 1.0)
+        except (AttributeError, RuntimeError):
+            # No usable BoundBox (e.g. a null/invalid solid) -- fall back
+            # to the old fixed constant rather than failing outright; the
+            # cut itself will fail cleanly below if the solid is unusable.
+            cut_size = 200.0
 
     corner_pos = App.Vector(*corner.position)
     bisector = compute_miter_bisector(corner)

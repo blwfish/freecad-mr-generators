@@ -88,7 +88,9 @@ def _wires_to_faces(char_wires):
         try:
             f = Part.Face(char_wires)
             return [f] if not f.isNull() else []
-        except Exception:
+        except Exception as exc:
+            App.Console.PrintWarning(
+                f"label_proxy: single-wire glyph face construction failed: {exc}\n")
             return []
 
     bboxes = [(w.BoundBox.XMin, w.BoundBox.XMax, w.BoundBox.YMin, w.BoundBox.YMax)
@@ -101,8 +103,13 @@ def _wires_to_faces(char_wires):
             f = Part.Face([char_wires[i] for i in group])
             if not f.isNull():
                 faces.append(f)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Full-review finding freecad-mr-generators-20260915-e612#26:
+            # previously silent -- a glyph could lose a wire group with no
+            # record of which one or why.
+            App.Console.PrintWarning(
+                f"label_proxy: glyph face construction failed for wire "
+                f"group {group}: {exc}\n")
 
     return faces
 
