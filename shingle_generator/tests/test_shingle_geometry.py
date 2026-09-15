@@ -13,15 +13,10 @@ from shingle_geometry import (
     validate_stagger_pattern,
     calculate_stagger_offset,
     calculate_layout,
-    validate_face_geometry,
     is_planar,
     calculate_face_bounds,
-    detect_face_orientation,
-    validate_face_for_shingling,
-    get_orientation_description,
     calculate_shingle_position,
     calculate_shingle_placements,
-    validate_collar_margin,
     # v5.0.0: Bounding-box based orientation
     find_eave_and_ridge_vertices,
     calculate_upslope_direction,
@@ -221,31 +216,6 @@ class TestLayout:
         assert layout['shingles_per_course'] >= 14
 
 
-class TestFaceGeometry:
-    """Tests for face geometry validation"""
-    
-    def test_valid_face_size(self):
-        """Face with valid dimensions should pass"""
-        is_valid, errors = validate_face_geometry(100.0, 150.0)
-        assert is_valid
-    
-    def test_zero_width_rejected(self):
-        """Zero width should fail"""
-        is_valid, errors = validate_face_geometry(0, 100.0)
-        assert not is_valid
-    
-    def test_negative_height_rejected(self):
-        """Negative height should fail"""
-        is_valid, errors = validate_face_geometry(100.0, -50.0)
-        assert not is_valid
-    
-    def test_very_small_face_warning(self):
-        """Face smaller than 5x5mm should generate warning"""
-        is_valid, errors = validate_face_geometry(3.0, 3.0)
-        assert len(errors) > 0
-        assert any("small" in e.lower() for e in errors)
-
-
 class TestPlanarity:
     """Tests for is_planar()"""
     
@@ -349,114 +319,6 @@ class TestBounds:
         assert bounds['y_max'] == 5
 
 
-class TestOrientationDetection:
-    """Tests for detect_face_orientation()"""
-    
-    def test_xy_plane_detected(self):
-        """XY plane (z extent ~ 0) should be detected"""
-        bbox = {
-            'x_min': 0, 'x_max': 100,
-            'y_min': 0, 'y_max': 150,
-            'z_min': 0, 'z_max': 0.05  # Nearly zero
-        }
-        vert, horiz = detect_face_orientation(bbox)
-        assert vert == 'y' or vert == 'x'  # One of them is vertical
-        assert horiz != vert  # Other is horizontal
-    
-    def test_xz_plane_detected(self):
-        """XZ plane (y extent ~ 0) should be detected"""
-        bbox = {
-            'x_min': 0, 'x_max': 100,
-            'y_min': 0, 'y_max': 0.05,  # Nearly zero
-            'z_min': 0, 'z_max': 150
-        }
-        vert, horiz = detect_face_orientation(bbox)
-        assert vert == 'z' or vert == 'x'
-        assert horiz != vert
-    
-    def test_yz_plane_detected(self):
-        """YZ plane (x extent ~ 0) should be detected"""
-        bbox = {
-            'x_min': 0, 'x_max': 0.05,  # Nearly zero
-            'y_min': 0, 'y_max': 100,
-            'z_min': 0, 'z_max': 150
-        }
-        vert, horiz = detect_face_orientation(bbox)
-        assert vert == 'z' or vert == 'y'
-        assert horiz != vert
-
-
-class TestFaceValidation:
-    """Tests for validate_face_for_shingling()"""
-    
-    def test_valid_rectangular_face(self):
-        """Standard rectangular face should be valid"""
-        points = [
-            (0, 0, 0),
-            (100, 0, 0),
-            (100, 150, 0),
-            (0, 150, 0)
-        ]
-        is_valid, errors = validate_face_for_shingling(points)
-        assert is_valid
-        assert len(errors) == 0
-    
-    def test_too_few_vertices_rejected(self):
-        """Face with less than 4 vertices should fail"""
-        points = [
-            (0, 0, 0),
-            (10, 0, 0),
-            (10, 10, 0)
-        ]
-        is_valid, errors = validate_face_for_shingling(points)
-        assert not is_valid
-        assert any("vertices" in e.lower() for e in errors)
-    
-    def test_non_planar_face_rejected(self):
-        """Non-planar face should fail"""
-        points = [
-            (0, 0, 0),
-            (100, 0, 0),
-            (100, 100, 0),
-            (50, 50, 100)  # Non-coplanar
-        ]
-        is_valid, errors = validate_face_for_shingling(points)
-        assert not is_valid
-        assert any("planar" in e.lower() for e in errors)
-    
-    def test_very_small_face_warning(self):
-        """Face smaller than minimum should generate errors"""
-        points = [
-            (0, 0, 0),
-            (3, 0, 0),
-            (3, 3, 0),
-            (0, 3, 0)
-        ]
-        is_valid, errors = validate_face_for_shingling(points, min_width=5, min_height=5)
-        # Could be invalid or valid with warnings depending on implementation
-        # At minimum, errors should be reported
-        assert len(errors) > 0
-
-
-class TestOrientationDescription:
-    """Tests for get_orientation_description()"""
-    
-    def test_xy_plane_description(self):
-        """XY plane should be described correctly"""
-        desc = get_orientation_description('y', 'x')
-        assert "XY" in desc
-    
-    def test_xz_plane_description(self):
-        """XZ plane should be described correctly"""
-        desc = get_orientation_description('z', 'x')
-        assert "XZ" in desc
-    
-    def test_yz_plane_description(self):
-        """YZ plane should be described correctly"""
-        desc = get_orientation_description('z', 'y')
-        assert "YZ" in desc
-
-
 class TestShinglePosition:
     """Tests for calculate_shingle_position()"""
     
@@ -491,71 +353,6 @@ class TestShinglePosition:
         v2 = calculate_shingle_position(2, 0, 10.0, 20.0, 15.0, "none")[1]
         assert v1 > v0
         assert v2 > v1
-
-
-class TestCollarMargin:
-    """Tests for validate_collar_margin()"""
-    
-    def test_reasonable_margin(self):
-        """Collar margin should be reasonable"""
-        margin = validate_collar_margin(10.0, 20.0)
-        # Should be 3x largest, so 3 * 20 = 60
-        assert margin == 60.0
-    
-    def test_margin_depends_on_larger_dimension(self):
-        """Margin should use largest dimension"""
-        margin_small = validate_collar_margin(5.0, 10.0)  # 3 * 10 = 30
-        margin_large = validate_collar_margin(20.0, 10.0)  # 3 * 20 = 60
-        assert margin_large > margin_small
-
-
-# Integration tests
-class TestIntegration:
-    """Integration tests combining multiple functions"""
-    
-    def test_full_validation_pipeline(self):
-        """Test a complete validation pipeline"""
-        # Parameters
-        is_valid, _ = validate_parameters(10.0, 20.0, 0.5, 15.0)
-        assert is_valid
-        
-        # Face
-        face_points = [(0, 0, 0), (100, 0, 0), (100, 150, 0), (0, 150, 0)]
-        is_valid, _ = validate_face_for_shingling(face_points)
-        assert is_valid
-        
-        # Layout
-        layout = calculate_layout(100.0, 150.0, 10.0, 15.0)
-        assert layout['num_courses'] > 0
-        assert layout['shingles_per_course'] > 0
-    
-    def test_realistic_roof_scenario(self):
-        """Test a realistic roof geometry"""
-        # 500mm wide, 300mm tall roof face at 30 degrees
-        face_points = [
-            (0, 0, 0),
-            (500, 0, 0),
-            (500, 250, 150),
-            (0, 250, 150)
-        ]
-        
-        # Should be planar (tilted)
-        assert is_planar(face_points, tolerance=0.01)
-        
-        # Should be valid for shingling
-        is_valid, errors = validate_face_for_shingling(face_points)
-        assert is_valid, f"Face invalid: {errors}"
-        
-        # Should detect orientation
-        bounds = calculate_face_bounds(face_points)
-        vert, horiz = detect_face_orientation(bounds)
-        assert vert in ['x', 'y', 'z']
-        assert horiz in ['x', 'y', 'z']
-        assert vert != horiz
-        
-        # Should calculate reasonable layout
-        layout = calculate_layout(500.0, 300.0, 10.0, 15.0)
-        assert layout['num_courses'] >= 20
 
 
 # =============================================================================
