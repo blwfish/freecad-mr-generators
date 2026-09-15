@@ -14,6 +14,24 @@ that case instead.
 Change any property in the Properties panel and the cap run regenerates.
 
 Version History:
+- 1.2.0: Auto-detect each cap's real vertical clearance by sampling the
+         actual tile-generator geometry (e.g. SlateTiles) at its own
+         wing-tip positions, instead of assuming the coursing sits at a
+         single guessed DeckOffset above the bare deck. Confirmed live
+         2026-09-14 that this assumption was wrong in two different ways
+         at once on the same document: a long, cleanly-fitted 42mm ridge
+         run's coursing measured only ~0.18-0.31mm proud of the bare deck
+         near the seam (a wedge tile's thin head), while a short 6mm hip
+         corner run -- whose top course doesn't divide evenly into the
+         available run -- measured ~0.60mm at the equivalent position (a
+         wedge tile's thick butt). DeckOffset=0 (checked flush against the
+         bare deck) made every cap on that document sit measurably too
+         low, worst on the short corner runs, reading as embedded into
+         the coursing rather than resting on top of it. DeckOffset is now
+         an optional manual ADD-ON above the auto-detected clearance
+         (default 0, so it still degrades gracefully to "manual value
+         only" on a seam with no coursing yet), not the sole source of
+         lift.
 - 1.1.0: Shared-edge resolution (find_shared_edge/resolve_shared_edge) moved
          to shared/freecad_utils.py and extended to recognize the Sources
          PropertyLinkSubList convention (this repo's modern standard, used
@@ -31,7 +49,7 @@ import Part
 import sys
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 GENERATOR_NAME = "slate_seam_generator"
 
 _here = Path(__file__).parent
@@ -147,6 +165,48 @@ def _build_seam_clip_volume(start_pt, edge_dir, local_x, local_z, edge_len,
     return Part.Face(wire).extrude(edge_dir * edge_len)
 
 
+def _sample_deck_clearance(point, direction, tile_shapes, probe_depth):
+    """Return how far, along *direction* from *point*, the farthest real
+    material in *tile_shapes* extends -- the actual local clearance a cap
+    resting at *point* needs to not embed into whatever slate coursing is
+    there, instead of guessing a single fixed lift for the whole seam.
+
+    *point* is expected to sit approximately on the bare roof deck (the
+    seam's own local frame, before any deck lift is applied); *direction*
+    should be a unit vector pointing away from the deck (this module uses
+    the seam's local_z bisector). Probes a short line segment from just
+    inside the deck out to probe_depth, and returns the largest distance
+    at which the line crosses any shape's boundary -- i.e. the outermost
+    (highest) surface found, since a cap must clear whichever course
+    layer -- not just the nearest one -- is actually proud at that point.
+
+    Returns 0.0 (not an error) when no shape has any material along the
+    probe -- e.g. a bare, unshingled roof face, or tile_shapes containing
+    None -- so callers degrade gracefully to their own manual override
+    instead of crashing on a seam that simply has no coursing yet.
+    """
+    p_below = point - direction * 0.05
+    p_above = point + direction * probe_depth
+    try:
+        probe = Part.makeLine(p_below, p_above)
+    except Exception:
+        return 0.0
+
+    best = 0.0
+    for shape in tile_shapes:
+        if shape is None:
+            continue
+        try:
+            section = shape.section(probe)
+        except Exception:
+            continue
+        for v in section.Vertexes:
+            d = (v.Point - point).dot(direction)
+            if d > best:
+                best = d
+    return best
+
+
 def _clip_shape(shape, clip_volume):
     """Clip *shape* against clip_volume. Returns clipped solid or None.
 
@@ -171,8 +231,25 @@ def _clip_shape(shape, clip_volume):
 # Cap generation
 # ---------------------------------------------------------------------------
 
-def _generate_caps(shared_edge, face1, obj1, face2, obj2, params):
+def _generate_caps(shared_edge, face1, obj1, face2, obj2, params,
+                    tile_shapes=()):
     """Generate slate seam cap solids for one resolved hip/ridge seam.
+
+    face1/obj1, face2/obj2 are the resolved BARE roof faces/object (e.g.
+    Fusion001) -- always the right source for the frame/dihedral math, but
+    NOT what a real cap needs to clear, since the actual slate coursing
+    sits proud of that bare deck by an amount that tapers along each
+    wedge tile (thin head near a ridge, thick butt further downslope) and
+    is NOT well modeled by one fixed number for a whole seam (confirmed
+    live 2026-09-14: a long, cleanly-fitted 42mm ridge run measured
+    ~0.18-0.31mm of coursing above the bare deck near the seam, while a
+    short 6mm hip corner run -- whose top course doesn't divide evenly --
+    measured ~0.60mm at the same relative position). *tile_shapes* are
+    the actual tile-generator objects' own Shapes (e.g. SlateTiles),
+    sampled per-cap via _sample_deck_clearance so each cap sits directly
+    on whatever the real local slate surface is, rather than the bare
+    deck plus a single guessed DeckOffset. Pass () to fall back to the
+    manual deck_offset param alone (e.g. a seam with no coursing yet).
 
     Returns (shapes, seam_type, dihedral_degrees). shapes is empty (not an
     error) when the seam is correctly classified but ineligible (valley,
@@ -218,23 +295,40 @@ def _generate_caps(shared_edge, face1, obj1, face2, obj2, params):
     dihedral_fold = calculate_dihedral_fold(dihedral_radians, cap_width)
     profile_2d = calculate_wing_profile_2d(dihedral_fold, mat_thick)
     h_center = dihedral_fold['h_center']
+    half_width = dihedral_fold['half_width']
 
-    # calculate_wing_profile_2d's own z=0 is the wing-TIP baseline, but the
-    # real hip/ridge line (start_pt/pt below) is at the wing-PEAK (bc),
-    # which sits at local z=h_center in that convention. Shifting the
-    # anchor down by h_center puts bc exactly on the real seam instead of
-    # floating h_center above it -- the fix for a real bug (2026-07-29):
-    # the first build anchored bl/br (the wing tips, sitting BELOW the
-    # ridge on the actual roof) at the seam's own height, leaving the
-    # whole cap floating h_center above the roof surface with nothing
-    # visibly supporting it. deck_offset then lifts the (now correctly
-    # anchored) cross-section a small additional amount to clear the
-    # underlying coursing's own material thickness, if any.
-    anchor_shift = local_z * (deck_offset - h_center)
+    # Probe depth generous enough to see past even a wedge tile's thickest
+    # (butt) point, scaled off the cap's own material thickness rather
+    # than a bare constant -- consistent with this project's scale-
+    # relative epsilon convention (e.g. TOPO_EPS elsewhere).
+    probe_depth = mat_thick * 20.0 + 1.0
+
+    # Sample the real coursing's proud height at a few points along the
+    # whole seam up front, just to size the clip volume generously enough
+    # for the tallest cap this run will produce -- the ACTUAL per-cap
+    # anchor is resampled fresh at each cap's own position below, since
+    # clearance is not assumed constant along the seam.
+    sample_ts = (0.0, edge_len * 0.5, edge_len) if edge_len > 0 else (0.0,)
+    max_auto_clearance = 0.0
+    for st in sample_ts:
+        seam_pt = start_pt + edge_dir * st
+        for side in (-1.0, 1.0):
+            # Wing tip, BEFORE any deck lift -- must drop by h_center along
+            # local_z (matching the real 3D wing-tip construction below),
+            # not just offset sideways by half_width in local_x. Missing
+            # this dropped the probe above the real, downward-sloping roof
+            # surface at anything past a small lateral offset -- caught
+            # live 2026-09-14 by comparing this function's own reading
+            # against a manual measurement using each face's real tangent,
+            # which found real coursing at the same lateral distance this
+            # probe was reporting as bare (0.0).
+            wing_tip = seam_pt + local_x * (side * half_width) - local_z * h_center
+            c = _sample_deck_clearance(wing_tip, local_z, tile_shapes, probe_depth)
+            max_auto_clearance = max(max_auto_clearance, c)
 
     clip_volume = _build_seam_clip_volume(
         start_pt, edge_dir, local_x, local_z, edge_len,
-        cap_width, h_center, mat_thick, deck_offset)
+        cap_width, h_center, mat_thick, deck_offset + max_auto_clearance)
 
     shapes = []
     for i in range(cap_count):
@@ -249,7 +343,39 @@ def _generate_caps(shared_edge, face1, obj1, face2, obj2, params):
         if hide_incomplete_end and not is_top_course_complete(t + cap_length, edge_len):
             continue
 
-        pt = start_pt + edge_dir * t + anchor_shift
+        seam_pt = start_pt + edge_dir * t
+        # This cap's own real local clearance -- sampled fresh at its own
+        # wing-tip positions rather than reusing a single seam-wide value,
+        # since a wedge tile's taper (and a short, unevenly-fitted run's
+        # own course boundaries) can genuinely differ from one cap to the
+        # next along the same seam. deck_offset remains available as a
+        # manual ADDITIONAL lift on top of whatever was auto-detected --
+        # 0.0 (its default) changes nothing; a nonzero value still helps
+        # on a seam with no coursing yet (tile_shapes finds nothing, so
+        # auto_clearance is 0.0 and deck_offset alone applies).
+        auto_clearance = max(
+            _sample_deck_clearance(
+                seam_pt + local_x * (-half_width) - local_z * h_center,
+                local_z, tile_shapes, probe_depth),
+            _sample_deck_clearance(
+                seam_pt + local_x * half_width - local_z * h_center,
+                local_z, tile_shapes, probe_depth),
+        )
+        local_deck_offset = deck_offset + auto_clearance
+
+        # calculate_wing_profile_2d's own z=0 is the wing-TIP baseline, but
+        # the real hip/ridge line (seam_pt) is at the wing-PEAK (bc), which
+        # sits at local z=h_center in that convention. Shifting the anchor
+        # down by h_center puts bc exactly on the real seam instead of
+        # floating h_center above it -- the fix for a real bug (2026-07-29):
+        # the first build anchored bl/br (the wing tips, sitting BELOW the
+        # ridge on the actual roof) at the seam's own height, leaving the
+        # whole cap floating h_center above the roof surface with nothing
+        # visibly supporting it. local_deck_offset then lifts the (now
+        # correctly anchored) cross-section to clear the underlying
+        # coursing actually found at this cap's own position.
+        anchor_shift = local_z * (local_deck_offset - h_center)
+        pt = seam_pt + anchor_shift
         pts3d = {k: pt + local_x * x + local_z * z
                   for k, (x, z) in profile_2d.items()}
         try:
@@ -303,10 +429,12 @@ class SlateSeamProxy:
                             "Spacing between caps along the seam")
         if not hasattr(obj, 'DeckOffset'):
             obj.addProperty("App::PropertyLength", "DeckOffset", grp,
-                            "Extra lift above the bare roof faces, to clear "
-                            "the thickness of an underlying slate/shingle "
-                            "course the cap sits on top of (0 = cap rests "
-                            "directly on the bare roof faces)")
+                            "Extra manual lift ON TOP OF the coursing "
+                            "clearance already auto-detected from the "
+                            "real tile geometry (0 = trust the "
+                            "auto-detected clearance alone; only needed "
+                            "as a fudge factor, or on a seam with no "
+                            "coursing generated yet)")
         if not hasattr(obj, 'HideIncompleteEndCap'):
             obj.addProperty("App::PropertyBool", "HideIncompleteEndCap", grp,
                             "Skip a cap entirely if it would poke past the "
@@ -383,9 +511,21 @@ class SlateSeamProxy:
             obj.DihedralDegrees = 0.0
             return
 
+        # obj1/obj2 here are the ORIGINAL selected objects (e.g. SlateTiles),
+        # before resolve_shared_edge unwrapped face1/face2 to their real
+        # bare-deck source (r_face1/r_obj1/r_face2/r_obj2, e.g. Fusion001)
+        # -- the bare deck is right for the frame/dihedral math, but the
+        # actual tile geometry (obj1/obj2's own Shape) is what a cap needs
+        # to sample for its real local clearance above the coursing.
+        tile_shapes = tuple(
+            o.Shape for o in (obj1, obj2)
+            if o is not None and hasattr(o, 'Shape') and o.Shape is not None
+        )
+
         try:
             shapes, seam_type, dihedral_degrees = _generate_caps(
-                shared_edge, r_face1, r_obj1, r_face2, r_obj2, params)
+                shared_edge, r_face1, r_obj1, r_face2, r_obj2, params,
+                tile_shapes=tile_shapes)
         except Exception as e:
             App.Console.PrintError(f"SlateSeamGenerator execute error: {e}\n")
             return
