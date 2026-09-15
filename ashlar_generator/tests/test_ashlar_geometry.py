@@ -391,6 +391,41 @@ class TestValidateParameters:
             n_cols=6, n_rows=4, stone_width=9.2, stone_height=6.1, joint_width=0.4)
         assert valid is True
 
+    def test_n_fractures_zero_rejected(self):
+        # Full-review finding freecad-mr-generators-20260915-e612#01:
+        # n_fractures=0 previously reached compute_fracture_z_values()
+        # unguarded, dividing the whole z_values array by zero (numpy
+        # silently produces NaN, no exception) and corrupting the entire
+        # stone surface.
+        valid, reason = validate_parameters(**{**self.VALID, 'n_fractures': 0})
+        assert valid is False
+
+    def test_n_fractures_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_fractures': -1})
+        assert valid is False
+
+    def test_n_fractures_one_is_valid(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'n_fractures': 1})
+        assert valid is True
+
+    def test_edge_taper_zero_rejected(self):
+        # Full-review finding freecad-mr-generators-20260915-e612#04:
+        # edge_taper=0 previously divided dist_from_edge by zero at every
+        # boundary grid point, corrupting boundary triangles with NaN.
+        valid, reason = validate_parameters(**{**self.VALID, 'edge_taper': 0.0})
+        assert valid is False
+
+    def test_edge_taper_negative_rejected(self):
+        valid, reason = validate_parameters(**{**self.VALID, 'edge_taper': -0.5})
+        assert valid is False
+
+    def test_default_n_fractures_and_edge_taper_are_valid(self):
+        # Omitting both (as most existing call sites in this test file do)
+        # must keep validating against the function's own defaults, not
+        # silently accept anything.
+        valid, reason = validate_parameters(**self.VALID)
+        assert valid is True
+
 
 # ---------------------------------------------------------------------------
 # compute_wall_dimensions
@@ -441,6 +476,31 @@ class TestComputeWallDimensions:
         assert max_y == pytest.approx(d['height'] + TOPO_EPS, abs=1e-6)
         assert min_x == pytest.approx(-TOPO_EPS, abs=1e-6)
         assert min_y == pytest.approx(-TOPO_EPS, abs=1e-6)
+
+    def test_wall_covers_all_stone_positions_zero_joint_width(self):
+        """Full-review finding freecad-mr-generators-20260915-e612#02:
+        joint_width=0.0 is explicitly valid (test_joint_width_zero_is_valid)
+        but TOPO_EPS = joint_width * 0.1 previously went to exactly 0.0 in
+        that case, making the boundary-overflow nudge a no-op -- boundary
+        stone edges then land EXACTLY coincident with the wall boundary,
+        which is precisely the OCCT coincident-boundary-face crash class
+        this nudge exists to prevent. Assert the nudge still strictly
+        overflows the wall boundary even at joint_width=0.0, using exact
+        (not approximate) comparison since the whole point is that the
+        overflow must be strictly greater than zero, not merely close to
+        it -- see this repo's Threshold-Boundary Testing Rule."""
+        n_cols, n_rows = 4, 3
+        sw, sh, jw = 7.0, 5.25, 0.0
+        d = compute_wall_dimensions(n_cols, n_rows, sw, sh, jw)
+        stones = compute_stone_positions(n_cols, n_rows, sw, sh, jw)
+        max_x = max(s['x'] + s['width']  for s in stones)
+        max_y = max(s['y'] + s['height'] for s in stones)
+        min_x = min(s['x'] for s in stones)
+        min_y = min(s['y'] for s in stones)
+        assert max_x > d['width']
+        assert max_y > d['height']
+        assert min_x < 0.0
+        assert min_y < 0.0
 
 
 class TestMissingNumpyScipyGuard:
