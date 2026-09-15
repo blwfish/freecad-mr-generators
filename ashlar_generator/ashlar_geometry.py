@@ -209,7 +209,9 @@ def generate_stone_surface(
 
 
 def validate_parameters(n_cols: int, n_rows: int, stone_width: float,
-                         stone_height: float, joint_width: float) -> Tuple[bool, str]:
+                         stone_height: float, joint_width: float,
+                         n_fractures: int = 3,
+                         edge_taper: float = 1.5) -> Tuple[bool, str]:
     """Reject dimensions that would produce degenerate/negative geometry.
 
     n_cols/n_rows <= 0 previously reached compute_wall_dimensions()
@@ -218,6 +220,15 @@ def validate_parameters(n_cols: int, n_rows: int, stone_width: float,
     straight into Part.makeBox with only a broad `except Part.OCCError`
     to catch it (full-review finding
     freecad-mr-generators-20260808-a0b9#24).
+
+    n_fractures/edge_taper <= 0 previously reached
+    compute_fracture_z_values() unguarded -- n_fractures=0 divides the
+    whole z_values array by zero (numpy silently produces NaN, no
+    exception) and edge_taper=0 divides dist_from_edge by zero at every
+    boundary grid point, corrupting the stone surface with NaN that only
+    surfaces later as a mysteriously ragged/holed/absent stone via the
+    bare `except Part.OCCError: pass` in _build_stone_solid (full-review
+    finding freecad-mr-generators-20260915-e612#01/#04).
 
     Returns (True, "") if valid, else (False, reason).
     """
@@ -231,6 +242,10 @@ def validate_parameters(n_cols: int, n_rows: int, stone_width: float,
         return False, f"StoneHeight must be > 0, got {stone_height}"
     if joint_width < 0:
         return False, f"JointWidth must be >= 0, got {joint_width}"
+    if n_fractures <= 0:
+        return False, f"NFractures must be >= 1, got {n_fractures}"
+    if edge_taper <= 0:
+        return False, f"EdgeTaper must be > 0, got {edge_taper}"
     return True, ""
 
 
@@ -249,7 +264,14 @@ def compute_stone_positions(
     """
     # TOPO_EPS: push boundary stones slightly outside the wall edges so OCCT
     # Boolean ops (base.cut(stones)) never see coincident coplanar faces.
-    TOPO_EPS = joint_width * 0.1
+    # joint_width=0.0 is a legal, explicitly-supported input (see
+    # test_joint_width_zero_is_valid) -- a pure relative nudge would go to
+    # exactly 0.0 in that case, making boundary stone faces land exactly
+    # coincident with the wall boundary (the precise OCCT crash class this
+    # nudge exists to prevent). Floor it to an absolute minimum so the nudge
+    # never vanishes regardless of joint_width (full-review finding
+    # freecad-mr-generators-20260915-e612#02).
+    TOPO_EPS = max(joint_width * 0.1, 1e-3)
 
     stones = []
     for row in range(n_rows):

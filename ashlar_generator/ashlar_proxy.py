@@ -183,7 +183,8 @@ class AshlarProxy:
             return
 
         valid, reason = validate_parameters(
-            obj.NCols, obj.NRows, obj.StoneWidth, obj.StoneHeight, obj.JointWidth)
+            obj.NCols, obj.NRows, obj.StoneWidth, obj.StoneHeight, obj.JointWidth,
+            n_fractures=obj.NFractures, edge_taper=obj.EdgeTaper)
         if not valid:
             App.Console.PrintError(f"AshlarProxy: invalid parameters: {reason}\n")
             return

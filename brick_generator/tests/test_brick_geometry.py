@@ -21,6 +21,15 @@ def _brick_u_extent(b):
     return (b.u, b.u + b.width)
 
 
+def _brick_v_extent(b):
+    """Extract (v_start, v_end) for the vertical (course-count) boundary-
+    overflow check. Unlike the U axis, course 0's baseline sits exactly at
+    v=0 (no left/bottom overflow by design) -- only the top of the highest
+    course needs to strictly overflow v_length, so callers check
+    direction='right' only."""
+    return (b.v, b.v + b.height)
+
+
 class TestBrickGeometryInit:
     """Test initialization and validation."""
     
@@ -675,6 +684,51 @@ class TestBoundaryOverflow:
                 get_extent=_brick_u_extent,
                 label=f"bond={bond} u_length={u_length} course={course_idx}: ",
             )
+
+    @pytest.mark.parametrize('bond', ['stretcher', 'english', 'flemish', 'common'])
+    @pytest.mark.parametrize('v_length', [
+        20.0,          # round number
+        0.76,          # single-course minimum (course_spacing_v = 0.76 with BRICK defaults)
+        100.0,         # tall wall, many courses
+        # Exact integer multiples of course_spacing_v (brick_height+mortar=0.76):
+        10 * 0.76,
+        25 * 0.76,
+    ])
+    def test_courses_overflow_wall_height(self, bond, v_length):
+        """Full-review finding freecad-mr-generators-20260915-e612#03: this
+        repo's own canonical TestBoundaryOverflow class (cited in CLAUDE.md
+        as the positive-baseline example of good boundary testing) only
+        ever checked the U axis (course width) here -- the analogous V axis
+        (course count / wall height, governed by
+        `num_courses = ceil(v_length/course_spacing_v) + 2`) had no
+        coverage at all, so a regression in that formula could silently
+        produce a wall that doesn't reach the top of the face_slab --
+        risking the same OCCT coincident-boundary-face crash class this
+        whole test class exists to guard against, just on the other axis.
+
+        Note: direct verification (see the full-review write-up) proved
+        the specific `+2`->`+1` mutation this finding was originally
+        raised against does NOT actually change observable v-overflow
+        behaviour for any input -- `ceil()` already guarantees the course
+        grid reaches v_length, so any margin >= 1 strictly overflows given
+        brick_height > 0. That +2->+1 mutation is semantically inert for
+        THIS invariant (mathematically equivalent, not a live bug); what
+        it would catch is a margin of 0 or a differently-broken formula.
+        This test still closes a genuine, real coverage gap -- there was
+        previously nothing pinning the vertical-overflow invariant at
+        all -- it just doesn't specifically discriminate the exact
+        mutation first suspected.
+        """
+        bg = BrickGeometry(u_length=20.0, v_length=v_length,
+                           bond_type=bond, **self.BRICK)
+        result = bg.generate()
+        bricks = result['bricks']
+        assert_overflows_boundary(
+            bricks, lo=0.0, hi=v_length,
+            get_extent=_brick_v_extent,
+            direction='right',
+            label=f"bond={bond} v_length={v_length}: ",
+        )
 
     def test_fit_run_closer_at_min_closer_boundary(self):
         """Mutation guard for `_fit_run_between_boundaries`'s own
