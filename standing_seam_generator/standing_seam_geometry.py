@@ -61,7 +61,7 @@ __all__ = [
     'is_valid_clip_fragment',
     # Standing-seam specific
     'validate_parameters', 'calculate_panel_layout',
-    'generate_panel_profile',
+    'calculate_panel_placements', 'generate_panel_profile',
     'DEFAULT_PANEL_WIDTH', 'DEFAULT_SEAM_WIDTH', 'DEFAULT_SEAM_HEIGHT',
 ]
 
@@ -110,6 +110,49 @@ def calculate_panel_layout(face_width: float, panel_width: float) -> Dict:
         'num_panels': num_panels,
         'start_u':    -panel_width,  # one panel before the left edge
     }
+
+
+def calculate_panel_placements(face_width: float, v_length: float,
+                                panel_width: float) -> List[Dict]:
+    """
+    Full per-panel placement list: U position (from calculate_panel_layout,
+    already overflow-protected -- see TestBoundaryOverflowRegression) plus a
+    V-axis start/extent.
+
+    Full-review finding freecad-mr-generators-20260915-e612#14: unlike the
+    U axis, the V axis was never given overflow protection.
+    standing_seam_proxy._generate_panels_for_face built each panel's
+    extrude vector as exactly v_length starting at v=0 (the eave), so the
+    panel's own end faces are flush with the clip volume's own eave/ridge
+    walls (_build_clip_volumes extrudes the *same* face, whose boundary
+    edges those walls trace) -- the identical coincident-boundary-face
+    class documented in CLAUDE.md's OCCT failure-mode table, just on one
+    shape's own extrude instead of a tiled family of elements. This
+    function nudges v_start/v_extent strictly past both the eave and
+    ridge/hip edges by topo_eps, this repo's established
+    fraction-of-relevant-dimension convention (see board_batten_geometry.
+    TOPO_EPS, slate_geometry.calculate_course_v_position).
+
+    Returns a list of dicts, one per panel:
+        {'i': int, 'u_start': float, 'v_start': float, 'v_extent': float}
+    """
+    layout = calculate_panel_layout(face_width, panel_width)
+    n_panels = layout['num_panels']
+    start_u = layout['start_u']
+
+    topo_eps = panel_width * 0.001
+    v_start = -topo_eps
+    v_extent = v_length + 2 * topo_eps
+
+    return [
+        {
+            'i': i,
+            'u_start': start_u + i * panel_width,
+            'v_start': v_start,
+            'v_extent': v_extent,
+        }
+        for i in range(n_panels)
+    ]
 
 
 # ---------------------------------------------------------------------------

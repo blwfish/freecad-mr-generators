@@ -174,3 +174,125 @@ def calculate_layout(face_width: float, face_height: float,
         'total_width_needed':     total_width_needed,
         'total_tiles_before_trim': num_courses * tiles_per_course,
     }
+
+
+def calculate_tile_placements(u_length: float, v_length: float,
+                               tile_width: float, tile_height: float,
+                               exposure: float,
+                               stagger_pattern: str = 'half') -> List[Dict]:
+    """
+    Full placement list for every slate tile that would actually survive
+    to be placed on a face of the given size.
+
+    Full-review finding freecad-mr-generators-20260915-e612#14: this
+    generator's V axis was already protected against the OCCT
+    coincident-face segfault class (see calculate_course_v_position's own
+    docstring), but the U axis -- `u = col*tile_width + stagger -
+    max_stagger`, previously inlined only in slate_proxy._generate_tiles_
+    for_face -- was not, and had no pure-Python form to test either way.
+    Confirmed live: stagger_pattern='none' means every row's col=0 starts
+    at EXACTLY u=0 for any face width -- the left boundary never
+    overflows at all, a systemic gap (the identical bug independently
+    confirmed in shingle_geometry.calculate_shingle_placements, whose
+    docstring this mirrors). This function is now the single source of
+    truth for the row-skip AND full U/V placement logic; slate_proxy.py
+    iterates over its output directly instead of maintaining its own copy.
+
+    Caller must pass an already-fitted `exposure` (i.e. the output of
+    calculate_fitted_exposure(v_length, raw_exposure)) -- this function
+    does not call that itself, matching slate_proxy.py's own existing
+    two-step convention (fit exposure once, then lay out courses).
+
+    Returns a list of dicts, one per placed tile:
+        {'row': int, 'col': int, 'u': float, 'v': float, 'v_butt': float}
+    where (u, v) is the top-left anchor (v already nudged away from
+    either V boundary by calculate_course_v_position), and v_butt = v -
+    tile_height (the butt/bottom edge, needed for the V-axis boundary
+    check -- slate's per-tile geometry always uses a fixed tile_height
+    regardless of row, unlike shingle's starter-course exception).
+
+    Row-skip logic (moved here verbatim from slate_proxy.py, where this
+    history originally lived):
+
+    A row is skipped entirely (never placed) once its RAW (un-nudged)
+    head position already pokes past the face's own top edge (ridge/hip
+    line at V=v_length) by more than stop_tolerance. Rows increase v
+    monotonically, so once this trips, every subsequent row would too --
+    checked explicitly each iteration rather than via break, in case that
+    assumption ever stops holding.
+
+    Unconditional as of 2026-09-14 (previously gated behind the optional
+    hide_incomplete_top_course flag, generating every "+3 buffer" row
+    past the ridge by default and relying on clipping to trim them).
+    Since the caller is expected to pass an already-fitted exposure,
+    calculate_fitted_exposure() guarantees an integer number of courses
+    lands the top course exactly on the ridge/hip line -- every course
+    past that one is therefore pure redundant overlap with zero
+    legitimate new coverage, never a genuinely-needed partial course. For
+    a flat tile that redundancy used to clip to a harmless thin sliver
+    (caught by is_valid_clip_fragment's volume-ratio threshold). For a
+    WEDGE tile (butt_thickness > material_thickness, the default whenever
+    ButtThickness=0) it was NOT harmless: confirmed live on a real hip
+    roof, the clip boundary can fall near the wedge's THICK butt end
+    instead of its thin head, so a substantial, visually prominent stub
+    survived well above the 5% discard threshold -- sitting right on top
+    of the already-complete course below it, unhidden, at the ridge/hip
+    line. hide_incomplete_top_course's own distinct behavior is now moot
+    in practice (there is no longer a "genuinely incomplete" top course
+    left for it to hide, since fitting always makes one exact) -- the
+    FeaturePython property is left in place on the proxy side rather than
+    removed, in case some future caller ever reaches this code without
+    fitting.
+
+    stop_tolerance is deliberately looser than is_top_course_complete()'s
+    own exact `<=` (used as-is by the optional hide_incomplete_top_course
+    feature, untouched by this function). calculate_fitted_exposure()
+    computes exposure so that MATHEMATICALLY an integer number of courses
+    lands exactly on v_length, but the actual float arithmetic in
+    calculate_course_v_position (row*exposure - exposure) can land a few
+    ULPs above the true value (confirmed live: row*exposure-exposure
+    computed 15.400000000000002 for an intended-exact 15.4) --
+    is_top_course_complete()'s strict `<=` would then misclassify the
+    intended-exact top course itself as "incomplete" and skip it, leaving
+    a real gap at the ridge instead of eliminating a redundant stub. Same
+    magnitude convention as calculate_course_v_position's own nudge.
+    """
+    layout = calculate_layout(u_length, v_length, tile_width, exposure, stagger_pattern)
+    num_courses = layout['num_courses']
+    tiles_per_course = layout['tiles_per_course']
+    max_stagger = layout['max_stagger']
+    stop_tolerance = abs(exposure) * 0.001
+
+    placements = []
+    for row in range(num_courses):
+        raw_v = calculate_course_v_position(row, exposure)
+        if raw_v > v_length + stop_tolerance:
+            continue
+
+        v = calculate_course_v_position(row, exposure, v_length)
+        stagger = calculate_stagger_offset(row, stagger_pattern, tile_width)
+
+        for col in range(tiles_per_course):
+            u = col * tile_width + stagger - max_stagger
+            placements.append({
+                'row': row, 'col': col, 'u': u, 'v': v,
+                'v_butt': v - tile_height,
+            })
+
+    if not placements:
+        return placements
+
+    # U-axis boundary nudge -- see docstring above. Same "only touch what
+    # needs touching" shape as calculate_course_v_position's own nudge and
+    # clapboard_geometry.calculate_course_v_positions's post-loop guarantee.
+    topo_eps = tile_width * 0.001
+
+    min_u_p = min(placements, key=lambda p: p['u'])
+    if min_u_p['u'] >= 0.0 - topo_eps:
+        min_u_p['u'] = -topo_eps
+
+    max_u_p = max(placements, key=lambda p: p['u'] + tile_width)
+    if max_u_p['u'] + tile_width <= u_length + topo_eps:
+        max_u_p['u'] = u_length + topo_eps - tile_width
+
+    return placements

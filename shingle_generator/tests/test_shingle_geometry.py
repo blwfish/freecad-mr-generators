@@ -20,6 +20,7 @@ from shingle_geometry import (
     validate_face_for_shingling,
     get_orientation_description,
     calculate_shingle_position,
+    calculate_shingle_placements,
     validate_collar_margin,
     # v5.0.0: Bounding-box based orientation
     find_eave_and_ridge_vertices,
@@ -962,16 +963,21 @@ class TestBoundaryOverflowRegression:
 
 
 class TestShinglePositionProxyParity:
-    """Cross-validation: calculate_shingle_position must stay in sync with
-    the inline formula in shingle_proxy._generate_shingles_for_face.
+    """Pin calculate_shingle_position's u/v formula against hand-
+    transcribed expected values.
 
-    The proxy does NOT call calculate_shingle_position — it inlines the
-    u/v math directly.  Any future edit to one side that doesn't update
-    the other will silently misplace shingles in the actual FreeCAD output
-    while all geometry-only tests continue to pass.
-
-    This class tests both sides against the same expected values to create
-    a coupling point that CI can catch.
+    Full-review finding freecad-mr-generators-20260915-e612#14: until
+    this fix, shingle_proxy._generate_shingles_for_face did NOT call
+    calculate_shingle_position at all -- it inlined an independent copy
+    of the u/v math, so this class existed as a coupling point between
+    two formulas that could silently drift apart. The proxy now calls
+    shingle_geometry.calculate_shingle_placements() (which itself calls
+    calculate_shingle_position()) directly -- there's no second inline
+    formula left to drift, so this class is no longer a proxy/geometry
+    parity test in the strict sense. Kept as a plain regression pin on
+    the formula itself (verbatim-transcribed expected values, not
+    computed from the function under test) since it's still a real
+    value-add, just not for the reason it was originally written.
     """
 
     @pytest.mark.parametrize('row,col,shingle_width,exposure,pattern', [
@@ -1018,6 +1024,83 @@ class TestShinglePositionProxyParity:
             f"v mismatch row={row} col={col} pattern={pattern}: "
             f"geometry={geo_v} proxy={proxy_v}"
         )
+
+
+from boundary_assertions import assert_overflows_boundary
+
+
+def _shingle_v_extent(p):
+    return (p['v_butt'], p['v'])
+
+
+class TestCalculateShinglePlacementsBoundaryOverflow:
+    """Boundary-overflow invariant: courses must overflow the face edges
+    on both axes, or shingle_proxy's `_clip_shape` OCCT common() Boolean
+    risks the coincident-face segfault this repo's CLAUDE.md documents.
+
+    Full-review finding freecad-mr-generators-20260915-e612#14: this
+    generator had NO coverage of this invariant at all -- the position
+    math needed to check it was inlined directly in shingle_proxy.py with
+    no pure-Python form, until calculate_shingle_placements() (see the
+    parity test class above) extracted it. This class is the actual
+    point of that extraction: a genuine, previously-impossible-to-write
+    regression test against the exact OCCT-crash-risk this repo's
+    boundary-coincidence testing rule exists for.
+    """
+
+    BASE = dict(shingle_width=3.5, shingle_height=2.0, shingle_exposure=1.5,
+                stagger_pattern='half')
+
+    @pytest.mark.parametrize('u_length,v_length', [
+        (20.0, 25.4),                          # round numbers
+        (3.5 * 4, 1.5 * 10),                   # exact integer multiples of width/exposure
+        (3.5, 1.5),                            # single-unit minimum -- CONFIRMED LIVE this
+                                                # exact case previously landed the top course's
+                                                # head exactly on v_length with zero overflow,
+                                                # before the fix in calculate_shingle_placements
+        (3.5 * 4 + 0.001, 1.5 * 10 - 0.001),   # just above/below an exact multiple
+        (10.16, 25.4),                         # real HO-scale model dimensions
+    ])
+    @pytest.mark.parametrize('stagger_pattern', ['half', 'third', 'none'])
+    def test_placements_overflow_face_boundary(self, u_length, v_length, stagger_pattern):
+        """stagger_pattern='none' is included deliberately, not just for
+        symmetry with 'half'/'third': CONFIRMED LIVE that before the fix
+        in calculate_shingle_placements, 'none' never overflowed the U
+        (left) boundary AT ALL, for any face size -- zero stagger means
+        every row's col=0 starts at exactly u=0. A systemic gap, not a
+        narrow edge case, and the whole reason this parametrization
+        includes all three patterns rather than just the default."""
+        params = {**self.BASE, 'stagger_pattern': stagger_pattern}
+        placements = calculate_shingle_placements(u_length, v_length, **params)
+        shingle_width = params['shingle_width']
+
+        assert_overflows_boundary(
+            placements, lo=0.0, hi=u_length,
+            get_extent=lambda p: (p['u'], p['u'] + shingle_width),
+            label=f"U axis, u_length={u_length} v_length={v_length} pattern={stagger_pattern}: ",
+        )
+        assert_overflows_boundary(
+            placements, lo=0.0, hi=v_length, get_extent=_shingle_v_extent,
+            label=f"V axis, u_length={u_length} v_length={v_length} pattern={stagger_pattern}: ",
+        )
+
+    def test_degenerate_face_smaller_than_one_shingle_produces_no_placements(self):
+        """Ambiguous-input case, pinned rather than silently relying on:
+        a face smaller than a single shingle/course (here, far smaller
+        than shingle_exposure and shingle_height both) produces an EMPTY
+        placement list -- every candidate row gets skipped or the loop
+        breaks before any row's "on face" fraction reaches half its own
+        height. This is legitimate, pre-existing behavior (confirmed via
+        3000-trial equivalence testing against the pre-extraction inline
+        formula, not something this fix introduced) -- a face this small
+        is degenerate input a real building would never produce, and
+        assert_overflows_boundary already raises its own clear error for
+        an empty list rather than silently passing, so there's no boundary
+        invariant left to check once this case is reached; this test
+        exists only to pin that the empty-list behavior itself is known
+        and intentional, not undiscovered."""
+        placements = calculate_shingle_placements(0.001, 0.001, **self.BASE)
+        assert placements == []
 
 
 if __name__ == '__main__':

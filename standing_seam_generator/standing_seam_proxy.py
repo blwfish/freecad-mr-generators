@@ -23,7 +23,7 @@ for _p in (str(_here), str(_here / '_lib')):
 
 from standing_seam_geometry import (
     validate_parameters,
-    calculate_panel_layout,
+    calculate_panel_placements,
     generate_panel_profile,
     is_valid_clip_fragment,
     DEFAULT_PANEL_WIDTH,
@@ -106,9 +106,14 @@ def _generate_panels_for_face(face, params):
     origin, u_vec, v_vec, normal, u_length, v_length = \
         _get_face_coordinate_system(face)
 
-    layout   = calculate_panel_layout(u_length, panel_width)
-    n_panels = layout['num_panels']
-    start_u  = layout['start_u']
+    # Full-review finding freecad-mr-generators-20260915-e612#14: U position
+    # AND V start/extent used to be computed inline here -- U had an
+    # existing overflow guarantee (calculate_panel_layout's start_u/+2
+    # panels), but V had none: extrude_vec was exactly v_length starting at
+    # v=0, flush with _build_clip_volumes' own eave/ridge walls. standing_
+    # seam_geometry.calculate_panel_placements() is now the single source
+    # of truth for both -- see its own docstring.
+    placements = calculate_panel_placements(u_length, v_length, panel_width)
 
     profile_pts = generate_panel_profile(
         panel_width, seam_height, seam_width, panel_thickness)
@@ -118,13 +123,14 @@ def _generate_panels_for_face(face, params):
     except Exception:
         clip_volumes = None
 
-    extrude_vec = _sv(v_vec, v_length)
     shapes = []
 
-    for i in range(n_panels):
-        u_start = start_u + i * panel_width
-        # Base point at eave level, left edge of this panel
-        base = origin + _sv(u_vec, u_start)
+    for placement in placements:
+        i = placement['i']
+        u_start = placement['u_start']
+        extrude_vec = _sv(v_vec, placement['v_extent'])
+        # Base point at (nudged) eave level, left edge of this panel
+        base = origin + _sv(u_vec, u_start) + _sv(v_vec, placement['v_start'])
 
         # Build 3D profile points at the eave (v=0)
         # Each (u_local, z_local) → 3D via: base + u_local*u_vec + z_local*normal
