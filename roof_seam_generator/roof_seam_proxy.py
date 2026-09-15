@@ -34,7 +34,10 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from freecad_utils import find_shared_edge, resolve_shared_edge, resolve_sources_faces  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    find_shared_edge, resolve_shared_edge, resolve_sources_faces,
+    face_normal_at_center as _face_normal_at_center,
+)
 from roof_geometry import classify_roof_intersection  # noqa: E402
 from roof_seam_geometry import (  # noqa: E402
     validate_exposure,
@@ -47,11 +50,6 @@ from roof_seam_geometry import (  # noqa: E402
 # Geometry helpers
 # =============================================================================
 
-def _face_normal_at_center(face):
-    uv = face.ParameterRange
-    return face.normalAt((uv[0] + uv[1]) / 2, (uv[2] + uv[3]) / 2)
-
-
 def _make_rotation_matrix(x_axis, y_axis, z_axis):
     return App.Matrix(
         x_axis.x, y_axis.x, z_axis.x, 0,
@@ -59,6 +57,54 @@ def _make_rotation_matrix(x_axis, y_axis, z_axis):
         x_axis.z, y_axis.z, z_axis.z, 0,
         0, 0, 0, 1,
     )
+
+
+def _hip_edge_frame(shared_edge, face1, face2):
+    """
+    Common hip/ridge-edge local coordinate frame shared by
+    generate_hip_caps/generate_slate_hip_caps/generate_metal_hip_strip.
+
+    Orients the edge eave (low Z) -> apex (high Z), computes both faces'
+    outward normals, the bisector-plane normal (local_z), and an in-plane
+    local_x perpendicular to both the edge and the bisector.
+
+    Returns (start_pt, end_pt, edge_dir, edge_len, n1_out, n2_out,
+             local_x, local_z).
+
+    Full-review finding freecad-mr-generators-20260915-e612#17: this
+    ~20-line block was independently copy-pasted 3x in this file (once
+    per function above) with no shared helper. Consolidating here also
+    closes a latent gap: only generate_hip_caps guarded the bisector
+    degenerate case (near-opposite face normals) with a clear ValueError
+    -- generate_slate_hip_caps/generate_metal_hip_strip would have divided
+    by a near-zero-length vector instead. All three now share the guard.
+    """
+    v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
+    start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
+    edge_vec = end_pt - start_pt
+    edge_len = edge_vec.Length
+    edge_dir = edge_vec * (1.0 / edge_len)
+
+    n1 = _face_normal_at_center(face1)
+    n2 = _face_normal_at_center(face2)
+    n1_out = n1 * -1.0 if n1.z < 0 else App.Vector(n1.x, n1.y, n1.z)
+    n2_out = n2 * -1.0 if n2.z < 0 else App.Vector(n2.x, n2.y, n2.z)
+
+    bisector_raw = n1_out + n2_out
+    if bisector_raw.Length < 1e-9:
+        raise ValueError(
+            "Cannot compute hip edge bisector: face normals are "
+            "near-opposite (nearly coplanar faces meeting at a "
+            "near-180 degree angle)")
+    local_z = bisector_raw * (1.0 / bisector_raw.Length)
+
+    local_x = edge_dir.cross(local_z)
+    if local_x.Length < 1e-9:
+        local_x = App.Vector(1, 0, 0)
+    else:
+        local_x = local_x * (1.0 / local_x.Length)
+
+    return start_pt, end_pt, edge_dir, edge_len, n1_out, n2_out, local_x, local_z
 
 
 
@@ -133,16 +179,8 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     validate_exposure(exposure, "generate_hip_caps")
 
     # Edge geometry — orient eave (low Z) → apex (high Z)
-    v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
-    start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
-    edge_vec = end_pt - start_pt
-    edge_len = edge_vec.Length
-    edge_dir = edge_vec * (1.0 / edge_len)
-
-    n1 = _face_normal_at_center(face1)
-    n2 = _face_normal_at_center(face2)
-    n1_out = n1 * -1.0 if n1.z < 0 else App.Vector(n1.x, n1.y, n1.z)
-    n2_out = n2 * -1.0 if n2.z < 0 else App.Vector(n2.x, n2.y, n2.z)
+    (start_pt, end_pt, edge_dir, edge_len, n1_out, n2_out, local_x, local_z
+     ) = _hip_edge_frame(shared_edge, face1, face2)
     seam_mid = (start_pt + end_pt) * 0.5
 
     def compute_d(n_out, face_centroid):
@@ -165,20 +203,6 @@ def generate_hip_caps(shared_edge, face1, face2, params):
 
     d1 = compute_d(n1_out, face1.CenterOfMass)
     d2 = compute_d(n2_out, face2.CenterOfMass)
-
-    bisector = n1_out + n2_out
-    if bisector.Length < 1e-9:
-        raise ValueError(
-            "Cannot compute hip cap bisector: face normals are near-opposite "
-            "(nearly coplanar faces meeting at a near-180 degree angle)")
-    bisector = bisector * (1.0 / bisector.Length)
-
-    local_x = edge_dir.cross(bisector)
-    if local_x.Length < 1e-9:
-        local_x = App.Vector(1, 0, 0)
-    else:
-        local_x = local_x * (1.0 / local_x.Length)
-    local_z = bisector
 
     cos_dihed = n1_out.dot(n2_out)
     profile = calculate_hip_cap_profile(half_width, mat_thick, cos_dihed, angle_depth)
@@ -261,7 +285,15 @@ def generate_hip_caps(shared_edge, face1, face2, params):
     cut_blocks = []
     try:
         shared_verts = [v.Point for v in shared_edge.Vertexes]
-        block_size = 200.0
+        # Full-review finding freecad-mr-generators-20260915-e612#22:
+        # previously a hardcoded 200.0 "big enough for HO scale" constant
+        # with no derivation from the actual roof geometry being cut and
+        # no check that it really dominates it. Derive from the two
+        # adjoining faces' own extents instead, so a cutting block this
+        # large scales with the actual model rather than an assumption
+        # about what "HO scale" means.
+        block_size = max(face1.BoundBox.DiagonalLength,
+                          face2.BoundBox.DiagonalLength, 1.0) * 2.0
 
         def _is_shared_edge(edge, tol2=0.5):
             ev = [v.Point for v in edge.Vertexes]
@@ -387,26 +419,8 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
 
     validate_exposure(exposure, "generate_slate_hip_caps")
 
-    v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
-    start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
-    edge_vec = end_pt - start_pt
-    edge_len = edge_vec.Length
-    edge_dir = edge_vec * (1.0 / edge_len)
-
-    n1 = _face_normal_at_center(face1)
-    n2 = _face_normal_at_center(face2)
-    n1_out = n1 * -1.0 if n1.z < 0 else App.Vector(n1.x, n1.y, n1.z)
-    n2_out = n2 * -1.0 if n2.z < 0 else App.Vector(n2.x, n2.y, n2.z)
-
-    bisector_raw = n1_out + n2_out
-    bisector = bisector_raw * (1.0 / bisector_raw.Length)
-
-    local_x = edge_dir.cross(bisector)
-    if local_x.Length < 1e-9:
-        local_x = App.Vector(1, 0, 0)
-    else:
-        local_x = local_x * (1.0 / local_x.Length)
-    local_z = bisector
+    (start_pt, end_pt, edge_dir, edge_len, _n1_out, _n2_out, local_x, local_z
+     ) = _hip_edge_frame(shared_edge, face1, face2)
 
     half_w = cap_width / 2.0
 
@@ -449,26 +463,8 @@ def generate_metal_hip_strip(shared_edge, face1, face2, params):
     cap_width = params.get('hipCapWidth', params.get('panelWidth', 3.0) * 2.0)
     mat_thick = params.get('materialThickness', 0.15)
 
-    v0, v1 = shared_edge.Vertexes[0].Point, shared_edge.Vertexes[-1].Point
-    start_pt, end_pt = (v0, v1) if v0.z <= v1.z else (v1, v0)
-    edge_vec = end_pt - start_pt
-    edge_len = edge_vec.Length
-    edge_dir = edge_vec * (1.0 / edge_len)
-
-    n1 = _face_normal_at_center(face1)
-    n2 = _face_normal_at_center(face2)
-    n1_out = n1 * -1.0 if n1.z < 0 else App.Vector(n1.x, n1.y, n1.z)
-    n2_out = n2 * -1.0 if n2.z < 0 else App.Vector(n2.x, n2.y, n2.z)
-
-    bisector_raw = n1_out + n2_out
-    bisector = bisector_raw * (1.0 / bisector_raw.Length)
-
-    local_x = edge_dir.cross(bisector)
-    if local_x.Length < 1e-9:
-        local_x = App.Vector(1, 0, 0)
-    else:
-        local_x = local_x * (1.0 / local_x.Length)
-    local_z = bisector
+    (start_pt, end_pt, edge_dir, edge_len, _n1_out, _n2_out, local_x, local_z
+     ) = _hip_edge_frame(shared_edge, face1, face2)
 
     half_w = cap_width / 2.0
     p0 = start_pt - local_x * half_w

@@ -57,7 +57,10 @@ for _p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from freecad_utils import find_shared_edge, resolve_shared_edge, resolve_sources_faces  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    find_shared_edge, resolve_shared_edge, resolve_sources_faces,
+    face_normal_at_center as _face_normal_at_center,
+)
 
 from slate_seam_geometry import (
     validate_parameters,
@@ -81,10 +84,6 @@ PROFILE_ORDER = ('bl', 'bc', 'br', 'tr', 'tc2', 'tc1', 'tl')
 # ---------------------------------------------------------------------------
 # FreeCAD geometry helpers
 # ---------------------------------------------------------------------------
-
-def _face_normal_at_center(face):
-    uv = face.ParameterRange
-    return face.normalAt((uv[0] + uv[1]) / 2, (uv[2] + uv[3]) / 2)
 
 def _face_to_tuples(face):
     """Extract plain-tuple vertices/normal/edges from a FreeCAD face, for

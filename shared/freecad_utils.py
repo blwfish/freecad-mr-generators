@@ -304,6 +304,22 @@ _AXIS_VECTORS = {
 }
 
 
+def face_normal_at_center(face):
+    """
+    Face normal at the midpoint of its ParameterRange.
+
+    Full-review finding freecad-mr-generators-20260915-e612#18: this
+    one-liner was independently duplicated across 6 proxies (clapboard,
+    board_batten, bead_board, radial_brick, roof_seam, slate_seam) under
+    two different names (_face_normal / _face_normal_at_center), AND
+    already existed 3x inline inside this very file (get_face_coordinate_
+    system, and twice in _closest_candidate below) -- the file meant to be
+    the single shared source of truth. Single source of truth now.
+    """
+    uv = face.ParameterRange
+    return face.normalAt((uv[0] + uv[1]) / 2, (uv[2] + uv[3]) / 2)
+
+
 def get_face_coordinate_system(face):
     """
     Establish U/V/normal coordinate system for a face.
@@ -325,8 +341,7 @@ def get_face_coordinate_system(face):
     y_range = max(p.y for p in pts) - min(p.y for p in pts)
     z_range = max(p.z for p in pts) - min(p.z for p in pts)
 
-    uv = face.ParameterRange
-    normal = face.normalAt((uv[0] + uv[1]) / 2, (uv[2] + uv[3]) / 2)
+    normal = face_normal_at_center(face)
 
     axes = compute_face_axes(x_range, y_range, z_range,
                               (normal.x, normal.y, normal.z))
@@ -498,9 +513,7 @@ def _closest_candidate(orig_face, candidates):
     if not candidates:
         return None, None
     orig_center = orig_face.CenterOfMass
-    orig_uv = orig_face.ParameterRange
-    orig_normal_v = orig_face.normalAt(
-        (orig_uv[0] + orig_uv[1]) / 2, (orig_uv[2] + orig_uv[3]) / 2)
+    orig_normal_v = face_normal_at_center(orig_face)
     orig_normal = (orig_normal_v.x, orig_normal_v.y, orig_normal_v.z)
     test_vtx = Part.Vertex(orig_center)
 
@@ -518,8 +531,7 @@ def _closest_candidate(orig_face, candidates):
                 f"center distance: {e}\n")
             d = orig_center.distanceToPoint(f.CenterOfMass)
         try:
-            f_uv = f.ParameterRange
-            fn = f.normalAt((f_uv[0] + f_uv[1]) / 2, (f_uv[2] + f_uv[3]) / 2)
+            fn = face_normal_at_center(f)
             normal = (fn.x, fn.y, fn.z)
         except Exception as e:
             App.Console.PrintWarning(
@@ -876,6 +888,16 @@ def resolve_font_path(font_path, caller_name):
             f"{caller_name}: FontPath {font_path!r} doesn't look like a "
             f"font file (expected .ttf/.otf/.ttc) -- using system default "
             f"font\n")
+        return ""
+    # Full-review finding freecad-mr-generators-20260915-e612#23: a file
+    # that exists, is a file, and has the right extension can still be
+    # unreadable (permissions) -- previously that passed every check here
+    # and only failed later, opaquely, inside Part.makeWireString, exactly
+    # the failure category this function exists to eliminate.
+    if not os.access(font_path, os.R_OK):
+        App.Console.PrintWarning(
+            f"{caller_name}: FontPath {font_path!r} exists but is not "
+            f"readable (permissions) -- using system default font\n")
         return ""
     return font_path
 

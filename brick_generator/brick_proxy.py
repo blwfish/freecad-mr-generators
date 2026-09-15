@@ -84,12 +84,18 @@ REVERSE QUOIN SIDES (v7.4.0):
   LeftQuoin/RightQuoin are defined by compute_face_axes' u-axis (u=0 is
   whichever end has the lower coordinate along the face's dominant
   bounding-box axis) -- deliberately independent of which way the face's
-  normal points, since corner_detection.py's automatic corner-pairing
-  depends on that independence. The practical consequence, confirmed live
-  on a real building: "left"/"right" do NOT consistently match your own
-  left/right hand when standing outside facing a given wall -- it flips
-  per-face depending on that wall's own facing direction (one wall of a
-  corner matched, the adjacent wall at 90 degrees was exactly backwards).
+  normal points, since shared/corner_detection.py's automatic
+  corner-pairing logic is WRITTEN to require that independence (note:
+  corner_detection.py itself has no callers anywhere in this repo as of
+  the 2026-09-15 full review -- this convention is a forward-looking
+  design constraint for that not-yet-wired-in consolidation, not a live
+  dependency today; brick_proxy.py's own corner handling currently goes
+  through the manual LeftQuoin/RightQuoin override properties below
+  instead). The practical consequence, confirmed live on a real building:
+  "left"/"right" do NOT consistently match your own left/right hand when
+  standing outside facing a given wall -- it flips per-face depending on
+  that wall's own facing direction (one wall of a corner matched, the
+  adjacent wall at 90 degrees was exactly backwards).
 
   ReverseQuoinSides (default False) swaps LeftQuoin<->RightQuoin and
   LeftQuoinPrimary<->RightQuoinPrimary for one face, applied in execute()
@@ -800,10 +806,11 @@ class BrickProxy:
                 "own Reversed checkbox -- it swaps LeftQuoin<->RightQuoin "
                 "and LeftQuoinPrimary<->RightQuoinPrimary for THIS face "
                 "only, after every other property is resolved, so it needs "
-                "no changes anywhere else (compute_face_axes/"
-                "corner_detection.py's U-axis convention, which the "
-                "auto-corner-pairing in corner_detection.py depends on "
-                "staying normal-independent, is untouched).")
+                "no changes anywhere else (compute_face_axes' U-axis "
+                "convention -- the one corner_detection.py's own "
+                "auto-corner-pairing logic is written to require staying "
+                "normal-independent, though that module has no callers "
+                "yet -- is untouched).")
             obj.ReverseQuoinSides = False
         if not hasattr(obj, 'LeftQuoinPrimaryFaces'):
             obj.addProperty(
