@@ -127,6 +127,44 @@ class TestGroupWireBboxesIntoIslands:
         assert len(groups) == 1
         assert set(groups[0]) == {0, 1, 2}
 
+    def test_mutually_equal_bboxes_do_not_vanish(self):
+        """Full-review finding freecad-mr-generators-20260915-e612#06:
+        two bboxes that mutually contain each other (equal, or near-equal
+        within eps -- e.g. two differently-shaped glyph wires that happen
+        to share a bounding box) each saw the OTHER as their container,
+        so BOTH were marked non-outer and neither ever started a group --
+        confirmed live: this exact input previously returned [] (both
+        wires silently vanished from the compound, no error). Must now
+        keep both wires: one designated outer, the other its hole."""
+        box = (0.0, 1.0, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box, box])
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1}
+
+    def test_three_mutually_equal_bboxes_do_not_vanish(self):
+        """Same failure mode as above, generalized to 3+ mutually-equal
+        bboxes -- every index sees every other index as a container, so a
+        naive fix that only handles the 2-wire case would still fail
+        here."""
+        box = (0.0, 1.0, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box, box, box])
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1, 2}
+
+    def test_near_equal_bboxes_within_eps_do_not_vanish(self):
+        """Same bug, but the two bboxes are only near-equal (within eps),
+        not bit-identical -- the realistic case for two independently-
+        measured font-outline wires."""
+        eps = 1e-6
+        box_a = (0.0, 1.0, 0.0, 1.0)
+        box_b = (0.0 + eps / 2, 1.0 - eps / 2, 0.0, 1.0)
+        groups = group_wire_bboxes_into_islands([box_a, box_b], eps=eps)
+        assert groups != []
+        assert len(groups) == 1
+        assert set(groups[0]) == {0, 1}
+
 
 # ---------------------------------------------------------------------------
 # calculate_sign_layout

@@ -337,26 +337,48 @@ class TestBoundaryCoincidence:
         gap_start == h_min (distance 0 < topo_eps): must snap.
         gap_start == topo_eps (distance topo_eps, NOT < topo_eps with `<`): must NOT snap.
         The `<`→`<=` mutation makes the second case snap, changing gap_start.
+
+        Full-review finding freecad-mr-generators-20260915-e612#13: the
+        previous version of this test used topo_eps=1e-3 and half_gap=0.10
+        (bead_gap=0.20), neither of which is exactly representable in
+        binary floating point. `(topo_eps + half_gap) - half_gap` then
+        rounds to 0.0010000000000000009 -- STRICTLY ABOVE topo_eps under
+        BOTH `<` and `<=`, so the intended "land exactly at the boundary"
+        case never actually landed there, and the `<`->`<=` mutation was
+        untestable via this input (verified live: both the real `<` code
+        and a `<=` mutant produce identical output for this test). This
+        repo's own Threshold-Boundary Testing Rule says exactly this:
+        "use exact arithmetic ... near a boundary" -- this test previously
+        violated its own project's rule.
+
+        Fixed by using topo_eps=2**-10 and half_gap=0.5 (bead_gap=1.0),
+        both exact dyadic binary fractions whose sum and difference round-
+        trip bit-for-bit (verified: `(2**-10 + 0.5) - 0.5 == 2**-10`
+        exactly, with zero residual). The specific numeric values don't
+        need to match the module's real-world default (1e-3) -- topo_eps
+        is a plain parameter here, and what this test is pinning is the
+        `<`/`<=` operator choice, not any particular scale.
         """
-        topo_eps = 1e-3
-        bead_gap = 0.20
-        half_gap = bead_gap / 2  # 0.10
+        topo_eps = 2 ** -10  # 0.0009765625 -- exact in binary
+        half_gap = 0.5        # exact in binary; bead_gap = 1.0
 
         # gap_start == h_min exactly (distance 0 < topo_eps → should snap)
         bead_center = 0.0 + half_gap
-        gaps = calculate_gap_positions([bead_center], bead_gap,
+        gaps = calculate_gap_positions([bead_center], 2 * half_gap,
                                        h_min=0.0, h_max=10.0, topo_eps=topo_eps)
-        assert gaps[0][0] == pytest.approx(-topo_eps, abs=1e-9), (
+        assert gaps[0][0] == -topo_eps, (
             "gap_start == h_min must snap to h_min - topo_eps"
         )
 
         # gap_start == topo_eps (distance topo_eps, not < topo_eps → must NOT snap)
         bead_center2 = topo_eps + half_gap
-        gaps2 = calculate_gap_positions([bead_center2], bead_gap,
+        gaps2 = calculate_gap_positions([bead_center2], 2 * half_gap,
                                         h_min=0.0, h_max=10.0, topo_eps=topo_eps)
-        # gap_start = bead_center2 - half_gap = (topo_eps + half_gap) - half_gap = topo_eps
-        assert gaps2[0][0] == pytest.approx(topo_eps, abs=1e-9), (
-            f"gap_start == topo_eps should NOT snap with `<` (only `<=` would snap)"
+        # gap_start = bead_center2 - half_gap = (topo_eps + half_gap) - half_gap
+        #           = topo_eps EXACTLY (verified bit-exact round-trip, see docstring)
+        assert gaps2[0][0] == topo_eps, (
+            f"gap_start == topo_eps should NOT snap with `<` (only `<=` would snap), "
+            f"got {gaps2[0][0]!r} vs expected exactly {topo_eps!r}"
         )
 
     def test_legacy_call_without_bounds_unchanged(self):

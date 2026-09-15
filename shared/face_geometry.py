@@ -28,15 +28,113 @@ Part.Vertex/Part.makePolygon wire surgery lives in brick_proxy.py's
 _widen_face_boundary(), which consumes these.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 _AXIS_UNIT_VECTORS = {
     'x': (1.0, 0.0, 0.0),
     'y': (0.0, 1.0, 0.0),
     'z': (0.0, 0.0, 1.0),
 }
+
+# ---------------------------------------------------------------------------
+# Disconnected-glyph-island bbox containment
+# ---------------------------------------------------------------------------
+#
+# Moved here from station_sign_generator/station_sign_geometry.py (full-
+# review finding freecad-mr-generators-20260915-e612#06): this logic
+# groups 2D wire outlines into (outer, [holes...]) islands by bounding-box
+# containment -- the way a glyph like 'i' or 'j' (a stem plus a separate
+# dot) or a glyph with a true hole (like 'o' or 'e') needs to be
+# interpreted for Part.Face construction. It is generic text/glyph
+# infrastructure, not station-sign-specific -- label_generator needed the
+# exact same algorithm and had drifted into an independent, untested,
+# FreeCAD-only inline copy (label_proxy.py's old _wires_to_faces) that
+# reproduced a bug already fixed once here. station_sign_geometry.py
+# re-exports both names so its own existing imports/tests keep working
+# unchanged.
+
+BBox = Tuple[float, float, float, float]  # (xmin, xmax, ymin, ymax)
+
+
+def bbox_contains(outer: BBox, inner: BBox, eps: float = 1e-6) -> bool:
+    """
+    Return True if *inner* is contained within *outer*, to within *eps*.
+
+    *eps* is a tolerance in both directions (an inner bbox extending
+    infinitesimally past outer's edge, within eps, still counts as
+    contained) -- matches Part.Wire.BoundBox comparisons where floating-
+    point glyph coordinates rarely land on an exact boundary.
+    """
+    o_xmin, o_xmax, o_ymin, o_ymax = outer
+    i_xmin, i_xmax, i_ymin, i_ymax = inner
+    return (i_xmin >= o_xmin - eps and i_xmax <= o_xmax + eps and
+            i_ymin >= o_ymin - eps and i_ymax <= o_ymax + eps)
+
+
+def group_wire_bboxes_into_islands(bboxes: Sequence[BBox],
+                                    eps: float = 1e-6) -> List[List[int]]:
+    """
+    Group wire indices into (outer, [holes...]) islands by bounding-box
+    containment, the way a glyph like 'i' or 'j' (a stem plus a separate
+    dot) or a glyph with a true hole (like 'o' or 'e') needs to be
+    interpreted: bboxes with no containing parent are "outer" wires; every
+    bbox contained within an outer wire's bbox joins that outer wire's
+    group (so Part.Face(group) treats it as a hole, not a separate face).
+
+    Returns a list of groups, each group a list of indices into *bboxes*
+    with the outer wire's index first. A bbox that is both an "outer" wire
+    (nothing contains it) and not contained by anything starts its own
+    singleton group if it has no contained children.
+
+    Degenerate inputs:
+    - Fewer than 2 bboxes: every non-empty input is its own single-element
+      group (there's nothing for it to contain or be contained by).
+    - A single bbox: same as above, returns [[0]] (or [] for empty input).
+    """
+    n = len(bboxes)
+    if n == 0:
+        return []
+    if n == 1:
+        return [[0]]
+
+    # When two bboxes mutually contain each other (equal or near-equal
+    # within eps -- e.g. two differently-shaped glyph-outline wires that
+    # coincidentally share a bounding box), the naive "j contains i -> i
+    # is not outer" rule marks BOTH of them non-outer (each sees the other
+    # as its container). Neither then starts a group, and since only an
+    # outer wire can start a group, neither is ever added as a hole to
+    # anything else either -- both silently vanish from the output with no
+    # error. Break the tie deterministically by index so exactly one of a
+    # mutually-containing pair stays "outer" (the lower index) and the
+    # other becomes its hole, instead of both cancelling out to nothing.
+    is_outer = [True] * n
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            if not bbox_contains(bboxes[j], bboxes[i], eps):
+                continue
+            if bbox_contains(bboxes[i], bboxes[j], eps) and i < j:
+                continue
+            is_outer[i] = False
+            break
+
+    used = [False] * n
+    groups = []
+    for i in range(n):
+        if not is_outer[i] or used[i]:
+            continue
+        used[i] = True
+        group = [i]
+        for j in range(n):
+            if not used[j] and not is_outer[j] and bbox_contains(bboxes[i], bboxes[j], eps):
+                group.append(j)
+                used[j] = True
+        groups.append(group)
+
+    return groups
 
 
 def compute_face_axes(x_range: float, y_range: float, z_range: float,

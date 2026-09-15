@@ -15,7 +15,6 @@ from pathlib import Path
 
 VERSION = "7.0.1"
 GENERATOR_NAME = "clapboard_generator"
-CLAPBOARD_TRIM_OFFSET = 0.05  # mm — clapboard bottom inboard of trim edge
 
 _here = Path(__file__).parent
 for p in (str(_here), str(_here / '_lib')):
@@ -25,6 +24,8 @@ for p in (str(_here), str(_here / '_lib')):
 from clapboard_geometry import (  # noqa: E402
     calculate_course_v_positions,
     validate_parameters,
+    CLAPBOARD_TRIM_OFFSET,
+    detect_face_orientation,
 )
 from freecad_utils import resolve_sources_faces  # noqa: E402
 
@@ -87,20 +88,21 @@ def _face_normal(face):
 
 
 def _detect_orientation(bbox):
-    """Return (vertical_axis, horizontal_axis, plane_normal) strings."""
-    xe = bbox.XMax - bbox.XMin
-    ye = bbox.YMax - bbox.YMin
-    ze = bbox.ZMax - bbox.ZMin
-    tol = 0.1
-    if xe < tol:
-        return 'z', 'y', 'x'
-    if ye < tol:
-        return 'z', 'x', 'y'
-    if ze < tol:
-        return 'y', 'x', 'z'
-    if ze >= ye and ze >= xe:
-        return ('z', 'x', 'y') if xe > ye else ('z', 'y', 'x')
-    return 'y', 'x', 'z'
+    """Return (vertical_axis, horizontal_axis, plane_normal) strings.
+
+    Full-review finding freecad-mr-generators-20260915-e612#10: this used
+    to be an independent inline reimplementation of
+    clapboard_geometry.detect_face_orientation() with a strict `<` where
+    the geometry module uses `<=` at the same 0.1mm tolerance boundary --
+    execution-confirmed to disagree at exactly that boundary, with no
+    parity test to catch it. Now a thin FreeCAD-BoundBox-to-dict adapter
+    around the tested geometry function instead of a second, divergable
+    copy of the same logic."""
+    return detect_face_orientation({
+        'x_min': bbox.XMin, 'x_max': bbox.XMax,
+        'y_min': bbox.YMin, 'y_max': bbox.YMax,
+        'z_min': bbox.ZMin, 'z_max': bbox.ZMax,
+    })
 
 
 def _find_gable_edges(wire, vert_axis, angle_tol=5.0):

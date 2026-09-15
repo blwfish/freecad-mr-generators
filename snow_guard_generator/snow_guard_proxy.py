@@ -30,8 +30,7 @@ from snow_guard_geometry import (
     validate_margins_cover_footprint,
     calculate_grid_positions,
 )
-from roof_geometry import get_roof_coordinate_system
-from freecad_utils import resolve_sources_faces  # noqa: E402
+from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
 from snow_guard_solid_geometry import calculate_fin_position
 
 
@@ -48,51 +47,15 @@ def _get_face_coordinate_system(face):
     """
     Extract U/V/normal coordinate system from a roof face.
     Returns (origin, u_vec, v_vec, normal, u_length, v_length).
+
+    Full-review finding freecad-mr-generators-20260915-e612#11: thin
+    wrapper around shared/freecad_utils.get_roof_face_coordinate_system,
+    the single source of truth for this logic -- previously an
+    independent copy-pasted-near-verbatim implementation here and in four
+    sibling roof-facing proxies, with no shared function and no parity
+    test.
     """
-    verts = [(v.Point.x, v.Point.y, v.Point.z) for v in face.Vertexes]
-    n = face.normalAt(0.5, 0.5).normalize()
-    if n.z < 0:
-        n = App.Vector(-n.x, -n.y, -n.z)
-    normal_t = (n.x, n.y, n.z)
-
-    cs = get_roof_coordinate_system(verts, normal_t)
-    origin = App.Vector(*cs['origin'])
-    u_vec  = App.Vector(*cs['u_vec'])
-    v_vec  = App.Vector(*cs['v_vec'])
-    normal = App.Vector(*cs['normal'])
-
-    # Prefer corner vertex (2 edges) at eave level as origin.
-    # Key by rounded coordinates — FreeCAD returns new wrapper objects on
-    # each Vertexes iteration, so object identity is not stable across loops.
-    def _vkey(v):
-        return (round(v.Point.x, 4), round(v.Point.y, 4), round(v.Point.z, 4))
-
-    vertex_edge_count = {}
-    for vertex in face.Vertexes:
-        count = sum(
-            1 for edge in face.Edges
-            if (edge.Vertexes[0].Point.distanceToPoint(vertex.Point) < 0.001 or
-                edge.Vertexes[1].Point.distanceToPoint(vertex.Point) < 0.001)
-        )
-        vertex_edge_count[_vkey(vertex)] = count
-
-    eave_z = cs['eave_ridge_info']['eave_z']
-    corner_at_eave = [
-        v for v in face.Vertexes
-        if vertex_edge_count.get(_vkey(v), 0) == 2 and abs(v.Point.z - eave_z) <= 0.1
-    ]
-    if corner_at_eave:
-        origin = min(corner_at_eave, key=lambda v: v.Point.dot(u_vec)).Point
-
-    u_projs = [vtx.Point.sub(origin).dot(u_vec) for vtx in face.Vertexes]
-    v_projs = [vtx.Point.sub(origin).dot(v_vec) for vtx in face.Vertexes]
-    min_u, min_v = min(u_projs), min(v_projs)
-    if min_u < 0 or min_v < 0:
-        origin = origin + _sv(u_vec, min_u) + _sv(v_vec, min_v)
-
-    u_length = max(u_projs) - min(u_projs)
-    v_length = max(v_projs) - min(v_projs)
-    return origin, u_vec, v_vec, normal, u_length, v_length
+    return get_roof_face_coordinate_system(face)
 
 
 # ---------------------------------------------------------------------------
