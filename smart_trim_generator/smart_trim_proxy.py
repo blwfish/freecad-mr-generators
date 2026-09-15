@@ -22,7 +22,9 @@ for p in (str(_here), str(_here / '_lib')):
 
 import trim_geometry as tg
 from smart_trim_geometry import validate_trim_parameters  # noqa: E402
-from freecad_utils import resolve_sources_faces  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, GenericViewProxy, add_property,
+)
 
 
 # =============================================================================
@@ -273,53 +275,31 @@ class SmartTrimProxy:
     def _setup_properties(obj):
         grp = "Trim"
 
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Wall faces to apply trim to")
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Wall faces to apply trim to")
 
-        if not hasattr(obj, 'TrimWidth'):
-            obj.addProperty(
-                "App::PropertyLength", "TrimWidth", grp,
-                "Trim width perpendicular to wall")
-        if not hasattr(obj, 'TrimHeight'):
-            obj.addProperty(
-                "App::PropertyLength", "TrimHeight", grp,
-                "Trim height parallel to wall surface")
+        add_property(obj, "App::PropertyLength", 'TrimWidth', grp,
+            "Trim width perpendicular to wall")
+        add_property(obj, "App::PropertyLength", 'TrimHeight', grp,
+            "Trim height parallel to wall surface")
 
-        if not hasattr(obj, 'TrimStyle'):
-            obj.addProperty(
-                "App::PropertyEnumeration", "TrimStyle", grp,
-                "Profile style")
-            obj.TrimStyle = ['rectangular', 'beveled']
-        if not hasattr(obj, 'BevelSize'):
-            obj.addProperty(
-                "App::PropertyLength", "BevelSize", grp,
-                "Bevel size (if beveled style)")
+        add_property(obj, "App::PropertyEnumeration", 'TrimStyle', grp,
+            "Profile style", default=['rectangular', 'beveled'])
+        add_property(obj, "App::PropertyLength", 'BevelSize', grp,
+            "Bevel size (if beveled style)")
 
-        if not hasattr(obj, 'SkipBottom'):
-            obj.addProperty(
-                "App::PropertyBool", "SkipBottom", grp,
-                "Skip bottom (foundation) edge")
-        if not hasattr(obj, 'PerimeterOnly'):
-            obj.addProperty(
-                "App::PropertyBool", "PerimeterOnly", grp,
-                "Skip internal construction joints")
-        if not hasattr(obj, 'Flip'):
-            obj.addProperty(
-                "App::PropertyBool", "Flip", grp,
-                "Flip trim to opposite side of wall")
+        add_property(obj, "App::PropertyBool", 'SkipBottom', grp,
+            "Skip bottom (foundation) edge")
+        add_property(obj, "App::PropertyBool", 'PerimeterOnly', grp,
+            "Skip internal construction joints")
+        add_property(obj, "App::PropertyBool", 'Flip', grp,
+            "Flip trim to opposite side of wall")
 
-        if not hasattr(obj, 'OnlyEdge'):
-            obj.addProperty(
-                "App::PropertyInteger", "OnlyEdge", grp,
-                "Only trim edge N (0=all, 1=first, 2=second, ...)")
+        add_property(obj, "App::PropertyInteger", 'OnlyEdge', grp,
+            "Only trim edge N (0=all, 1=first, 2=second, ...)")
 
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty(
-                "App::PropertyString", "GeneratorVersion", grp,
-                "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     # -- defaults -------------------------------------------------------------
 
@@ -386,32 +366,5 @@ class SmartTrimProxy:
         self.loads(state)
 
 
-class SmartTrimViewProxy:
-    """View provider — just keeps the icon and default colour."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class SmartTrimViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

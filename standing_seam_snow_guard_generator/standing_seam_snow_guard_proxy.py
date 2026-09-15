@@ -34,7 +34,10 @@ from standing_seam_snow_guard_geometry import (
     validate_margins_cover_footprint,
     calculate_seam_guard_positions,
 )
-from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 # Panel/seam defaults MUST match standing_seam_proxy.py's -- this module's
 # rib centerlines are independently re-derived from an assumed panel/seam
 # layout rather than reading the real one (see standing_seam_snow_guard_
@@ -184,63 +187,64 @@ class StandingSeamSnowGuardProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "StandingSeamSnowGuard"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty("App::PropertyLinkSubList", "Sources", grp,
-                            "Standing-seam roof faces to place snow guards on")
-        if not hasattr(obj, 'PanelWidth'):
-            obj.addProperty("App::PropertyLength", "PanelWidth", grp,
-                            "Must match the StandingSeamPanels PanelWidth "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Standing-seam roof faces to place snow guards on")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'PanelWidth',
+            grp,
+            "Must match the StandingSeamPanels PanelWidth "
                             "used on these faces")
-        if not hasattr(obj, 'SeamWidth'):
-            obj.addProperty("App::PropertyLength", "SeamWidth", grp,
-                            "Must match the StandingSeamPanels SeamWidth "
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'SeamWidth',
+            grp,
+            "Must match the StandingSeamPanels SeamWidth "
                             "used on these faces")
-        if not hasattr(obj, 'SeamHeight'):
-            obj.addProperty("App::PropertyLength", "SeamHeight", grp,
-                            "Must match the StandingSeamPanels SeamHeight "
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'SeamHeight',
+            grp,
+            "Must match the StandingSeamPanels SeamHeight "
                             "used on these faces")
-        if not hasattr(obj, 'SeamStride'):
-            obj.addProperty("App::PropertyInteger", "SeamStride", grp,
-                            "Guard every Nth seam rib (1 = every rib)")
-        if not hasattr(obj, 'NumRows'):
-            obj.addProperty("App::PropertyInteger", "NumRows", grp,
-                            "Number of guard rows, up-slope from the eave")
-        if not hasattr(obj, 'FirstRowOffset'):
-            obj.addProperty("App::PropertyLength", "FirstRowOffset", grp,
-                            "Distance from the eave to the first row")
-        if not hasattr(obj, 'RowSpacing'):
-            obj.addProperty("App::PropertyLength", "RowSpacing", grp,
-                            "Up-slope spacing between rows")
-        if not hasattr(obj, 'EdgeMargin'):
-            obj.addProperty("App::PropertyLength", "EdgeMargin", grp,
-                            "Minimum clearance from the rake edges when "
+        add_property(obj, "App::PropertyInteger", 'SeamStride', grp,
+            "Guard every Nth seam rib (1 = every rib)")
+        add_property(obj, "App::PropertyInteger", 'NumRows', grp,
+            "Number of guard rows, up-slope from the eave")
+        add_property(obj, "App::PropertyLength", 'FirstRowOffset', grp,
+            "Distance from the eave to the first row")
+        add_property(obj, "App::PropertyLength", 'RowSpacing', grp,
+            "Up-slope spacing between rows")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'EdgeMargin',
+            grp,
+            "Minimum clearance from the rake edges when "
                             "selecting which ribs are eligible for a guard")
-        if not hasattr(obj, 'VMargin'):
-            obj.addProperty("App::PropertyLength", "VMargin", grp,
-                            "Minimum clearance from the eave and ridge/hip line")
-        if not hasattr(obj, 'ClampWidth'):
-            obj.addProperty("App::PropertyLength", "ClampWidth", grp,
-                            "Clamp footprint width (across-slope) -- must "
+        add_property(obj, "App::PropertyLength", 'VMargin', grp,
+            "Minimum clearance from the eave and ridge/hip line")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'ClampWidth',
+            grp,
+            "Clamp footprint width (across-slope) -- must "
                             "be less than PanelWidth")
-        if not hasattr(obj, 'ClampLength'):
-            obj.addProperty("App::PropertyLength", "ClampLength", grp,
-                            "Clamp footprint length (up-slope)")
-        if not hasattr(obj, 'ClampThickness'):
-            obj.addProperty("App::PropertyLength", "ClampThickness", grp,
-                            "Clamp thickness")
-        if not hasattr(obj, 'FinHeight'):
-            obj.addProperty("App::PropertyLength", "FinHeight", grp,
-                            "Fin height above the clamp")
-        if not hasattr(obj, 'FinBaseWidth'):
-            obj.addProperty("App::PropertyLength", "FinBaseWidth", grp,
-                            "Fin base footprint, up-slope direction")
-        if not hasattr(obj, 'FinThickness'):
-            obj.addProperty("App::PropertyLength", "FinThickness", grp,
-                            "Fin thickness, across-slope direction")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLength", 'ClampLength', grp,
+            "Clamp footprint length (up-slope)")
+        add_property(obj, "App::PropertyLength", 'ClampThickness', grp, "Clamp thickness")
+        add_property(obj, "App::PropertyLength", 'FinHeight', grp,
+            "Fin height above the clamp")
+        add_property(obj, "App::PropertyLength", 'FinBaseWidth', grp,
+            "Fin base footprint, up-slope direction")
+        add_property(obj, "App::PropertyLength", 'FinThickness', grp,
+            "Fin thickness, across-slope direction")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -339,30 +343,5 @@ class StandingSeamSnowGuardProxy:
         self.loads(state)
 
 
-class StandingSeamSnowGuardViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class StandingSeamSnowGuardViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

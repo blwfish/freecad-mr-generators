@@ -30,6 +30,8 @@ from clapboard_geometry import (  # noqa: E402
 from freecad_utils import (  # noqa: E402
     resolve_sources_faces,
     face_normal_at_center as _face_normal,
+    GenericViewProxy,
+    add_property,
 )
 
 
@@ -310,23 +312,14 @@ class ClapboardProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "Clapboard"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Wall faces to apply clapboard siding to")
-        if not hasattr(obj, 'ClapboardHeight'):
-            obj.addProperty(
-                "App::PropertyLength", "ClapboardHeight", grp,
-                "Clapboard reveal height (mm)")
-        if not hasattr(obj, 'ClapboardThickness'):
-            obj.addProperty(
-                "App::PropertyLength", "ClapboardThickness", grp,
-                "Clapboard material thickness (mm)")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty(
-                "App::PropertyString", "GeneratorVersion", grp,
-                "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Wall faces to apply clapboard siding to")
+        add_property(obj, "App::PropertyLength", 'ClapboardHeight', grp,
+            "Clapboard reveal height (mm)")
+        add_property(obj, "App::PropertyLength", 'ClapboardThickness', grp,
+            "Clapboard material thickness (mm)")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -383,32 +376,5 @@ class ClapboardProxy:
         self.loads(state)
 
 
-class ClapboardViewProxy:
-    """Minimal view provider."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class ClapboardViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

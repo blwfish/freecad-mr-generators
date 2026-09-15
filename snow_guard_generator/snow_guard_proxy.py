@@ -30,7 +30,10 @@ from snow_guard_geometry import (
     validate_margins_cover_footprint,
     calculate_grid_positions,
 )
-from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 from snow_guard_solid_geometry import calculate_fin_position
 
 
@@ -159,53 +162,39 @@ class SnowGuardProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "SnowGuard"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty("App::PropertyLinkSubList", "Sources", grp,
-                            "Roof faces to place snow guards on")
-        if not hasattr(obj, 'NumRows'):
-            obj.addProperty("App::PropertyInteger", "NumRows", grp,
-                            "Number of guard rows, up-slope from the eave")
-        if not hasattr(obj, 'GuardsPerRow'):
-            obj.addProperty("App::PropertyInteger", "GuardsPerRow", grp,
-                            "Number of guards across each row")
-        if not hasattr(obj, 'FirstRowOffset'):
-            obj.addProperty("App::PropertyLength", "FirstRowOffset", grp,
-                            "Distance from the eave to the first row")
-        if not hasattr(obj, 'RowSpacing'):
-            obj.addProperty("App::PropertyLength", "RowSpacing", grp,
-                            "Up-slope spacing between rows")
-        if not hasattr(obj, 'EdgeMargin'):
-            obj.addProperty("App::PropertyLength", "EdgeMargin", grp,
-                            "Minimum clearance from the rake edges")
-        if not hasattr(obj, 'VMargin'):
-            obj.addProperty("App::PropertyLength", "VMargin", grp,
-                            "Minimum clearance from the eave and ridge/hip line")
-        if not hasattr(obj, 'StaggerRows'):
-            obj.addProperty("App::PropertyBool", "StaggerRows", grp,
-                            "Offset alternating rows by half the guard "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Roof faces to place snow guards on")
+        add_property(obj, "App::PropertyInteger", 'NumRows', grp,
+            "Number of guard rows, up-slope from the eave")
+        add_property(obj, "App::PropertyInteger", 'GuardsPerRow', grp,
+            "Number of guards across each row")
+        add_property(obj, "App::PropertyLength", 'FirstRowOffset', grp,
+            "Distance from the eave to the first row")
+        add_property(obj, "App::PropertyLength", 'RowSpacing', grp,
+            "Up-slope spacing between rows")
+        add_property(obj, "App::PropertyLength", 'EdgeMargin', grp,
+            "Minimum clearance from the rake edges")
+        add_property(obj, "App::PropertyLength", 'VMargin', grp,
+            "Minimum clearance from the eave and ridge/hip line")
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'StaggerRows',
+            grp,
+            "Offset alternating rows by half the guard "
                             "spacing (zigzag pattern)")
-        if not hasattr(obj, 'PadWidth'):
-            obj.addProperty("App::PropertyLength", "PadWidth", grp,
-                            "Mounting pad width (across-slope)")
-        if not hasattr(obj, 'PadLength'):
-            obj.addProperty("App::PropertyLength", "PadLength", grp,
-                            "Mounting pad length (up-slope)")
-        if not hasattr(obj, 'PadThickness'):
-            obj.addProperty("App::PropertyLength", "PadThickness", grp,
-                            "Mounting pad thickness")
-        if not hasattr(obj, 'FinHeight'):
-            obj.addProperty("App::PropertyLength", "FinHeight", grp,
-                            "Fin height above the pad")
-        if not hasattr(obj, 'FinBaseWidth'):
-            obj.addProperty("App::PropertyLength", "FinBaseWidth", grp,
-                            "Fin base footprint, up-slope direction")
-        if not hasattr(obj, 'FinThickness'):
-            obj.addProperty("App::PropertyLength", "FinThickness", grp,
-                            "Fin thickness, across-slope direction")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLength", 'PadWidth', grp,
+            "Mounting pad width (across-slope)")
+        add_property(obj, "App::PropertyLength", 'PadLength', grp,
+            "Mounting pad length (up-slope)")
+        add_property(obj, "App::PropertyLength", 'PadThickness', grp, "Mounting pad thickness")
+        add_property(obj, "App::PropertyLength", 'FinHeight', grp, "Fin height above the pad")
+        add_property(obj, "App::PropertyLength", 'FinBaseWidth', grp,
+            "Fin base footprint, up-slope direction")
+        add_property(obj, "App::PropertyLength", 'FinThickness', grp,
+            "Fin thickness, across-slope direction")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -293,30 +282,5 @@ class SnowGuardProxy:
         self.loads(state)
 
 
-class SnowGuardViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class SnowGuardViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

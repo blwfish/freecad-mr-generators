@@ -35,7 +35,7 @@ Version History:
 - 1.1.0: Shared-edge resolution (find_shared_edge/resolve_shared_edge) moved
          to shared/freecad_utils.py and extended to recognize the Sources
          PropertyLinkSubList convention (this repo's modern standard, used
-         by slate_proxy/shingle_proxy/brick_proxy/quoin_proxy) alongside the
+         by slate_proxy/shingle_proxy/brick_proxy) alongside the
          legacy BaseObject/ShingledRoof_/ShingleSkin_ convention it already
          had. Previously, selecting faces from a SlateTiles output (which
          uses Sources) never got unwrapped to the real roof panel -- the
@@ -60,6 +60,8 @@ for _p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
 from freecad_utils import (  # noqa: E402
     find_shared_edge, resolve_shared_edge, resolve_sources_faces,
     face_normal_at_center as _face_normal_at_center,
+    GenericViewProxy,
+    add_property,
 )
 
 from slate_seam_geometry import (
@@ -411,48 +413,52 @@ class SlateSeamProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "SlateSeam"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty("App::PropertyLinkSubList", "Sources", grp,
-                            "Exactly two adjacent roof faces sharing a hip/ridge seam")
-        if not hasattr(obj, 'CapWidth'):
-            obj.addProperty("App::PropertyLength", "CapWidth", grp,
-                            "Total cap width across the seam (both wings)")
-        if not hasattr(obj, 'CapLength'):
-            obj.addProperty("App::PropertyLength", "CapLength", grp,
-                            "Length of each cap along the seam")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty("App::PropertyLength", "MaterialThickness", grp,
-                            "Slate thickness")
-        if not hasattr(obj, 'Exposure'):
-            obj.addProperty("App::PropertyLength", "Exposure", grp,
-                            "Spacing between caps along the seam")
-        if not hasattr(obj, 'DeckOffset'):
-            obj.addProperty("App::PropertyLength", "DeckOffset", grp,
-                            "Extra manual lift ON TOP OF the coursing "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Exactly two adjacent roof faces sharing a hip/ridge seam")
+        add_property(obj, "App::PropertyLength", 'CapWidth', grp,
+            "Total cap width across the seam (both wings)")
+        add_property(obj, "App::PropertyLength", 'CapLength', grp,
+            "Length of each cap along the seam")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp, "Slate thickness")
+        add_property(obj, "App::PropertyLength", 'Exposure', grp,
+            "Spacing between caps along the seam")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'DeckOffset',
+            grp,
+            "Extra manual lift ON TOP OF the coursing "
                             "clearance already auto-detected from the "
                             "real tile geometry (0 = trust the "
                             "auto-detected clearance alone; only needed "
                             "as a fudge factor, or on a seam with no "
                             "coursing generated yet)")
-        if not hasattr(obj, 'HideIncompleteEndCap'):
-            obj.addProperty("App::PropertyBool", "HideIncompleteEndCap", grp,
-                            "Skip a cap entirely if it would poke past the "
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'HideIncompleteEndCap',
+            grp,
+            "Skip a cap entirely if it would poke past the "
                             "seam's far end, instead of showing a partial "
                             "(possibly sliver) fragment there")
-        if not hasattr(obj, 'SeamType'):
-            obj.addProperty("App::PropertyString", "SeamType", grp,
-                            "Detected seam classification: ridge, valley, "
-                            "none, or ambiguous (read-only)")
-            obj.setEditorMode("SeamType", 1)
-        if not hasattr(obj, 'DihedralDegrees'):
-            obj.addProperty("App::PropertyFloat", "DihedralDegrees", grp,
-                            "Detected dihedral angle between the two faces, "
-                            "in degrees (read-only)")
-            obj.setEditorMode("DihedralDegrees", 1)
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(
+            obj,
+            "App::PropertyString",
+            'SeamType',
+            grp,
+            "Detected seam classification: ridge, valley, "
+                            "none, or ambiguous (read-only)",
+            editor_mode=1)
+        add_property(
+            obj,
+            "App::PropertyFloat",
+            'DihedralDegrees',
+            grp,
+            "Detected dihedral angle between the two faces, "
+                            "in degrees (read-only)",
+            editor_mode=1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -563,30 +569,5 @@ class SlateSeamProxy:
         self.loads(state)
 
 
-class SlateSeamViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class SlateSeamViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

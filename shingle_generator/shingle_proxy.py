@@ -30,7 +30,10 @@ from shingle_geometry import (
     calculate_stagger_offset,
     is_valid_clip_fragment,
 )
-from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 
 
 # =============================================================================
@@ -250,48 +253,26 @@ class ShingleProxy:
     def _setup_properties(obj):
         grp = "Shingle"
 
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Roof faces to apply shingles to")
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Roof faces to apply shingles to")
 
-        if not hasattr(obj, 'ShingleWidth'):
-            obj.addProperty(
-                "App::PropertyLength", "ShingleWidth", grp,
-                "Width of each shingle")
-        if not hasattr(obj, 'ShingleHeight'):
-            obj.addProperty(
-                "App::PropertyLength", "ShingleHeight", grp,
-                "Height (length) of each shingle")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty(
-                "App::PropertyLength", "MaterialThickness", grp,
-                "Material sheet thickness")
-        if not hasattr(obj, 'Exposure'):
-            obj.addProperty(
-                "App::PropertyLength", "Exposure", grp,
-                "Exposed portion per course")
+        add_property(obj, "App::PropertyLength", 'ShingleWidth', grp, "Width of each shingle")
+        add_property(obj, "App::PropertyLength", 'ShingleHeight', grp,
+            "Height (length) of each shingle")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp,
+            "Material sheet thickness")
+        add_property(obj, "App::PropertyLength", 'Exposure', grp, "Exposed portion per course")
 
-        if not hasattr(obj, 'StaggerPattern'):
-            obj.addProperty(
-                "App::PropertyEnumeration", "StaggerPattern", grp,
-                "Horizontal stagger pattern")
-            obj.StaggerPattern = ['half', 'third', 'none']
+        add_property(obj, "App::PropertyEnumeration", 'StaggerPattern', grp,
+            "Horizontal stagger pattern", default=['half', 'third', 'none'])
 
-        if not hasattr(obj, 'WedgeThickness'):
-            obj.addProperty(
-                "App::PropertyLength", "WedgeThickness", grp,
-                "Butt-edge wedge thickness (0 = auto: 1x material)")
-        if not hasattr(obj, 'Chamfer'):
-            obj.addProperty(
-                "App::PropertyLength", "Chamfer", grp,
-                "V-groove chamfer at shingle edge (0 = auto: 1.5x material)")
+        add_property(obj, "App::PropertyLength", 'WedgeThickness', grp,
+            "Butt-edge wedge thickness (0 = auto: 1x material)")
+        add_property(obj, "App::PropertyLength", 'Chamfer', grp,
+            "V-groove chamfer at shingle edge (0 = auto: 1.5x material)")
 
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty(
-                "App::PropertyString", "GeneratorVersion", grp,
-                "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     # -- defaults -------------------------------------------------------------
 
@@ -389,32 +370,5 @@ class ShingleProxy:
         self.loads(state)
 
 
-class ShingleViewProxy:
-    """View provider — icon and default colour."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class ShingleViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

@@ -30,7 +30,10 @@ from standing_seam_geometry import (
     DEFAULT_SEAM_WIDTH,
     DEFAULT_SEAM_HEIGHT,
 )
-from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,25 +178,18 @@ class StandingSeamProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "StandingSeam"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty("App::PropertyLinkSubList", "Sources", grp,
-                            "Roof faces to apply standing seam to")
-        if not hasattr(obj, 'PanelWidth'):
-            obj.addProperty("App::PropertyLength", "PanelWidth", grp,
-                            "Panel width (centre-to-centre seam spacing)")
-        if not hasattr(obj, 'SeamHeight'):
-            obj.addProperty("App::PropertyLength", "SeamHeight", grp,
-                            "Height of raised seam ridge")
-        if not hasattr(obj, 'SeamWidth'):
-            obj.addProperty("App::PropertyLength", "SeamWidth", grp,
-                            "Width of raised seam ridge")
-        if not hasattr(obj, 'PanelThickness'):
-            obj.addProperty("App::PropertyLength", "PanelThickness", grp,
-                            "Flat panel material thickness")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Roof faces to apply standing seam to")
+        add_property(obj, "App::PropertyLength", 'PanelWidth', grp,
+            "Panel width (centre-to-centre seam spacing)")
+        add_property(obj, "App::PropertyLength", 'SeamHeight', grp,
+            "Height of raised seam ridge")
+        add_property(obj, "App::PropertyLength", 'SeamWidth', grp,
+            "Width of raised seam ridge")
+        add_property(obj, "App::PropertyLength", 'PanelThickness', grp,
+            "Flat panel material thickness")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -252,30 +248,5 @@ class StandingSeamProxy:
         self.loads(state)
 
 
-class StandingSeamViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class StandingSeamViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

@@ -28,6 +28,8 @@ from radial_brick_geometry import RadialBrickGeometry, RadialBrickDef
 from freecad_utils import (
     resolve_sources_faces,
     face_normal_at_center as _face_normal_at_center,
+    GenericViewProxy,
+    add_property,
 )
 
 
@@ -259,26 +261,18 @@ class RadialBrickProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "RadialBrick"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Cylindrical/conical faces to apply brick pattern to")
-        if not hasattr(obj, 'BrickLength'):
-            obj.addProperty("App::PropertyLength", "BrickLength", grp,
-                            "Brick length along circumference (mm)")
-        if not hasattr(obj, 'BrickHeight'):
-            obj.addProperty("App::PropertyLength", "BrickHeight", grp,
-                            "Brick height along Z axis (mm)")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty("App::PropertyLength", "MaterialThickness", grp,
-                            "Radial skin depth / brick thickness (mm)")
-        if not hasattr(obj, 'MortarThickness'):
-            obj.addProperty("App::PropertyLength", "MortarThickness", grp,
-                            "Mortar joint thickness (mm)")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Cylindrical/conical faces to apply brick pattern to")
+        add_property(obj, "App::PropertyLength", 'BrickLength', grp,
+            "Brick length along circumference (mm)")
+        add_property(obj, "App::PropertyLength", 'BrickHeight', grp,
+            "Brick height along Z axis (mm)")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp,
+            "Radial skin depth / brick thickness (mm)")
+        add_property(obj, "App::PropertyLength", 'MortarThickness', grp,
+            "Mortar joint thickness (mm)")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -328,30 +322,5 @@ class RadialBrickProxy:
         self.loads(state)
 
 
-class RadialBrickViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class RadialBrickViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"
