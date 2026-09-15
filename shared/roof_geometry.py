@@ -299,17 +299,61 @@ def find_coincident_edges(
     return result
 
 
+def _signed_distance_to_plane(
+        vertex: Tuple[float,float,float],
+        plane_point: Tuple[float,float,float],
+        plane_normal: Tuple[float,float,float]) -> float:
+    """Signed distance from *vertex* to the plane through *plane_point*
+    with outward normal *plane_normal* (not normalized by this function --
+    callers pass unit normals, so the result is a true distance)."""
+    dx = vertex[0] - plane_point[0]
+    dy = vertex[1] - plane_point[1]
+    dz = vertex[2] - plane_point[2]
+    return dx*plane_normal[0] + dy*plane_normal[1] + dz*plane_normal[2]
+
+
 def classify_roof_intersection(
         face1_vertices: List[Tuple[float,float,float]],
         face2_vertices: List[Tuple[float,float,float]],
         shared_edge: Tuple[Tuple[float,float,float], Tuple[float,float,float]],
-        z_tolerance: float = 0.1) -> Dict:
+        z_tolerance: float = 0.1,
+        face1_normal: Tuple[float,float,float] = None,
+        face2_normal: Tuple[float,float,float] = None,
+        normal_tolerance: float = 1e-6) -> Dict:
     """
     Classify an intersection as 'valley', 'ridge', or 'ambiguous'.
 
-    Key insight:
-    - Non-shared vertices BELOW shared edge → RIDGE / HIP
-    - Non-shared vertices ABOVE shared edge → VALLEY
+    Two independent tests, tried in this order:
+
+    1. **Normal-based convex/reflex-edge test** (used whenever both
+       *face1_normal* and *face2_normal* are supplied). For two
+       outward-oriented faces sharing an edge, the edge is CONVEX
+       (ridge/hip) iff each face's own non-shared vertices lie on the
+       *interior* side of the other face's plane -- the standard BREP
+       convex-vs-reflex-edge test, generalized here to roof faces. This
+       is the only correct test when the shared edge is a diagonal HIP
+       LINE (not a level ridge/valley): a hip line runs from the ridge
+       down to an eave corner, so it spans the *same* Z range the
+       adjoining trapezoidal hip face's own non-shared vertices span --
+       confirmed live 2026-09-14, a real hip corner (two trapezoidal hip
+       faces sharing a diagonal hip line, dihedral 60.0deg) came back
+       'ambiguous' 5 times out of 6 in one real hip-roof model, because a
+       symmetric trapezoidal hip face's non-shared vertices are the exact
+       mirror of the shared edge's own endpoints (same Z span), so their
+       average Z lands exactly on the shared edge's own midpoint Z -- the
+       Z-average test below is structurally blind to this shape, not
+       merely imprecise near a boundary.
+
+    2. **Z-coordinate-average heuristic** (used when no normals are
+       supplied -- kept for backward compatibility with callers that
+       don't have face normals on hand). Correct for a level ridge or
+       valley line (shared edge at ~constant Z, non-shared vertices
+       consistently above or below it); blind to hip lines as above.
+
+    Non-shared vertices BELOW shared edge → RIDGE / HIP;
+    non-shared vertices ABOVE shared edge → VALLEY (Z-average test only;
+    the normal-based test uses "interior side of the other face's plane"
+    in place of "below").
     """
     edge_z = (shared_edge[0][2] + shared_edge[1][2]) / 2.0
 
@@ -331,6 +375,35 @@ def classify_roof_intersection(
     f1z = sum(v[2] for v in f1_other) / len(f1_other)
     f2z = sum(v[2] for v in f2_other) / len(f2_other)
 
+    if face1_normal is not None and face2_normal is not None:
+        edge_point = shared_edge[0]
+
+        def _side(others, normal):
+            signs = [_signed_distance_to_plane(v, edge_point, normal) for v in others]
+            if all(s < -normal_tolerance for s in signs):
+                return 'inside'
+            if all(s > normal_tolerance for s in signs):
+                return 'outside'
+            return 'mixed'
+
+        side_a = _side(f2_other, face1_normal)
+        side_b = _side(f1_other, face2_normal)
+
+        if side_a == 'inside' and side_b == 'inside':
+            return {'classification': 'ridge', 'shared_edge_z': edge_z,
+                    'face1_other_z': f1z, 'face2_other_z': f2z,
+                    'confidence': 'high', 'method': 'normal'}
+        if side_a == 'outside' and side_b == 'outside':
+            return {'classification': 'valley', 'shared_edge_z': edge_z,
+                    'face1_other_z': f1z, 'face2_other_z': f2z,
+                    'confidence': 'high', 'method': 'normal'}
+        return {'classification': 'ambiguous', 'shared_edge_z': edge_z,
+                'face1_other_z': f1z, 'face2_other_z': f2z,
+                'confidence': 'low', 'method': 'normal',
+                'reason': f"Non-shared vertices disagree on which side of "
+                          f"the adjacent face's plane they fall on "
+                          f"(side_a={side_a}, side_b={side_b})"}
+
     f1_below = f1z < edge_z - z_tolerance
     f1_above = f1z > edge_z + z_tolerance
     f2_below = f2z < edge_z - z_tolerance
@@ -346,7 +419,8 @@ def classify_roof_intersection(
         cls, conf = 'ambiguous', 'medium'
 
     return {'classification': cls, 'shared_edge_z': edge_z,
-            'face1_other_z': f1z, 'face2_other_z': f2z, 'confidence': conf}
+            'face1_other_z': f1z, 'face2_other_z': f2z, 'confidence': conf,
+            'method': 'z_average'}
 
 
 def dihedral_radians_from_cos(cos_dihed: float) -> float:
@@ -397,7 +471,8 @@ def analyze_roof_intersection(
 
     longest = max(shared, key=lambda e: e['length'])
     cls = classify_roof_intersection(
-        face1_vertices, face2_vertices, longest['edge1'], tolerance)
+        face1_vertices, face2_vertices, longest['edge1'], tolerance,
+        face1_normal=face1_normal, face2_normal=face2_normal)
     dihedral = calculate_dihedral_angle(face1_normal, face2_normal)
 
     if cls['classification'] == 'valley':

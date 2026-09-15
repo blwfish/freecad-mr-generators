@@ -1,13 +1,22 @@
 """
-Tests for roof_geometry.score_face_match / best_matching_candidate.
+Tests for roof_geometry.score_face_match / best_matching_candidate /
+classify_roof_intersection.
 
-These back freecad_utils.resolve_base_face's "which candidate face is
-really the source face" decision (see shared/freecad_utils.py and the
-2026-08-08 fix for slate_seam_generator/roof_seam_generator not
-recognizing the Sources PropertyLinkSubList convention). Covers the
-threshold-boundary and ambiguous-input cases per the project's testing
-rule: at/below/above the zero-length-normal epsilon, tie-breaking,
-orientation-agnostic (abs(dot)) behavior, and empty input.
+The score_face_match/best_matching_candidate tests back
+freecad_utils.resolve_base_face's "which candidate face is really the
+source face" decision (see shared/freecad_utils.py and the 2026-08-08 fix
+for slate_seam_generator/roof_seam_generator not recognizing the Sources
+PropertyLinkSubList convention). Covers the threshold-boundary and
+ambiguous-input cases per the project's testing rule: at/below/above the
+zero-length-normal epsilon, tie-breaking, orientation-agnostic (abs(dot))
+behavior, and empty input.
+
+The TestClassifyRoofIntersectionNormalBased tests cover the 2026-09-14
+normal-based convex/reflex-edge test added to classify_roof_intersection,
+using real geometry pulled from a live FreeCAD document (the hip case) and
+a constructed, OCCT-validated groove solid (the valley case) rather than
+hand-derived numbers, per this project's "verify empirically against real
+geometry" practice.
 """
 
 import math
@@ -15,6 +24,7 @@ import pytest
 
 from roof_geometry import (
     score_face_match, best_matching_candidate, calculate_across_roof_direction,
+    classify_roof_intersection,
 )
 
 
@@ -244,3 +254,135 @@ class TestCalculateAcrossRoofDirection:
             vertices=[], upslope=(0, 0.0005, 1.0), face_normal=(0, 0, 1),
             eave_vertices=None)
         assert result == (1, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# classify_roof_intersection -- normal-based convex/reflex-edge test
+# ---------------------------------------------------------------------------
+
+class TestClassifyRoofIntersectionNormalBased:
+    """Regression coverage for the 2026-09-14 fix: a diagonal hip line on a
+    symmetric trapezoidal hip face is structurally invisible to the older
+    Z-coordinate-average heuristic (the face's own non-shared vertices are
+    the exact mirror of the shared edge's endpoints, so their average Z
+    always lands exactly on the shared edge's own midpoint Z -- not a
+    near-boundary imprecision, a guaranteed miss for this face shape).
+    """
+
+    # Real hip corner pulled live from a FreeCAD document (SlateSeamCaps005
+    # in equipment_hut_demo, 2026-09-14): two trapezoidal hip faces of a
+    # simple rectangular-plan hip roof, meeting along the diagonal hip
+    # line at the corner. Confirmed genuinely convex (a hip, not a valley)
+    # by inspection of the model. The old Z-average heuristic reported
+    # this 'ambiguous' (confidence 'medium') in 5 of 6 real seam objects in
+    # that document.
+    HIP_FACE1_VERTS = [
+        (24.5241, -17.5172, 28.0276), (-24.5241, -17.5172, 28.0276),
+        (21.0207, -14.0138, 31.531), (-21.0207, -14.0138, 31.531),
+    ]
+    HIP_FACE1_NORMAL = (0.0, -0.7071, 0.7071)
+    HIP_FACE2_VERTS = [
+        (24.5241, 17.5172, 28.0276), (24.5241, -17.5172, 28.0276),
+        (21.0207, 14.0138, 31.531), (21.0207, -14.0138, 31.531),
+    ]
+    HIP_FACE2_NORMAL = (0.7071, -0.0, 0.7071)
+    HIP_SHARED_EDGE = ((21.0207, -14.0138, 31.531), (24.5241, -17.5172, 28.0276))
+
+    # A real valley: two sloped faces of a V-groove cut into the top of a
+    # box (Part.makeBox + a wedge cut, OCCT-validated solid, real computed
+    # face normals) -- constructed and inspected live via FreeCAD MCP
+    # 2026-09-14 specifically to cross-check the sign convention of the
+    # hip test above against a genuine concave case, not just assumed.
+    VALLEY_FACE1_VERTS = [(72.5, 0, 50), (50, 0, 20), (72.5, 100, 50), (50, 100, 20)]
+    VALLEY_FACE1_NORMAL = (-0.8, 0.0, 0.6)
+    VALLEY_FACE2_VERTS = [(50, 0, 20), (50, 100, 20), (27.5, 100, 50), (27.5, 0, 50)]
+    VALLEY_FACE2_NORMAL = (0.8, 0.0, 0.6)
+    VALLEY_SHARED_EDGE = ((50, 0, 20), (50, 100, 20))
+
+    def test_diagonal_hip_line_without_normals_is_the_old_ambiguous_bug(self):
+        """Documents the pre-fix blind spot: with no normals supplied, the
+        Z-average fallback still can't tell this hip line from ambiguous.
+        This must keep failing this way for old callers that don't pass
+        normals -- the fix is additive, not a change to the fallback."""
+        result = classify_roof_intersection(
+            self.HIP_FACE1_VERTS, self.HIP_FACE2_VERTS, self.HIP_SHARED_EDGE)
+        assert result['classification'] == 'ambiguous'
+        assert result['method'] == 'z_average'
+        # The structural signature of the bug: both faces' non-shared
+        # vertices average to exactly the shared edge's own midpoint Z.
+        assert result['face1_other_z'] == pytest.approx(result['shared_edge_z'], abs=1e-6)
+        assert result['face2_other_z'] == pytest.approx(result['shared_edge_z'], abs=1e-6)
+
+    def test_diagonal_hip_line_with_normals_is_correctly_ridge(self):
+        result = classify_roof_intersection(
+            self.HIP_FACE1_VERTS, self.HIP_FACE2_VERTS, self.HIP_SHARED_EDGE,
+            face1_normal=self.HIP_FACE1_NORMAL, face2_normal=self.HIP_FACE2_NORMAL)
+        assert result['classification'] == 'ridge'
+        assert result['confidence'] == 'high'
+        assert result['method'] == 'normal'
+
+    def test_real_valley_groove_is_correctly_valley(self):
+        """Cross-checks the sign convention: a genuinely concave case must
+        not be flipped into 'ridge' by the same normal-based test."""
+        result = classify_roof_intersection(
+            self.VALLEY_FACE1_VERTS, self.VALLEY_FACE2_VERTS, self.VALLEY_SHARED_EDGE,
+            face1_normal=self.VALLEY_FACE1_NORMAL, face2_normal=self.VALLEY_FACE2_NORMAL)
+        assert result['classification'] == 'valley'
+        assert result['confidence'] == 'high'
+        assert result['method'] == 'normal'
+
+    def test_real_valley_without_normals_still_matches_old_behavior(self):
+        """This particular valley's shared edge is level (not diagonal), so
+        unlike the hip case it was never actually broken -- the Z-average
+        fallback already got it right. Pinned so the fix doesn't
+        accidentally change behavior for the cases that were already fine."""
+        result = classify_roof_intersection(
+            self.VALLEY_FACE1_VERTS, self.VALLEY_FACE2_VERTS, self.VALLEY_SHARED_EDGE)
+        assert result['classification'] == 'valley'
+        assert result['method'] == 'z_average'
+
+    def test_disagreeing_normal_sides_is_ambiguous(self):
+        """One non-shared vertex lands on each side of the adjacent face's
+        plane -- a genuinely inconsistent case, must not guess."""
+        edge = ((0, 0, 0), (0, 10, 0))
+        face1_verts = [(0, 0, 0), (0, 10, 0), (0, -5, -5)]
+        face2_verts = [(0, 0, 0), (0, 10, 0), (-5, 5, 5), (5, 5, 5)]
+        result = classify_roof_intersection(
+            face1_verts, face2_verts, edge,
+            face1_normal=(1, 0, 0), face2_normal=(0, 1, 0))
+        assert result['classification'] == 'ambiguous'
+        assert result['method'] == 'normal'
+        assert result['confidence'] == 'low'
+
+    @pytest.mark.parametrize("other_z,face1_other_z,expected", [
+        # exactly at normal_tolerance -- boundary itself, not decisive.
+        # face1_other_z is irrelevant here: side_a alone is already
+        # 'mixed' at this boundary, which forces ambiguous regardless of
+        # side_b -- kept far on the 'inside' to show it isn't what's
+        # driving the ambiguity.
+        (-1e-6, -100, 'ambiguous'),
+        # inside the tolerance band -- near-coplanar, not decisive either.
+        (-0.5e-6, -100, 'ambiguous'),
+        # safely past the tolerance on the 'inside' side, and face1's own
+        # other vertex agrees (also 'inside') -- decisive ridge.
+        (-2e-6, -100, 'ridge'),
+        # safely past the tolerance on the 'outside' side, and face1's own
+        # other vertex agrees (also 'outside') -- decisive valley.
+        (2e-6, 100, 'valley'),
+    ])
+    def test_normal_tolerance_at_below_above_boundary(self, other_z, face1_other_z, expected):
+        """Threshold-boundary coverage for the default normal_tolerance
+        (1e-6): a signed distance exactly at the tolerance, or inside the
+        band, must not be treated as decisive (avoids a near-coplanar
+        vertex flipping the classification on floating-point noise)."""
+        edge = ((0, 0, 0), (0, 10, 0))
+        face1_verts = [(0, 0, 0), (0, 10, 0), (5, 5, face1_other_z)]
+        face2_verts = [(0, 0, 0), (0, 10, 0), (5, 5, other_z)]
+        result = classify_roof_intersection(
+            face1_verts, face2_verts, edge,
+            face1_normal=(0, 0, 1), face2_normal=(0, 0, 1))
+        assert result['classification'] == expected
+        if expected == 'ambiguous':
+            assert result['confidence'] == 'low'
+        else:
+            assert result['confidence'] == 'high'
