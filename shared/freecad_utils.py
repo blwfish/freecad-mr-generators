@@ -9,7 +9,13 @@ Imported by:  brick_generator_macro, radial_brick_generator_macro,
               snow_guard_generator, standing_seam_generator,
               standing_seam_snow_guard_generator, label_generator
 
-Version: 1.6.0
+Version: 1.7.0
+  1.7.0: Remove find_spreadsheet()/_warn_typeid_mismatch() -- dead code
+         with zero callers repo-wide (full-review finding
+         freecad-mr-generators-20260915-e612#31/#42). Also tighten
+         find_first_existing_path() to check os.path.isfile() rather than
+         os.path.exists(), matching resolve_font_path()'s own stricter
+         check (#41).
   1.6.0: Remove commit_result() -- dead code with zero real callers
          repo-wide (the shingle_generator.FCMacro rewrite that replaced
          its independent legacy pipeline with the standard proxy-based
@@ -682,13 +688,20 @@ def resolve_sources_faces(sources, caller_name):
 
 def find_first_existing_path(candidates):
     """
-    Return the first path in *candidates* that exists on disk, or "" if
-    none do.
+    Return the first path in *candidates* that is an existing file on
+    disk, or "" if none are.
 
     Used to build a fallback default font (or similar) path from a list of
     per-platform/per-project candidates. Deliberately does not interpret or
     rank *why* a candidate is preferred -- that ordering is the caller's own
     config, not something this helper should encode.
+
+    Full-review finding freecad-mr-generators-20260915-e612#41: previously
+    checked os.path.exists() rather than os.path.isfile(), inconsistent
+    with resolve_font_path()'s own stricter is-a-file check -- a candidate
+    path that happened to name an existing directory would have been
+    accepted here and only failed later, opaquely, inside
+    Part.makeWireString.
 
     Parameters
     ----------
@@ -697,11 +710,11 @@ def find_first_existing_path(candidates):
     Returns
     -------
     str
-        The first existing path, or "" if none exist (including if
+        The first existing file path, or "" if none exist (including if
         *candidates* is empty).
     """
     for path in candidates:
-        if path and os.path.exists(path):
+        if path and os.path.isfile(path):
             return path
     return ""
 
@@ -774,110 +787,6 @@ def resolve_font_path(font_path, caller_name):
             f"readable (permissions) -- using system default font\n")
         return ""
     return font_path
-
-
-# ---------------------------------------------------------------------------
-# Spreadsheet discovery
-# ---------------------------------------------------------------------------
-
-def find_spreadsheet(doc):
-    """
-    Find a spreadsheet object in *doc* by name or label, following App::Link
-    if the named object is a link to a spreadsheet.
-
-    Searches names in priority order:
-      ``params`` → ``ShingleParameters`` → ``BuildingParameters`` → ``Spreadsheet``
-
-    For each candidate, first tries ``doc.getObject(name)`` (internal name
-    match), then scans ``doc.Objects`` for a matching ``Label``.  Both paths
-    resolve App::Link transparently.
-
-    Parameters
-    ----------
-    doc : FreeCAD.Document
-
-    Returns
-    -------
-    Spreadsheet::Sheet or None
-        The first matching spreadsheet, or None if none found.
-
-    Preconditions:
-        - doc: must not be None
-        - doc: must have getObject() and Objects attributes (must be a
-          FreeCAD Document, not a string or path)
-
-    Postconditions:
-        - if a non-None value is returned, its TypeId is 'Spreadsheet::Sheet'
-          (links are resolved; the raw link object is never returned)
-        - if no spreadsheet is present in the document, returns None (never
-          raises; callers must check for None)
-    """
-    # --- Preconditions ---
-    _assert(doc is not None,
-            f"find_spreadsheet: doc must not be None")
-    _assert(hasattr(doc, 'getObject') and hasattr(doc, 'Objects'),
-            f"find_spreadsheet: doc must be a FreeCAD.Document (has getObject + Objects), "
-            f"got type={type(doc).__name__!r}")
-
-    preferred_names = ["params", "ShingleParameters", "BuildingParameters", "Spreadsheet"]
-    for ss_name in preferred_names:
-        # Try internal object name first
-        obj = doc.getObject(ss_name)
-        matched_by_name = None
-        if obj:
-            matched_by_name = obj.Name
-            if obj.TypeId == 'App::Link':
-                target = obj.LinkedObject
-                if target and target.TypeId == 'Spreadsheet::Sheet':
-                    # --- Postcondition (link path) ---
-                    _assert(target.TypeId == 'Spreadsheet::Sheet',
-                            f"find_spreadsheet: resolved link target has unexpected TypeId="
-                            f"{target.TypeId!r} (expected 'Spreadsheet::Sheet')")
-                    return target
-                _warn_typeid_mismatch(ss_name, target.TypeId if target else 'App::Link (unresolved)')
-            elif obj.TypeId == 'Spreadsheet::Sheet':
-                # --- Postcondition (direct path) ---
-                _assert(obj.TypeId == 'Spreadsheet::Sheet',
-                        f"find_spreadsheet: matched object has unexpected TypeId="
-                        f"{obj.TypeId!r} (expected 'Spreadsheet::Sheet')")
-                return obj
-            else:
-                _warn_typeid_mismatch(ss_name, obj.TypeId)
-        # Fall back to Label match -- skip the object already checked above
-        # (FreeCAD defaults Label=Name, so it would otherwise re-match the
-        # identical wrong-type object and warn about it twice).
-        for obj in doc.Objects:
-            if obj.Name == matched_by_name:
-                continue
-            if obj.Label == ss_name:
-                if obj.TypeId == 'App::Link':
-                    target = obj.LinkedObject
-                    if target and target.TypeId == 'Spreadsheet::Sheet':
-                        _assert(target.TypeId == 'Spreadsheet::Sheet',
-                                f"find_spreadsheet: resolved link target has unexpected TypeId="
-                                f"{target.TypeId!r} (expected 'Spreadsheet::Sheet')")
-                        return target
-                    _warn_typeid_mismatch(ss_name, target.TypeId if target else 'App::Link (unresolved)')
-                elif obj.TypeId == 'Spreadsheet::Sheet':
-                    _assert(obj.TypeId == 'Spreadsheet::Sheet',
-                            f"find_spreadsheet: matched object has unexpected TypeId="
-                            f"{obj.TypeId!r} (expected 'Spreadsheet::Sheet')")
-                    return obj
-                else:
-                    _warn_typeid_mismatch(ss_name, obj.TypeId)
-    return None
-
-
-def _warn_typeid_mismatch(name, actual_type_id):
-    """A name/label matched a preferred spreadsheet candidate, but the
-    object isn't actually a Spreadsheet::Sheet -- without this, that case
-    was indistinguishable from "no spreadsheet present at all" (full-review
-    finding freecad-mr-generators-20260808-a0b9#29)."""
-    App.Console.PrintWarning(
-        f"find_spreadsheet: an object named/labeled '{name}' exists but is "
-        f"a {actual_type_id}, not a Spreadsheet::Sheet -- ignoring it and "
-        f"trying the next candidate name.\n"
-    )
 
 
 def add_property(obj, ptype, name, group, doc, default=None, editor_mode=None):

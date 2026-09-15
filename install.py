@@ -95,6 +95,18 @@ def _find_freecad_paths_via_freecadcmd():
             [binary, "-c", script],
             capture_output=True, text=True, timeout=30,
         )
+        # Full-review finding freecad-mr-generators-20260915-e612#39: a
+        # non-zero exit previously wasn't checked before attempting to
+        # parse stdout as JSON -- FreeCAD crashing partway through the
+        # script (after printing some banner/warning text but before the
+        # json.dumps(...) line) could otherwise land on a non-JSON "last
+        # non-blank line" and only fail inside the broad except below,
+        # indistinguishable from "FreeCADCmd genuinely has nothing useful
+        # to say here". Checking returncode first makes the "the binary
+        # itself failed" case explicit rather than relying on JSON parsing
+        # to incidentally catch it.
+        if result.returncode != 0:
+            return None
         # FreeCAD's own startup banner/warnings can precede our JSON on
         # stdout, so parse only the last non-blank line.
         lines = [l for l in result.stdout.splitlines() if l.strip()]
@@ -243,16 +255,33 @@ def _check_ashlar_dependencies():
             [binary, "-c", "import numpy, scipy"],
             capture_output=True, text=True, timeout=30,
         )
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as exc:
+        # Full-review finding freecad-mr-generators-20260915-e612#39:
+        # previously silent on a subprocess-launch failure (timeout,
+        # binary vanished between _find_freecadcmd() and here, etc.) --
+        # indistinguishable from "the check ran and numpy/scipy are fine".
+        print(
+            f"\nNote: could not run FreeCADCmd to check for numpy/scipy "
+            f"(needed only by ashlar_generator): {exc}"
+        )
         return
 
     if result.returncode != 0:
+        # Full-review finding freecad-mr-generators-20260915-e612#39:
+        # previously never showed *why* the import failed -- could be a
+        # genuinely missing package, or something else entirely (a broken
+        # FreeCAD Python environment, a syntax/version issue). stderr is
+        # the actual ImportError text and is the fastest way for a user to
+        # tell those apart instead of guessing from the generic message
+        # alone.
         print(
             "\nNote: ashlar_generator needs numpy and scipy, which are not "
             "installed in FreeCAD's Python environment. Every other generator "
             "in this repo works without them. To fix, run:\n"
             f"    {binary} -m pip install numpy scipy"
         )
+        if result.stderr.strip():
+            print(f"  (FreeCADCmd reported: {result.stderr.strip().splitlines()[-1]})")
 
 
 def install(macro_dir: Path, mod_dir: Path, dry_run: bool = False):
@@ -293,22 +322,44 @@ def install(macro_dir: Path, mod_dir: Path, dry_run: bool = False):
 
 
 def uninstall(macro_dir: Path, mod_dir: Path):
+    """Remove installed macros and the library module directory.
+
+    Full-review finding freecad-mr-generators-20260915-e612#40: previously
+    an uncaught OSError (e.g. a permission-denied or in-use file) on any
+    single item would abort the whole uninstall with a raw traceback,
+    leaving every item after it untouched -- self-limiting rather than
+    data-corrupting, but still worse than it needs to be for a script
+    whose whole job is "remove these N things". Each item is now
+    independent: a failure on one is reported clearly and the rest still
+    get attempted, with a final count of failures alongside successes.
+    """
     fc_gen_dir = mod_dir / MOD_NAME
 
     removed = 0
+    failed = 0
     for _, name in collect_macros():
         f = macro_dir / name
         if f.exists():
-            f.unlink()
+            try:
+                f.unlink()
+            except OSError as exc:
+                print(f"Failed to remove {f}: {exc}")
+                failed += 1
+                continue
             print(f"Removed: {f}")
             removed += 1
 
     if fc_gen_dir.exists():
-        shutil.rmtree(fc_gen_dir)
-        print(f"Removed: {fc_gen_dir}")
-        removed += 1
+        try:
+            shutil.rmtree(fc_gen_dir)
+        except OSError as exc:
+            print(f"Failed to remove {fc_gen_dir}: {exc}")
+            failed += 1
+        else:
+            print(f"Removed: {fc_gen_dir}")
+            removed += 1
 
-    print(f"\n{removed} items removed.")
+    print(f"\n{removed} items removed." + (f"  {failed} failed." if failed else ""))
 
 
 def main():

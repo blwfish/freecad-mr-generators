@@ -38,21 +38,48 @@ GENERATOR_NAME = "label_generator"
 # ---------------------------------------------------------------------------
 
 _FONT_CANDIDATES = [
+    # macOS
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/System/Library/Fonts/Geneva.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Windows
+    r"C:\Windows\Fonts\arialbd.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+    # Linux (common package locations -- liberation-fonts, fonts-dejavu-core)
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
 # find_first_existing_path() already returns "" (never None) when no
-# candidate exists -- true on non-macOS, or macOS without these specific
-# fonts. The `or ""` is a defensive belt-and-suspenders guard: even if a
+# candidate exists -- true on a platform/machine without any of the fonts
+# above. The `or ""` is a defensive belt-and-suspenders guard: even if a
 # future change to find_first_existing_path ever returned None, set_defaults
 # below must never assign None to the App::PropertyFile FontPath property
 # (that would surface later as an opaque "file not found: None"-style
 # failure instead of resolve_font_path()'s clear "FontPath is not set"
 # PrintWarning -- full-review finding #07).
 _DEFAULT_FONT = find_first_existing_path(_FONT_CANDIDATES) or ""
+
+# Full-review finding freecad-mr-generators-20260915-e612#43: previously
+# no diagnostic at all when none of the candidates above were found --
+# resolve_font_path()'s later "FontPath is not set" warning (triggered by
+# _DEFAULT_FONT falling through as "") doesn't mention that a font search
+# was even attempted, let alone which paths it tried, so a user on a
+# platform/machine with none of these fonts installed had no way to tell
+# why label text was rendering in FreeCAD's system default font. Modeled
+# on station_sign_proxy.py's _FONT_HELP, which already did this.
+if not _DEFAULT_FONT:
+    App.Console.PrintWarning(
+        "LabelProxy: none of the built-in default font candidates were "
+        "found on this system:\n"
+        + "".join(f"      {c}\n" for c in _FONT_CANDIDATES) +
+        "  Labels will use whatever system default font FreeCAD finds, "
+        "unless you set the FontPath property on your Label object to a "
+        ".ttf/.otf/.ttc font file you already have.\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +255,27 @@ class LabelProxy:
 
         try:
             if font_size == 0.0:
-                _, bb_ref = _make_text_faces(text, font_path, 1.0)
+                faces, bb_ref = _make_text_faces(text, font_path, 1.0)
                 if bb_ref.XLength <= 0 or bb_ref.YLength <= 0:
                     raise RuntimeError("Text shape has zero bounding box at size 1")
                 font_size = compute_font_size(
                     bb_ref.XLength, bb_ref.YLength, face_w, face_h, padding
                 )
-
-            faces, bb = _make_text_faces(text, font_path, font_size)
+                # Scale the already-tessellated size=1 faces up to font_size
+                # instead of calling Part.makeWireString a second time --
+                # font outline extraction is a linear scaling of the
+                # em-square with no hinting, so Shape.scale() (about the
+                # origin, matching makeWireString's own baseline-at-origin
+                # layout) reproduces a second full tessellation exactly
+                # (confirmed live: bounding box and total glyph area match
+                # a direct re-tessellation to within float noise, ~1e-13
+                # relative). Full-review finding
+                # freecad-mr-generators-20260915-e612#36.
+                for face in faces:
+                    face.scale(font_size)
+                bb = Part.makeCompound(faces).BoundBox
+            else:
+                faces, bb = _make_text_faces(text, font_path, font_size)
 
             # Centre at local origin then extrude each glyph face.
             #
