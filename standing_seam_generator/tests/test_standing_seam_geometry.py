@@ -5,6 +5,7 @@ import math
 from standing_seam_geometry import (
     validate_parameters,
     calculate_panel_layout,
+    calculate_panel_placements,
     generate_panel_profile,
     get_roof_coordinate_system,
     is_planar,
@@ -295,3 +296,61 @@ class TestBoundaryOverflowRegression:
         assert right_edge - face_width >= panel_width, (
             f"insufficient right-side overflow margin: {right_edge - face_width}"
         )
+
+
+class TestCalculatePanelPlacementsVBoundary:
+    """Full-review finding freecad-mr-generators-20260915-e612#14.
+
+    calculate_panel_layout's start_u/+2-panels overflow (tested above)
+    only ever covered the U axis. V was never protected: the proxy built
+    each panel's extrude vector as exactly v_length starting at v=0 (the
+    eave), flush with _build_clip_volumes' own eave/ridge walls -- the
+    same OCCT coincident-boundary-face segfault class documented in
+    CLAUDE.md, just on one shape's own extrude instead of a tiled family
+    of elements. calculate_panel_placements() now nudges v_start/v_extent
+    strictly past both edges; this pins that both edges are actually
+    overflowed, for face sizes including exact-multiple and single-panel
+    degenerate cases.
+    """
+
+    @pytest.mark.parametrize('face_width,v_length,panel_width', [
+        (50.0,  20.0,  5.0),
+        (50.0,  15.0,  10.0),   # exact 5x U fit
+        (15.0,  9.0,   5.0),    # exact 3x U fit
+        (52.55, 32.8,  5.0),    # demo-roof dimensions
+        (5.0,   3.0,   5.0),    # single-panel-minimum face width
+        (100.0, 0.001, 5.0),    # degenerate (near-zero) v_length
+    ])
+    def test_all_panels_overflow_both_v_edges(self, face_width, v_length, panel_width):
+        placements = calculate_panel_placements(face_width, v_length, panel_width)
+        assert placements, "expected at least one panel placement"
+
+        for p in placements:
+            assert p['v_start'] < 0.0, (
+                f"panel {p['i']}: v_start={p['v_start']} doesn't overflow the eave (v=0)"
+            )
+            v_end = p['v_start'] + p['v_extent']
+            assert v_end > v_length, (
+                f"panel {p['i']}: v_end={v_end} doesn't overflow the ridge/hip "
+                f"line (v_length={v_length})"
+            )
+
+    def test_v_nudge_is_small_relative_to_panel_width(self):
+        placements = calculate_panel_placements(50.0, 20.0, 5.0)
+        for p in placements:
+            assert abs(p['v_start']) < 0.01 * 5.0
+            assert abs(p['v_start'] + p['v_extent'] - 20.0) < 0.01 * 5.0
+
+    def test_u_start_matches_calculate_panel_layout(self):
+        """calculate_panel_placements' U position must still agree with
+        calculate_panel_layout -- it reuses that function rather than
+        re-deriving start_u, but this pins the per-panel formula
+        (start_u + i*panel_width) the proxy used to inline directly."""
+        face_width, v_length, panel_width = 52.55, 32.8, 5.0
+        layout = calculate_panel_layout(face_width, panel_width)
+        placements = calculate_panel_placements(face_width, v_length, panel_width)
+
+        assert len(placements) == layout['num_panels']
+        for p in placements:
+            expected_u = layout['start_u'] + p['i'] * panel_width
+            assert p['u_start'] == pytest.approx(expected_u, abs=1e-9)

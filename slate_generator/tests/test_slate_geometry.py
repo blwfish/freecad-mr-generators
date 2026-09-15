@@ -15,6 +15,7 @@ from slate_geometry import (
     is_valid_clip_fragment,
     is_top_course_complete,
     calculate_fitted_exposure,
+    calculate_tile_placements,
     # Shared via roof_geometry
     is_planar,
     calculate_face_bounds,
@@ -486,3 +487,56 @@ class TestFittedExposure:
 
     def test_negative_face_v_length_returns_nominal_unchanged(self):
         assert calculate_fitted_exposure(-1.0, 2.2) == pytest.approx(2.2)
+
+
+from boundary_assertions import assert_overflows_boundary
+
+
+def _tile_v_extent(p):
+    return (p['v_butt'], p['v'])
+
+
+class TestCalculateTilePlacementsBoundaryOverflow:
+    """Boundary-overflow invariant: courses must overflow the face edges
+    on both axes, or slate_proxy's `_clip_shape` OCCT common() Boolean
+    risks the coincident-face segfault this repo's CLAUDE.md documents.
+
+    Full-review finding freecad-mr-generators-20260915-e612#14: V was
+    already protected (calculate_course_v_position's own nudge), but U
+    had no coverage at all -- calculate_tile_placements() (see its own
+    docstring) is the extraction that made this test possible, and it
+    also closes a confirmed-live gap: stagger_pattern='none' never
+    overflowed the U/left boundary for any face size before this fix.
+    """
+
+    BASE = dict(tile_width=2.0, tile_height=2.5, exposure=1.5, stagger_pattern='half')
+
+    @pytest.mark.parametrize('u_length,v_length', [
+        (20.0, 25.4),                      # round numbers
+        (2.0 * 4, 1.5 * 10),               # exact integer multiples of width/exposure
+        (2.0, 1.5),                        # single-unit minimum
+        (2.0 * 4 + 0.001, 1.5 * 10 - 0.001),  # just above/below an exact multiple
+        (10.16, 25.4),                     # real HO-scale model dimensions
+    ])
+    @pytest.mark.parametrize('stagger_pattern', ['half', 'third', 'none'])
+    def test_placements_overflow_face_boundary(self, u_length, v_length, stagger_pattern):
+        """stagger_pattern='none' is included deliberately: CONFIRMED LIVE
+        that before this fix, 'none' never overflowed the U (left)
+        boundary at all, for any face size -- zero stagger means every
+        row's col=0 starts at exactly u=0."""
+        base = {**self.BASE, 'stagger_pattern': stagger_pattern}
+        fitted_exposure = calculate_fitted_exposure(v_length, base['exposure'])
+        placements = calculate_tile_placements(
+            u_length, v_length, base['tile_width'], base['tile_height'],
+            fitted_exposure, stagger_pattern)
+        tile_width = base['tile_width']
+
+        assert_overflows_boundary(
+            placements, lo=0.0, hi=u_length,
+            get_extent=lambda p: (p['u'], p['u'] + tile_width),
+            label=f"U axis, u_length={u_length} v_length={v_length} pattern={stagger_pattern}: ",
+        )
+        assert_overflows_boundary(
+            placements, lo=0.0, hi=v_length, get_extent=_tile_v_extent,
+            label=f"V axis, u_length={u_length} v_length={v_length} pattern={stagger_pattern}: ",
+        )

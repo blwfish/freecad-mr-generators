@@ -345,11 +345,114 @@ def calculate_shingle_position(row: int, col: int,
 
     # U position: starts at -max_stagger so col=0, stagger=0 lands at the left wall edge
     u = col * shingle_width + stagger - max_stagger
-    
+
     # V position (vertical, starting one course below origin)
     v = row * shingle_exposure - shingle_exposure
-    
+
     return u, v
+
+
+def calculate_shingle_placements(u_length: float, v_length: float,
+                                  shingle_width: float, shingle_height: float,
+                                  shingle_exposure: float,
+                                  stagger_pattern: str = "half") -> List[Dict]:
+    """
+    Full placement list for every shingle that would actually survive to
+    be placed on a face of the given size.
+
+    Full-review finding freecad-mr-generators-20260915-e612#14: this
+    generator's boundary-overflow invariant (courses must extend past the
+    face edges, or OCCT's common() Boolean risks a coincident-face
+    segfault -- see this repo's CLAUDE.md) had no test coverage, because
+    the per-shingle position AND the row-skip/row-break survival logic
+    that decides which courses actually get placed were both inlined
+    directly in shingle_proxy.py's _generate_shingles_for_face -- this
+    function (calculate_shingle_position) already existed with the right
+    U/V formula but was dead (the proxy inlined its own copy instead),
+    and the skip/break logic had no pure-Python form at all. This
+    function is now the single source of truth for both: the raw grid
+    calculate_layout() produces, filtered by the same "less than half the
+    shingle's own height lies on the face" survival rule the proxy used
+    to apply only to itself. shingle_proxy.py now iterates over this
+    function's output directly instead of maintaining its own copy of
+    the loop.
+
+    Returns a list of dicts, one per placed shingle:
+        {'row': int, 'col': int, 'u': float, 'v': float,
+         'v_butt': float, 'is_starter': bool}
+    where (u, v) is the top-left anchor (calculate_shingle_position's own
+    convention), v_butt is the bottom edge of the shingle (v - the
+    course's own height: shingle_exposure for row 0, shingle_height for
+    every other row), and is_starter is True only for row 0 (the
+    rectangular starter course, vs. every other row's tapered wedge
+    profile).
+    """
+    layout = calculate_layout(u_length, v_length, shingle_width,
+                              shingle_exposure, stagger_pattern)
+    num_courses = layout['num_courses']
+    shingles_per_course = layout['shingles_per_course']
+
+    placements = []
+    for row in range(num_courses):
+        is_starter = (row == 0)
+        v_row = row * shingle_exposure - shingle_exposure
+        v_h = shingle_exposure if is_starter else shingle_height
+        v_butt = v_row - v_h
+        v_on_face = min(v_row, v_length) - max(v_butt, 0.0)
+        if v_on_face < v_h * 0.5:
+            if v_butt >= 0.0:
+                break
+            continue
+
+        for col in range(shingles_per_course):
+            u, v = calculate_shingle_position(
+                row, col, shingle_width, shingle_height,
+                shingle_exposure, stagger_pattern)
+            placements.append({
+                'row': row, 'col': col, 'u': u, 'v': v,
+                'v_butt': v_butt, 'is_starter': is_starter,
+            })
+
+    if not placements:
+        return placements
+
+    # Full-review finding freecad-mr-generators-20260915-e612#14: discovered
+    # live while writing the boundary-overflow test this fix was originally
+    # just meant to close -- calculate_layout's "+3 safety margin" guarantees
+    # ENOUGH courses/columns exist, but not that the union of their extents
+    # strictly overflows the face on every axis. Two confirmed real,
+    # previously-undetected cases (no test existed to catch either):
+    #   - v_length an exact multiple of shingle_exposure: the surviving top
+    #     course's head can land EXACTLY at v_length (verified:
+    #     u_length=3.5, v_length=1.5 with the defaults below).
+    #   - stagger_pattern='none': zero stagger means every row's col=0
+    #     starts at EXACTLY u=0 -- verified live across u_length=5..100mm,
+    #     the left edge never overflows regardless of face size, a
+    #     systemic gap, not a narrow edge case.
+    # Both are the exact OCCT common() coincident-face segfault risk this
+    # repo's CLAUDE.md documents. Nudge whichever placement(s) define the
+    # union's own extreme edge, only if it isn't already strictly past the
+    # boundary -- same "only touch what needs touching" shape as
+    # clapboard_geometry.calculate_course_v_positions's post-loop guarantee.
+    topo_eps = max(shingle_width, shingle_height) * 0.001
+
+    min_u_p = min(placements, key=lambda p: p['u'])
+    if min_u_p['u'] >= 0.0 - topo_eps:
+        min_u_p['u'] = -topo_eps
+
+    max_u_p = max(placements, key=lambda p: p['u'] + shingle_width)
+    if max_u_p['u'] + shingle_width <= u_length + topo_eps:
+        max_u_p['u'] = u_length + topo_eps - shingle_width
+
+    min_v_p = min(placements, key=lambda p: p['v_butt'])
+    if min_v_p['v_butt'] >= 0.0 - topo_eps:
+        min_v_p['v_butt'] = -topo_eps
+
+    max_v_p = max(placements, key=lambda p: p['v'])
+    if max_v_p['v'] <= v_length + topo_eps:
+        max_v_p['v'] = v_length + topo_eps
+
+    return placements
 
 
 def validate_collar_margin(shingle_width: float, shingle_height: float) -> float:

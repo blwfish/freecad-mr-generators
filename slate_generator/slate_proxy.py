@@ -24,9 +24,7 @@ for _p in (str(_here), str(_here / '_lib')):
 from slate_geometry import (
     validate_parameters,
     validate_stagger_pattern,
-    calculate_layout,
-    calculate_stagger_offset,
-    calculate_course_v_position,
+    calculate_tile_placements,
     is_valid_clip_fragment,
     calculate_fitted_exposure,
 )
@@ -114,10 +112,15 @@ def _generate_tiles_for_face(face, params):
     # below).
     exposure = calculate_fitted_exposure(v_length, exposure)
 
-    layout = calculate_layout(u_length, v_length, tile_width, exposure, stagger_pat)
-    num_courses     = layout['num_courses']
-    tiles_per_course = layout['tiles_per_course']
-    max_stagger     = layout['max_stagger']
+    # Full-review finding freecad-mr-generators-20260915-e612#14: the
+    # per-tile U position AND the row-skip survival logic used to be
+    # inlined here directly -- V was already nudge-protected via
+    # calculate_course_v_position, but U had no equivalent and no
+    # pure-Python form to test either way. slate_geometry.
+    # calculate_tile_placements() is now the single source of truth for
+    # both -- see its own docstring.
+    placements = calculate_tile_placements(
+        u_length, v_length, tile_width, tile_height, exposure, stagger_pat)
 
     try:
         clip_volumes = _build_clip_volumes(face)
@@ -132,106 +135,42 @@ def _generate_tiles_for_face(face, params):
     )
     rotation = App.Rotation(rotation_matrix)
 
-    # Tolerance for the "should we stop generating rows" decision below --
-    # deliberately looser than is_top_course_complete()'s own exact `<=`
-    # (used as-is by the optional hide_incomplete_top_course feature,
-    # untouched here). calculate_fitted_exposure() computes exposure so
-    # that MATHEMATICALLY an integer number of courses lands exactly on
-    # v_length, but the actual float arithmetic in calculate_course_v_
-    # position (row * exposure - exposure) can land a few ULPs above the
-    # true value (confirmed live: row*exposure-exposure computed
-    # 15.400000000000002 for an intended-exact 15.4) -- is_top_course_
-    # complete()'s strict `<=` would then misclassify the intended-exact
-    # top course itself as "incomplete" and skip it, leaving a real gap
-    # at the ridge instead of eliminating a redundant stub. Same
-    # magnitude convention as calculate_course_v_position's own nudge.
-    stop_tolerance = abs(exposure) * 0.001
-
     shapes = []
-    for row in range(num_courses):
-        raw_v = calculate_course_v_position(row, exposure)
+    for placement in placements:
+        row, u, v = placement['row'], placement['u'], placement['v']
 
-        # Skip this course entirely (never generate it) rather than
-        # generate-then-clip-then-maybe-discard, once its head already
-        # pokes past the face's own top edge (ridge/hip line at
-        # V=v_length) by more than stop_tolerance. Rows increase v
-        # monotonically, so once this trips, every subsequent row would
-        # too -- but check explicitly rather than break, in case that
-        # assumption ever stops holding. Uses the raw (un-nudged)
-        # position -- the boundary-safety nudge below must not change
-        # whether a course counts as complete.
-        #
-        # Unconditional as of 2026-09-14 (previously gated behind the
-        # optional hide_incomplete_top_course flag, generating every "+3
-        # buffer" row past the ridge by default and relying on clipping to
-        # trim them). Since exposure is *always* fitted just above,
-        # calculate_fitted_exposure() guarantees an integer number of
-        # courses lands the top course exactly on the ridge/hip line --
-        # every course past that one is therefore pure redundant overlap
-        # with zero legitimate new coverage, never a genuinely-needed
-        # partial course. For a flat tile that redundancy used to clip to
-        # a harmless thin sliver (caught by is_valid_clip_fragment's
-        # volume-ratio threshold). For a WEDGE tile (butt_thickness >
-        # material_thickness, the default whenever ButtThickness=0) it
-        # was NOT harmless: confirmed live on a real hip roof, the clip
-        # boundary can fall near the wedge's THICK butt end instead of its
-        # thin head, so a substantial, visually prominent stub survived
-        # well above the 5% discard threshold -- sitting right on top of
-        # the already-complete course below it, unhidden, at the ridge/hip
-        # line. hide_incomplete_top_course's own distinct behavior is now
-        # moot in practice (there is no longer a "genuinely incomplete"
-        # top course left for it to hide, since fitting always makes one
-        # exact) -- the property is left in place rather than removed, in
-        # case some future caller ever reaches this code without fitting.
-        if raw_v > v_length + stop_tolerance:
-            continue
+        top_pos  = origin + _sv(u_vec, u) + _sv(v_vec, v)
+        butt_pos = top_pos + _sv(v_vec, -tile_height)
 
-        # calculate_fitted_exposure() (above) deliberately makes an
-        # integer number of courses divide v_length exactly, so the top
-        # complete course's head can land EXACTLY on the ridge/hip
-        # boundary -- coincident with the same boundary _clip_shape()
-        # clips against below. calculate_course_v_position() nudges that
-        # one course's placement strictly past the boundary so it always
-        # overflows, never coincides (the OCCT crash class
-        # shared/boundary_assertions.py exists to prevent).
-        v = calculate_course_v_position(row, exposure, v_length)
+        if row == 0 or butt_thick <= mat_thick:
+            # Starter course or no wedge: flat box
+            tile = Part.makeBox(tile_width, tile_height, mat_thick)
+        else:
+            # Wedge cross-section: thick at butt, tapers to near-zero at head.
+            # Local space: X=u_vec, Y=v_vec (up-slope), Z=normal (outward).
+            # The butt sits elevated above the tile below; the head rests near
+            # the deck so the next tile above can sit on this one's face.
+            top_thick = butt_thick * 0.2
+            p0 = App.Vector(0, 0, 0)
+            p1 = App.Vector(0, 0, butt_thick)
+            p2 = App.Vector(0, tile_height, top_thick)
+            p3 = App.Vector(0, tile_height, 0)
+            profile = Part.Wire([
+                Part.LineSegment(p0, p1).toShape(),
+                Part.LineSegment(p1, p2).toShape(),
+                Part.LineSegment(p2, p3).toShape(),
+                Part.LineSegment(p3, p0).toShape(),
+            ])
+            tile = Part.Face(profile).extrude(App.Vector(tile_width, 0, 0))
 
-        stagger = calculate_stagger_offset(row, stagger_pat, tile_width)
-        for col in range(tiles_per_course):
-            u = col * tile_width + stagger - max_stagger
+        tile.Placement = App.Placement(butt_pos, rotation)
 
-            top_pos  = origin + _sv(u_vec, u) + _sv(v_vec, v)
-            butt_pos = top_pos + _sv(v_vec, -tile_height)
-
-            if row == 0 or butt_thick <= mat_thick:
-                # Starter course or no wedge: flat box
-                tile = Part.makeBox(tile_width, tile_height, mat_thick)
-            else:
-                # Wedge cross-section: thick at butt, tapers to near-zero at head.
-                # Local space: X=u_vec, Y=v_vec (up-slope), Z=normal (outward).
-                # The butt sits elevated above the tile below; the head rests near
-                # the deck so the next tile above can sit on this one's face.
-                top_thick = butt_thick * 0.2
-                p0 = App.Vector(0, 0, 0)
-                p1 = App.Vector(0, 0, butt_thick)
-                p2 = App.Vector(0, tile_height, top_thick)
-                p3 = App.Vector(0, tile_height, 0)
-                profile = Part.Wire([
-                    Part.LineSegment(p0, p1).toShape(),
-                    Part.LineSegment(p1, p2).toShape(),
-                    Part.LineSegment(p2, p3).toShape(),
-                    Part.LineSegment(p3, p0).toShape(),
-                ])
-                tile = Part.Face(profile).extrude(App.Vector(tile_width, 0, 0))
-
-            tile.Placement = App.Placement(butt_pos, rotation)
-
-            if clip_volumes is not None:
-                clipped = _clip_shape(tile, clip_volumes)
-                if clipped is not None:
-                    shapes.append(clipped)
-            else:
-                shapes.append(tile)
+        if clip_volumes is not None:
+            clipped = _clip_shape(tile, clip_volumes)
+            if clipped is not None:
+                shapes.append(clipped)
+        else:
+            shapes.append(tile)
 
     return shapes
 

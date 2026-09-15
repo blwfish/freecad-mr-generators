@@ -26,8 +26,7 @@ for p in (str(_here), str(_here / '_lib')):
 from shingle_geometry import (
     validate_parameters,
     validate_stagger_pattern,
-    calculate_layout,
-    calculate_stagger_offset,
+    calculate_shingle_placements,
     is_valid_clip_fragment,
 )
 from freecad_utils import (  # noqa: E402
@@ -113,11 +112,15 @@ def _generate_shingles_for_face(face, params):
     origin, u_vec, v_vec, normal, u_length, v_length = \
         _get_face_coordinate_system(face)
 
-    layout = calculate_layout(u_length, v_length, shingle_width,
-                              exposure, stagger_pattern)
-    num_courses = layout['num_courses']
-    shingles_per_course = layout['shingles_per_course']
-    max_stagger = layout['max_stagger']
+    # Full-review finding freecad-mr-generators-20260915-e612#14: the
+    # per-shingle position AND the row-skip/row-break survival logic
+    # deciding which courses actually get placed used to be inlined here
+    # directly, with no pure-Python form to write a boundary-overflow
+    # test against. shingle_geometry.calculate_shingle_placements() is
+    # now the single source of truth for both -- see its own docstring.
+    placements = calculate_shingle_placements(
+        u_length, v_length, shingle_width, shingle_height,
+        exposure, stagger_pattern)
 
     # Build clip volumes
     try:
@@ -136,62 +139,40 @@ def _generate_shingles_for_face(face, params):
 
     shingle_shapes = []
 
-    for row in range(num_courses):
-        # Skip/stop courses where less than half the shingle height lies on
-        # the face. Row 0 is a box of height=exposure; all other rows use
-        # shingle_height. Below the eave (butt < v=0): skip, keep looping --
-        # a later row may still land on the face. Past the ridge: break --
-        # no useful courses remain, and the clipped fragment there is
-        # thicker in the normal direction than it is tall up the slope,
-        # reading as a raised fin rather than a shingle. Ported from
-        # shingle_generator.FCMacro's v5.4.0 fix, which this proxy never
-        # received (full-review finding
-        # freecad-mr-generators-20260808-a0b9#02's consequences).
-        v_row = row * exposure - exposure
-        v_h = exposure if row == 0 else shingle_height
-        v_butt = v_row - v_h
-        v_on_face = min(v_row, v_length) - max(v_butt, 0.0)
-        if v_on_face < v_h * 0.5:
-            if v_butt >= 0.0:
-                break
-            continue
+    for placement in placements:
+        row, u, v, is_starter = (placement['row'], placement['u'],
+                                  placement['v'], placement['is_starter'])
 
-        stagger = calculate_stagger_offset(row, stagger_pattern, shingle_width)
+        top_position = (origin
+                        + _scale_vector(u_vec, u)
+                        + _scale_vector(v_vec, v))
 
-        for col in range(shingles_per_course):
-            u = col * shingle_width + stagger - max_stagger
-            v = row * exposure - exposure
+        if is_starter:
+            # Starter course: rectangular box
+            shingle_shape = Part.makeBox(shingle_width, exposure,
+                                         material_thickness)
+            butt_position = top_position + _scale_vector(v_vec, -exposure)
+        else:
+            # Tapered trapezoidal cross-section
+            top_thick = wedge_thickness * 0.2
+            p0 = App.Vector(0, 0, 0)
+            p1 = App.Vector(0, 0, wedge_thickness)
+            p2 = App.Vector(0, shingle_height, top_thick)
+            p3 = App.Vector(0, shingle_height, 0)
 
-            top_position = (origin
-                            + _scale_vector(u_vec, u)
-                            + _scale_vector(v_vec, v))
+            profile_wire = Part.Wire([
+                Part.LineSegment(p0, p1).toShape(),
+                Part.LineSegment(p1, p2).toShape(),
+                Part.LineSegment(p2, p3).toShape(),
+                Part.LineSegment(p3, p0).toShape(),
+            ])
+            profile_face = Part.Face(profile_wire)
+            shingle_shape = profile_face.extrude(
+                App.Vector(shingle_width, 0, 0))
+            butt_position = top_position + _scale_vector(v_vec,
+                                                         -shingle_height)
 
-            if row == 0:
-                # Starter course: rectangular box
-                shingle_shape = Part.makeBox(shingle_width, exposure,
-                                             material_thickness)
-                butt_position = top_position + _scale_vector(v_vec, -exposure)
-            else:
-                # Tapered trapezoidal cross-section
-                top_thick = wedge_thickness * 0.2
-                p0 = App.Vector(0, 0, 0)
-                p1 = App.Vector(0, 0, wedge_thickness)
-                p2 = App.Vector(0, shingle_height, top_thick)
-                p3 = App.Vector(0, shingle_height, 0)
-
-                profile_wire = Part.Wire([
-                    Part.LineSegment(p0, p1).toShape(),
-                    Part.LineSegment(p1, p2).toShape(),
-                    Part.LineSegment(p2, p3).toShape(),
-                    Part.LineSegment(p3, p0).toShape(),
-                ])
-                profile_face = Part.Face(profile_wire)
-                shingle_shape = profile_face.extrude(
-                    App.Vector(shingle_width, 0, 0))
-                butt_position = top_position + _scale_vector(v_vec,
-                                                             -shingle_height)
-
-            # Chamfer one vertical edge
+        # Chamfer one vertical edge
             if chamfer > 0:
                 try:
                     bb = shingle_shape.BoundBox
