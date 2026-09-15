@@ -6,7 +6,7 @@ These functions were extracted 2026-08-08 from roof_seam_proxy.py (854
 lines, previously zero test coverage) and a vendored copy in
 slate_seam_proxy.py, after a real bug: neither recognized the modern
 `Sources` PropertyLinkSubList convention (shingle_proxy, slate_proxy,
-brick_proxy, quoin_proxy), so selecting faces from any current tiled/
+brick_proxy), so selecting faces from any current tiled/
 shingled output never unwrapped to the true source roof face.
 
 Requires a real FreeCAD -- these tests are skipped (not failed) when

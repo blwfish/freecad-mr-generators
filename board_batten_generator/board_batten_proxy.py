@@ -23,6 +23,8 @@ for p in (str(_here), str(_here / '_lib')):
 from freecad_utils import (  # noqa: E402
     resolve_sources_faces,
     face_normal_at_center as _face_normal,
+    GenericViewProxy,
+    add_property,
 )
 from board_batten_geometry import (
     validate_parameters,
@@ -254,26 +256,18 @@ class BoardBattenProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "BoardBatten"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Wall faces to apply board-and-batten siding to")
-        if not hasattr(obj, 'BoardWidth'):
-            obj.addProperty("App::PropertyLength", "BoardWidth", grp,
-                            "Width of each vertical board (mm)")
-        if not hasattr(obj, 'BattenWidth'):
-            obj.addProperty("App::PropertyLength", "BattenWidth", grp,
-                            "Width of each batten strip (mm)")
-        if not hasattr(obj, 'BoardThickness'):
-            obj.addProperty("App::PropertyLength", "BoardThickness", grp,
-                            "Board material thickness (mm)")
-        if not hasattr(obj, 'BattenProjection'):
-            obj.addProperty("App::PropertyLength", "BattenProjection", grp,
-                            "How far battens project above the boards (mm)")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Wall faces to apply board-and-batten siding to")
+        add_property(obj, "App::PropertyLength", 'BoardWidth', grp,
+            "Width of each vertical board (mm)")
+        add_property(obj, "App::PropertyLength", 'BattenWidth', grp,
+            "Width of each batten strip (mm)")
+        add_property(obj, "App::PropertyLength", 'BoardThickness', grp,
+            "Board material thickness (mm)")
+        add_property(obj, "App::PropertyLength", 'BattenProjection', grp,
+            "How far battens project above the boards (mm)")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -321,30 +315,5 @@ class BoardBattenProxy:
         self.loads(state)
 
 
-class BoardBattenViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class BoardBattenViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

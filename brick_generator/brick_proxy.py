@@ -197,7 +197,10 @@ try:
 except ImportError:
     face_geometry = None
 
-from freecad_utils import resolve_sources_faces, get_face_coordinate_system
+from freecad_utils import (
+    resolve_sources_faces, get_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 
 
 # =============================================================================
@@ -725,40 +728,33 @@ class BrickProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "Brick"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Wall faces to engrave brickwork on")
-        if not hasattr(obj, 'BondPattern'):
-            obj.addProperty(
-                "App::PropertyEnumeration", "BondPattern", grp,
-                "Brick bond pattern")
-            obj.BondPattern = ['stretcher', 'english', 'flemish', 'common']
-        if not hasattr(obj, 'BrickWidth'):
-            obj.addProperty("App::PropertyLength", "BrickWidth", grp,
-                            "Brick width (stretcher face, mm)")
-        if not hasattr(obj, 'BrickHeight'):
-            obj.addProperty("App::PropertyLength", "BrickHeight", grp,
-                            "Brick height (mm)")
-        if not hasattr(obj, 'BrickDepth'):
-            obj.addProperty("App::PropertyLength", "BrickDepth", grp,
-                            "Brick depth / header length (mm)")
-        if not hasattr(obj, 'Mortar'):
-            obj.addProperty("App::PropertyLength", "Mortar", grp,
-                            "Mortar joint thickness (mm)")
-        if not hasattr(obj, 'SkinDepth'):
-            obj.addProperty("App::PropertyLength", "SkinDepth", grp,
-                            "Brick skin thickness, proud of the source "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Wall faces to engrave brickwork on")
+        add_property(obj, "App::PropertyEnumeration", 'BondPattern', grp,
+            "Brick bond pattern", default=['stretcher', 'english', 'flemish', 'common'])
+        add_property(obj, "App::PropertyLength", 'BrickWidth', grp,
+            "Brick width (stretcher face, mm)")
+        add_property(obj, "App::PropertyLength", 'BrickHeight', grp, "Brick height (mm)")
+        add_property(obj, "App::PropertyLength", 'BrickDepth', grp,
+            "Brick depth / header length (mm)")
+        add_property(obj, "App::PropertyLength", 'Mortar', grp, "Mortar joint thickness (mm)")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'SkinDepth',
+            grp,
+            "Brick skin thickness, proud of the source "
                             "face's surface (mm)")
-        if not hasattr(obj, 'MortarDepth'):
-            obj.addProperty("App::PropertyLength", "MortarDepth", grp,
-                            "Mortar groove engraving depth (mm)")
-        if not hasattr(obj, 'CommonBondCount'):
-            obj.addProperty("App::PropertyInteger", "CommonBondCount", grp,
-                            "Stretcher courses between header courses (common bond)")
-        if not hasattr(obj, 'LeftQuoin'):
-            obj.addProperty("App::PropertyBool", "LeftQuoin", grp,
-                            "Engrave a real interlocking quoin column at the "
+        add_property(obj, "App::PropertyLength", 'MortarDepth', grp,
+            "Mortar groove engraving depth (mm)")
+        add_property(obj, "App::PropertyInteger", 'CommonBondCount', grp,
+            "Stretcher courses between header courses (common bond)")
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'LeftQuoin',
+            grp,
+            "Engrave a real interlocking quoin column at the "
                             "left edge (u=0) in this same pass; field fill "
                             "starts after it. Set independently on each of "
                             "the two faces meeting at the corner (must share "
@@ -766,32 +762,43 @@ class BrickProxy:
                             "Supported on all bond types, including header "
                             "courses (english/common bond's header courses "
                             "respect the quoin boundary as of "
-                            "brick_geometry.py v6.3.0).")
-            obj.LeftQuoin = False
-        if not hasattr(obj, 'LeftQuoinPrimary'):
-            obj.addProperty("App::PropertyBool", "LeftQuoinPrimary", grp,
-                            "Left quoin Face A/B designation: True = stretcher "
+                            "brick_geometry.py v6.3.0).",
+            default=False)
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'LeftQuoinPrimary',
+            grp,
+            "Left quoin Face A/B designation: True = stretcher "
                             "quoin on even courses, False = header-return. "
                             "Exactly one of the two faces at a corner should "
-                            "be True. Ignored when LeftQuoin=False.")
-            obj.LeftQuoinPrimary = True
-        if not hasattr(obj, 'RightQuoin'):
-            obj.addProperty("App::PropertyBool", "RightQuoin", grp,
-                            "A real quoin column at the right edge "
+                            "be True. Ignored when LeftQuoin=False.",
+            default=True)
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'RightQuoin',
+            grp,
+            "A real quoin column at the right edge "
                             "(u=u_length). Works standalone (LeftQuoin=False) "
                             "on any bond type. Combined with LeftQuoin=True "
                             "(a wall spanning two quoin corners) is "
-                            "flemish-only.")
-            obj.RightQuoin = False
-        if not hasattr(obj, 'RightQuoinPrimary'):
-            obj.addProperty("App::PropertyBool", "RightQuoinPrimary", grp,
-                            "Right quoin Face A/B designation, same convention "
-                            "as LeftQuoinPrimary. Ignored when RightQuoin=False.")
-            obj.RightQuoinPrimary = True
-        if not hasattr(obj, 'ReverseQuoinSides'):
-            obj.addProperty(
-                "App::PropertyBool", "ReverseQuoinSides", grp,
-                "Swap which physical edge LeftQuoin/RightQuoin refer to on "
+                            "flemish-only.",
+            default=False)
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'RightQuoinPrimary',
+            grp,
+            "Right quoin Face A/B designation, same convention "
+                            "as LeftQuoinPrimary. Ignored when RightQuoin=False.",
+            default=True)
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'ReverseQuoinSides',
+            grp,
+            "Swap which physical edge LeftQuoin/RightQuoin refer to on "
                 "this face. LeftQuoin/RightQuoin are defined by the face's "
                 "own bounding-box axis (u=0 is always whichever end has the "
                 "lower coordinate along that axis) -- entirely independent "
@@ -810,38 +817,43 @@ class BrickProxy:
                 "convention -- the one corner_detection.py's own "
                 "auto-corner-pairing logic is written to require staying "
                 "normal-independent, though that module has no callers "
-                "yet -- is untouched).")
-            obj.ReverseQuoinSides = False
-        if not hasattr(obj, 'LeftQuoinPrimaryFaces'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "LeftQuoinPrimaryFaces", grp,
-                "Per-face override for a multi-face Sources list: these "
+                "yet -- is untouched).",
+            default=False)
+        add_property(
+            obj,
+            "App::PropertyLinkSubList",
+            'LeftQuoinPrimaryFaces',
+            grp,
+            "Per-face override for a multi-face Sources list: these "
                 "faces get a LEFT quoin (u=0) as the PRIMARY side, regardless "
                 "of LeftQuoin/LeftQuoinPrimary above. Needed when different "
                 "faces in the same BrickedWall meet different corners and "
                 "must take opposite roles. A face not listed in any of the "
                 "four *QuoinFaces override lists falls back to the plain "
                 "LeftQuoin/RightQuoin/*Primary booleans.")
-        if not hasattr(obj, 'LeftQuoinSecondaryFaces'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "LeftQuoinSecondaryFaces", grp,
-                "Per-face override: these faces get a LEFT quoin (u=0) as "
+        add_property(
+            obj,
+            "App::PropertyLinkSubList",
+            'LeftQuoinSecondaryFaces',
+            grp,
+            "Per-face override: these faces get a LEFT quoin (u=0) as "
                 "the SECONDARY side. See LeftQuoinPrimaryFaces.")
-        if not hasattr(obj, 'RightQuoinPrimaryFaces'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "RightQuoinPrimaryFaces", grp,
-                "Per-face override: these faces get a RIGHT quoin "
+        add_property(
+            obj,
+            "App::PropertyLinkSubList",
+            'RightQuoinPrimaryFaces',
+            grp,
+            "Per-face override: these faces get a RIGHT quoin "
                 "(u=u_length) as the PRIMARY side. See LeftQuoinPrimaryFaces.")
-        if not hasattr(obj, 'RightQuoinSecondaryFaces'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "RightQuoinSecondaryFaces", grp,
-                "Per-face override: these faces get a RIGHT quoin "
+        add_property(
+            obj,
+            "App::PropertyLinkSubList",
+            'RightQuoinSecondaryFaces',
+            grp,
+            "Per-face override: these faces get a RIGHT quoin "
                 "(u=u_length) as the SECONDARY side. See LeftQuoinPrimaryFaces.")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty(
-                "App::PropertyString", "GeneratorVersion", grp,
-                "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -1046,32 +1058,5 @@ class BrickProxy:
         self.loads(state)
 
 
-class BrickViewProxy:
-    """Minimal view provider."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class BrickViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

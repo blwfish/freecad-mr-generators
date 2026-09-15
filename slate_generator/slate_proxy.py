@@ -30,7 +30,10 @@ from slate_geometry import (
     is_valid_clip_fragment,
     calculate_fitted_exposure,
 )
-from freecad_utils import resolve_sources_faces, get_roof_face_coordinate_system  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
+    add_property,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -249,37 +252,27 @@ class SlateProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "Slate"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty("App::PropertyLinkSubList", "Sources", grp,
-                            "Roof faces to apply slate to")
-        if not hasattr(obj, 'TileWidth'):
-            obj.addProperty("App::PropertyLength", "TileWidth", grp,
-                            "Width of each slate tile")
-        if not hasattr(obj, 'TileHeight'):
-            obj.addProperty("App::PropertyLength", "TileHeight", grp,
-                            "Height (length) of each slate tile")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty("App::PropertyLength", "MaterialThickness", grp,
-                            "Slate thickness")
-        if not hasattr(obj, 'Exposure'):
-            obj.addProperty("App::PropertyLength", "Exposure", grp,
-                            "Exposed portion per course")
-        if not hasattr(obj, 'ButtThickness'):
-            obj.addProperty("App::PropertyLength", "ButtThickness", grp,
-                            "Tile thickness at butt edge (0 = auto: 3× MaterialThickness)")
-        if not hasattr(obj, 'StaggerPattern'):
-            obj.addProperty("App::PropertyEnumeration", "StaggerPattern", grp,
-                            "Horizontal stagger pattern")
-            obj.StaggerPattern = ['half', 'third', 'none']
-        if not hasattr(obj, 'HideIncompleteTopCourse'):
-            obj.addProperty("App::PropertyBool", "HideIncompleteTopCourse", grp,
-                            "Skip the top course entirely if the ridge/hip "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Roof faces to apply slate to")
+        add_property(obj, "App::PropertyLength", 'TileWidth', grp, "Width of each slate tile")
+        add_property(obj, "App::PropertyLength", 'TileHeight', grp,
+            "Height (length) of each slate tile")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp, "Slate thickness")
+        add_property(obj, "App::PropertyLength", 'Exposure', grp, "Exposed portion per course")
+        add_property(obj, "App::PropertyLength", 'ButtThickness', grp,
+            "Tile thickness at butt edge (0 = auto: 3× MaterialThickness)")
+        add_property(obj, "App::PropertyEnumeration", 'StaggerPattern', grp,
+            "Horizontal stagger pattern", default=['half', 'third', 'none'])
+        add_property(
+            obj,
+            "App::PropertyBool",
+            'HideIncompleteTopCourse',
+            grp,
+            "Skip the top course entirely if the ridge/hip "
                             "line would cut through it, instead of showing "
                             "a partial (possibly sliver) fragment there")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -375,30 +368,5 @@ class SlateProxy:
         self.loads(state)
 
 
-class SlateViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class SlateViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

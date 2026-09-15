@@ -32,6 +32,8 @@ from bead_board_geometry import (  # noqa: E402
 from freecad_utils import (  # noqa: E402
     resolve_sources_faces,
     face_normal_at_center as _face_normal,
+    GenericViewProxy,
+    add_property,
 )
 
 
@@ -236,23 +238,16 @@ class BeadBoardProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "BeadBoard"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Wall faces to apply bead board trim to")
-        if not hasattr(obj, 'BeadSpacing'):
-            obj.addProperty("App::PropertyLength", "BeadSpacing", grp,
-                            "Center-to-center spacing between beads (mm)")
-        if not hasattr(obj, 'BeadDepth'):
-            obj.addProperty("App::PropertyLength", "BeadDepth", grp,
-                            "Depth each gap is extruded above the face (mm)")
-        if not hasattr(obj, 'BeadGap'):
-            obj.addProperty("App::PropertyLength", "BeadGap", grp,
-                            "Width of each gap/groove (mm)")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Wall faces to apply bead board trim to")
+        add_property(obj, "App::PropertyLength", 'BeadSpacing', grp,
+            "Center-to-center spacing between beads (mm)")
+        add_property(obj, "App::PropertyLength", 'BeadDepth', grp,
+            "Depth each gap is extruded above the face (mm)")
+        add_property(obj, "App::PropertyLength", 'BeadGap', grp,
+            "Width of each gap/groove (mm)")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -309,30 +304,5 @@ class BeadBoardProxy:
         self.loads(state)
 
 
-class BeadBoardViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class BeadBoardViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

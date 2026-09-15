@@ -37,6 +37,8 @@ for p in (str(_here), str(_here / '_lib'), str(_here.parent / 'shared')):
 from freecad_utils import (  # noqa: E402
     find_shared_edge, resolve_shared_edge, resolve_sources_faces,
     face_normal_at_center as _face_normal_at_center,
+    GenericViewProxy,
+    add_property,
 )
 from roof_geometry import classify_roof_intersection  # noqa: E402
 from roof_seam_geometry import (  # noqa: E402
@@ -44,6 +46,16 @@ from roof_seam_geometry import (  # noqa: E402
     calculate_cap_positions,
     calculate_hip_cap_profile,
 )
+
+# Full-review finding freecad-mr-generators-20260915-e612#29: the same
+# "is this shape's volume large enough to be a real, non-degenerate solid"
+# sanity check was repeated 5x in this file as the bare literal 1e-6, with
+# no named constant tying the copies together -- a future retuning would
+# need to be found and edited in five separate places by hand. (A sixth,
+# unrelated `1e-6` at the top of `_make_one_cap` checks a taper LENGTH,
+# not a volume -- different units, coincidentally the same numeral -- and
+# is intentionally left as its own literal rather than folded in here.)
+MIN_SOLID_VOLUME = 1e-6
 
 
 # =============================================================================
@@ -353,7 +365,7 @@ def generate_hip_caps(shared_edge, face1, face2, params):
                     skipped += 1
                     continue
                 blk = _make_cut_block(edge, face)
-                if blk and blk.Volume > 1e-6:
+                if blk and blk.Volume > MIN_SOLID_VOLUME:
                     cut_blocks.append(blk)
 
         App.Console.PrintMessage(
@@ -371,7 +383,7 @@ def generate_hip_caps(shared_edge, face1, face2, params):
             cap = _make_one_cap(pt)
             if cap.Solids:
                 shapes.append(cap.Solids[0] if len(cap.Solids) == 1 else cap)
-            elif cap.Volume > 1e-6:
+            elif cap.Volume > MIN_SOLID_VOLUME:
                 shapes.append(cap)
         except Exception:
             fail_count += 1
@@ -389,7 +401,7 @@ def generate_hip_caps(shared_edge, face1, face2, params):
             Part.makeLine(tc1_3d, tc2_3d),
         ])
         dome_strip = Part.Face(dome_wire).extrude(edge_dir * edge_len)
-        if dome_strip.Volume > 1e-6:
+        if dome_strip.Volume > MIN_SOLID_VOLUME:
             shapes.append(dome_strip)
     except Exception as e:
         App.Console.PrintMessage(f"  Dome strip failed: {e}\n")
@@ -438,7 +450,7 @@ def generate_slate_hip_caps(shared_edge, face1, face2, params):
                 Part.makeLine(p2, p3), Part.makeLine(p3, p0),
             ])
             cap = Part.Face(wire).extrude(edge_dir * min(cap_height, edge_len - t))
-            if cap.Volume > 1e-6:
+            if cap.Volume > MIN_SOLID_VOLUME:
                 shapes.append(cap)
         except Exception:
             pass
@@ -593,7 +605,7 @@ def generate_seam(face1, obj1, face2, obj2, params, doc=None):
         for blk in cut_blocks:
             try:
                 result = fused.cut(blk)
-                solids = [s for s in result.Solids if s.Volume > 1e-6]
+                solids = [s for s in result.Solids if s.Volume > MIN_SOLID_VOLUME]
                 if solids:
                     fused = solids[0]
                     for s in solids[1:]:
@@ -620,52 +632,38 @@ class RoofSeamProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "RoofSeam"
-        if not hasattr(obj, 'Sources'):
-            obj.addProperty(
-                "App::PropertyLinkSubList", "Sources", grp,
-                "Exactly two adjacent roof faces")
-        if not hasattr(obj, 'ShingleHeight'):
-            obj.addProperty(
-                "App::PropertyLength", "ShingleHeight", grp,
-                "Cap length along seam (mm)")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty(
-                "App::PropertyLength", "MaterialThickness", grp,
-                "Material thickness (mm)")
-        if not hasattr(obj, 'ShingleExposure'):
-            obj.addProperty(
-                "App::PropertyLength", "ShingleExposure", grp,
-                "Spacing between hip caps (mm)")
-        if not hasattr(obj, 'HipCapWidth'):
-            obj.addProperty(
-                "App::PropertyLength", "HipCapWidth", grp,
-                "Total cap width across seam (0 = auto: a fixed per-style "
+        add_property(obj, "App::PropertyLinkSubList", 'Sources', grp,
+            "Exactly two adjacent roof faces")
+        add_property(obj, "App::PropertyLength", 'ShingleHeight', grp,
+            "Cap length along seam (mm)")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp,
+            "Material thickness (mm)")
+        add_property(obj, "App::PropertyLength", 'ShingleExposure', grp,
+            "Spacing between hip caps (mm)")
+        add_property(
+            obj,
+            "App::PropertyLength",
+            'HipCapWidth',
+            grp,
+            "Total cap width across seam (0 = auto: a fixed per-style "
                 "default x2 -- 7.0mm shingle, 4.0mm slate, 6.0mm metal -- "
                 "NOT derived from the adjacent roof faces' actual material "
                 "width)")
-        if not hasattr(obj, 'AngleDepth'):
-            obj.addProperty(
-                "App::PropertyFloat", "AngleDepth", grp,
-                "Taper ratio 0–1 (0.2 = 20% thickness reduction at covered end)")
-        if not hasattr(obj, 'ValleyFlashingWidth'):
-            obj.addProperty(
-                "App::PropertyLength", "ValleyFlashingWidth", grp,
-                "Valley flashing width (0 = auto = materialThickness × 8)")
-        if not hasattr(obj, 'HipStyle'):
-            obj.addProperty(
-                "App::PropertyEnumeration", "HipStyle", grp,
-                "Hip cap style: shingle (wood), slate (flat tiles), metal (continuous strip)")
-            obj.HipStyle = ['shingle', 'slate', 'metal']
-        if not hasattr(obj, 'SeamType'):
-            obj.addProperty(
-                "App::PropertyString", "SeamType", grp,
-                "Detected seam type: hip or valley (read-only)")
-            obj.setEditorMode("SeamType", 1)
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty(
-                "App::PropertyString", "GeneratorVersion", grp,
-                "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyFloat", 'AngleDepth', grp,
+            "Taper ratio 0–1 (0.2 = 20% thickness reduction at covered end)")
+        add_property(obj, "App::PropertyLength", 'ValleyFlashingWidth', grp,
+            "Valley flashing width (0 = auto = materialThickness × 8)")
+        add_property(
+            obj,
+            "App::PropertyEnumeration",
+            'HipStyle',
+            grp,
+            "Hip cap style: shingle (wood), slate (flat tiles), metal (continuous strip)",
+            default=['shingle', 'slate', 'metal'])
+        add_property(obj, "App::PropertyString", 'SeamType', grp,
+            "Detected seam type: hip or valley (read-only)", editor_mode=1)
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -745,32 +743,5 @@ class RoofSeamProxy:
         self.loads(state)
 
 
-class RoofSeamViewProxy:
-    """Minimal view provider."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Part_Box.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class RoofSeamViewProxy(GenericViewProxy):
+    ICON = ":/icons/Part_Box.svg"

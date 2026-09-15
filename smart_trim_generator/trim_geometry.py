@@ -232,11 +232,16 @@ def analyze_face_for_trim(face, angle_tolerance: float = 5.0) -> Dict:
         - 'straight_edges': Edges between straight corners
     """
     corners = detect_corners(face, angle_tolerance)
-    
+
     external = [c for c in corners if c.corner_type == CornerType.EXTERNAL]
     internal = [c for c in corners if c.corner_type == CornerType.INTERNAL]
-    trim_corners = external + internal
-    
+    # Full-review finding freecad-mr-generators-20260915-e612#31: this used
+    # to inline `external + internal` (a second, order-differing copy of
+    # the same "corners that need trim" logic filter_corners_for_trim
+    # already implements) instead of calling that tested function -- now
+    # delegates instead of duplicating.
+    trim_corners = filter_corners_for_trim(corners)
+
     return {
         'all_corners': corners,
         'external_corners': external,

@@ -31,7 +31,10 @@ for p in (str(_here), str(_here / '_lib')):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_font_path, find_first_existing_path, GenericViewProxy,
+    add_property,
+)
 from station_sign_geometry import (
     group_wire_bboxes_into_islands,
     calculate_sign_layout,
@@ -244,28 +247,19 @@ class StationSignProxy:
     @staticmethod
     def _setup_properties(obj):
         grp = "StationSign"
-        if not hasattr(obj, 'StationName'):
-            obj.addProperty("App::PropertyString", "StationName", grp,
-                            "Text displayed on the sign")
-        if not hasattr(obj, 'FontPath'):
-            obj.addProperty("App::PropertyFile", "FontPath", grp,
-                            "Path to the sign font file (.ttf)")
-        if not hasattr(obj, 'TextHeight'):
-            obj.addProperty("App::PropertyLength", "TextHeight", grp,
-                            "Text height (mm)")
-        if not hasattr(obj, 'MaterialThickness'):
-            obj.addProperty("App::PropertyLength", "MaterialThickness", grp,
-                            "Layer thickness for 3D printing (mm)")
-        if not hasattr(obj, 'BorderThickness'):
-            obj.addProperty("App::PropertyLength", "BorderThickness", grp,
-                            "Border frame width (mm)")
-        if not hasattr(obj, 'BorderGap'):
-            obj.addProperty("App::PropertyLength", "BorderGap", grp,
-                            "Gap between border inner edge and text (mm)")
-        if not hasattr(obj, 'GeneratorVersion'):
-            obj.addProperty("App::PropertyString", "GeneratorVersion", grp,
-                            "Generator version (read-only)")
-            obj.setEditorMode("GeneratorVersion", 1)
+        add_property(obj, "App::PropertyString", 'StationName', grp,
+            "Text displayed on the sign")
+        add_property(obj, "App::PropertyFile", 'FontPath', grp,
+            "Path to the sign font file (.ttf)")
+        add_property(obj, "App::PropertyLength", 'TextHeight', grp, "Text height (mm)")
+        add_property(obj, "App::PropertyLength", 'MaterialThickness', grp,
+            "Layer thickness for 3D printing (mm)")
+        add_property(obj, "App::PropertyLength", 'BorderThickness', grp,
+            "Border frame width (mm)")
+        add_property(obj, "App::PropertyLength", 'BorderGap', grp,
+            "Gap between border inner edge and text (mm)")
+        add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
+            "Generator version (read-only)", editor_mode=1)
 
     @staticmethod
     def set_defaults(obj, params=None):
@@ -330,30 +324,5 @@ class StationSignProxy:
         self.loads(state)
 
 
-class StationSignViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Draft_ShapeString.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class StationSignViewProxy(GenericViewProxy):
+    ICON = ":/icons/Draft_ShapeString.svg"

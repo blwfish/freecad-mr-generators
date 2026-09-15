@@ -220,8 +220,16 @@ def calculate_course_v_positions(wall_v_min: float, wall_v_max: float,
 
     Returns:
         List of (v_bot, v_top) tuples — one per course that intersects the
-        wall.  The first course's v_bot is guaranteed < wall_v_min - topo_eps;
-        the last course's v_top is guaranteed > wall_v_max + topo_eps.
+        wall.  The first course's v_bot is guaranteed <= wall_v_min - topo_eps;
+        the last course's v_top is guaranteed >= wall_v_max + topo_eps.
+        (Full-review finding freecad-mr-generators-20260915-e612#30: this
+        previously claimed a strict < / > guarantee, but the boundary-
+        triggering case sets the value to exactly wall_v_min - topo_eps /
+        wall_v_max + topo_eps, not strictly past it -- confirmed no live
+        risk from the overstatement, since topo_eps=1e-3 is three orders
+        of magnitude above assert_overflows_boundary's own default
+        eps=1e-6, but the docstring should say what the code actually
+        delivers.)
     """
     if clapboard_height <= 0:
         raise ValueError("clapboard_height must be positive")

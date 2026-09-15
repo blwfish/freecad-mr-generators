@@ -25,7 +25,9 @@ for p in (str(_here), str(_here / '_lib')):
         sys.path.insert(0, p)
 
 from label_geometry import compute_font_size, build_frame_matrix
-from freecad_utils import resolve_font_path, find_first_existing_path  # noqa: E402
+from freecad_utils import (  # noqa: E402
+    resolve_font_path, find_first_existing_path, GenericViewProxy,
+)
 from face_geometry import group_wire_bboxes_into_islands  # noqa: E402
 
 VERSION = "1.0.0"
@@ -305,30 +307,5 @@ class LabelProxy:
         self.loads(state)
 
 
-class LabelViewProxy:
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def getIcon(self):
-        return ":/icons/Draft_ShapeString.svg"
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def updateData(self, obj, prop):
-        pass
-
-    def onChanged(self, vobj, prop):
-        pass
-
-    def dumps(self):
-        return None
-
-    def loads(self, state):
-        pass
-
-    def __getstate__(self):
-        return self.dumps()
-
-    def __setstate__(self, state):
-        self.loads(state)
+class LabelViewProxy(GenericViewProxy):
+    ICON = ":/icons/Draft_ShapeString.svg"

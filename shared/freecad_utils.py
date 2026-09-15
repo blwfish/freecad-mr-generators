@@ -35,8 +35,8 @@ Version: 1.6.0
   1.4.0: Add resolve_shared_edge()/resolve_base_face() — roof-seam face
          unwrapping consolidated from roof_seam_proxy.py and a vendored
          copy in slate_seam_proxy.py, extended to recognize the modern
-         Sources PropertyLinkSubList convention (brick_proxy, quoin_proxy,
-         shingle_proxy, slate_proxy) alongside the legacy BaseObject/
+         Sources PropertyLinkSubList convention (brick_proxy, shingle_proxy,
+         slate_proxy) alongside the legacy BaseObject/
          ShingledRoof_/ShingleSkin_ convention. Neither original recognized
          Sources, so selecting faces from any current tiled/shingled output
          silently used tiny tile/shingle fragments instead of the real
@@ -149,132 +149,6 @@ def get_global_face(obj, face_index):
     return face
 
 
-def get_global_placement_matrix(obj):
-    """
-    Return the global placement matrix for *obj*, or None if unavailable.
-
-    Useful when you want to log or reuse the matrix without calling
-    ``getGlobalPlacement()`` twice.
-
-    Parameters
-    ----------
-    obj : FreeCAD document object
-
-    Returns
-    -------
-    FreeCAD.Matrix or None
-        None if the object doesn't support ``getGlobalPlacement()``.
-
-    Preconditions:
-        - obj: must not be None
-
-    Postconditions:
-        - returned value is either None or a FreeCAD.Matrix with finite
-          elements (no NaN/Inf from a degenerate placement)
-    """
-    # --- Preconditions ---
-    _assert(obj is not None,
-            f"get_global_placement_matrix: obj must not be None")
-
-    try:
-        matrix = obj.getGlobalPlacement().toMatrix()
-    except AttributeError:
-        return None
-
-    # --- Postconditions ---
-    if matrix is not None and _ASSERTIONS_ENABLED:
-        # A valid rigid-body placement matrix should have finite elements.
-        # FreeCAD.Matrix exposes elements as A11..A44.
-        matrix_elements = [
-            matrix.A11, matrix.A12, matrix.A13, matrix.A14,
-            matrix.A21, matrix.A22, matrix.A23, matrix.A24,
-            matrix.A31, matrix.A32, matrix.A33, matrix.A34,
-            matrix.A41, matrix.A42, matrix.A43, matrix.A44,
-        ]
-        import math
-        for i, elem in enumerate(matrix_elements):
-            _assert(math.isfinite(elem),
-                    f"get_global_placement_matrix: matrix element [{i}] is not finite "
-                    f"(value={elem}) for obj={getattr(obj, 'Label', repr(obj))!r}; "
-                    f"degenerate placement")
-
-    return matrix
-
-
-def object_has_global_offset(obj):
-    """
-    Return True if *obj* is inside a Part container with a non-identity
-    placement (i.e. its local and global coordinate frames differ).
-
-    Parameters
-    ----------
-    obj : FreeCAD document object
-
-    Returns
-    -------
-    bool
-
-    Preconditions:
-        - obj: must not be None
-
-    Postconditions:
-        - return value is bool (True or False, never None or other type)
-    """
-    # --- Preconditions ---
-    _assert(obj is not None,
-            f"object_has_global_offset: obj must not be None")
-
-    try:
-        result = not obj.getGlobalPlacement().isIdentity()
-    except AttributeError:
-        result = False
-
-    # --- Postconditions ---
-    _assert(isinstance(result, bool),
-            f"object_has_global_offset: expected bool result, got {type(result).__name__!r} "
-            f"value={result!r}")
-
-    return result
-
-
-def log_global_placement(obj, label=None):
-    """
-    Print a one-line diagnostic if *obj* has a non-identity global
-    placement.  Silent if placement is identity.
-
-    Parameters
-    ----------
-    obj : FreeCAD document object
-    label : str, optional
-        Prefix shown in the message (defaults to obj.Label).
-
-    Preconditions:
-        - obj: must not be None
-        - label: if provided, must be a str (not a number or other type)
-
-    Postconditions:
-        - (no return value; side-effect is a print to stdout if obj has
-          a non-identity global placement)
-    """
-    # --- Preconditions ---
-    _assert(obj is not None,
-            f"log_global_placement: obj must not be None")
-    _assert(label is None or isinstance(label, str),
-            f"log_global_placement: label must be str or None, got "
-            f"{type(label).__name__!r} value={label!r}")
-
-    name = label or getattr(obj, 'Label', repr(obj))
-    try:
-        p = obj.getGlobalPlacement()
-        if not p.isIdentity():
-            pos = p.Base
-            print(f"  NOTE: {name} is in a Part container — "
-                  f"global placement offset ({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f}) "
-                  f"will be applied to face geometry")
-    except AttributeError:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Roof-seam face resolution
 # ---------------------------------------------------------------------------
@@ -284,7 +158,7 @@ def log_global_placement(obj, label=None):
 # unrelated task -- see that file's git history for the original rationale).
 # Consolidating now because both copies needed the same fix at once: neither
 # recognized the `Sources` PropertyLinkSubList convention (brick_proxy,
-# quoin_proxy, shingle_proxy, slate_proxy) as a valid "trace back to the real
+# shingle_proxy, slate_proxy) as a valid "trace back to the real
 # roof face" path -- only the older BaseObject / ShingledRoof_ / ShingleSkin_
 # convention from shingle_generator's legacy macro-only workflow. A user
 # selecting faces from any *current* tiled/shingled output (which all use
@@ -563,8 +437,8 @@ def resolve_base_face(face, obj, doc=None, _depth=0):
       `BaseObject`; or `ShingledRoof_<name>` / `ShingleSkin_<name>` object
       naming. This is shingle_generator's old, destructive, macro-only
       workflow's convention.
-    - Modern: a `Sources` PropertyLinkSubList (brick_proxy, quoin_proxy,
-      shingle_proxy, slate_proxy) -- may reference faces from more than one
+    - Modern: a `Sources` PropertyLinkSubList (brick_proxy, shingle_proxy,
+      slate_proxy) -- may reference faces from more than one
       object, so each candidate face's owner is tracked individually rather
       than assuming a single whole base object.
 
@@ -1004,3 +878,96 @@ def _warn_typeid_mismatch(name, actual_type_id):
         f"a {actual_type_id}, not a Spreadsheet::Sheet -- ignoring it and "
         f"trying the next candidate name.\n"
     )
+
+
+def add_property(obj, ptype, name, group, doc, default=None, editor_mode=None):
+    """
+    Idempotent App::Property* registration.
+
+    Full-review finding freecad-mr-generators-20260915-e612#28: the
+    `if not hasattr(obj, name): obj.addProperty(...)` guard-then-add shape
+    was repeated 134 times across 14 proxy files -- mechanically identical
+    every time (only the type string/name/group/doc/default/editor-mode
+    vary), confirmed via an AST-based audit that classified all 133
+    matching call sites as behavior-preserving to collapse into this one
+    call (the 134th, in label_proxy.py, already used its own equivalent
+    loop-based helper; ashlar_proxy.py doesn't use the hasattr guard at
+    all and was left alone rather than changing its behavior).
+
+    default: assigned to obj.<name> after addProperty, if given. Also
+    covers App::PropertyEnumeration's "define the allowed values" use of
+    assignment (FreeCAD's own convention already overloads assignment for
+    both cases, so this parameter needs no special-casing for enums).
+    editor_mode: passed to obj.setEditorMode(name, editor_mode) after the
+    default, if given.
+
+    Returns True if the property was newly added, False if it already
+    existed (and nothing happened) -- lets a caller that needs to do more
+    than a single default assignment branch on it, though none currently
+    do.
+    """
+    if hasattr(obj, name):
+        return False
+    obj.addProperty(ptype, name, group, doc)
+    if default is not None:
+        setattr(obj, name, default)
+    if editor_mode is not None:
+        obj.setEditorMode(name, editor_mode)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Generic minimal ViewProvider proxy
+# ---------------------------------------------------------------------------
+
+class GenericViewProxy:
+    """
+    Minimal FreeCAD ViewProvider proxy shared by every generator's
+    XxxViewProxy class.
+
+    Full-review finding freecad-mr-generators-20260915-e612#27: this exact
+    9-method shape (__init__/getIcon/attach/updateData/onChanged/dumps/
+    loads/__getstate__/__setstate__) was independently copy-pasted across
+    15 of this repo's 16 proxy files -- diff-confirmed byte-identical
+    (modulo class name, icon string, and docstring wording) before
+    consolidating here. Each generator keeps its own named XxxViewProxy
+    class (the FCMacro files import it by name), now just a subclass that
+    sets ICON:
+
+        class ClapboardViewProxy(GenericViewProxy):
+            ICON = ":/icons/Part_Box.svg"
+
+    ashlar_generator/ashlar_proxy.py's AshlarViewProxy is deliberately NOT
+    one of these -- it has a genuinely different, shorter shape (no
+    dumps/loads/__getstate__/__setstate__, a bare icon, different attach()
+    behavior) and was left untouched rather than folded in and risking a
+    silent behavior change.
+    """
+    ICON = ""
+
+    def __init__(self, vobj):
+        vobj.Proxy = self
+
+    def getIcon(self):
+        return self.ICON
+
+    def attach(self, vobj):
+        self.Object = vobj.Object
+
+    def updateData(self, obj, prop):
+        pass
+
+    def onChanged(self, vobj, prop):
+        pass
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        pass
+
+    def __getstate__(self):
+        return self.dumps()
+
+    def __setstate__(self, state):
+        self.loads(state)
