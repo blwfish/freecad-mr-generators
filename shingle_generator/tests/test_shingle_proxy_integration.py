@@ -119,3 +119,24 @@ def test_execute_with_default_chamfer_prints_no_chamfer_error(doc, monkeypatch):
     monkeypatch.setattr(App.Console, "PrintError", errors.append)
     doc.recompute()
     assert not [e for e in errors if "chamfer" in e.lower()], errors
+
+
+def test_starter_course_placement_is_built_and_kept(wall_face, monkeypatch):
+    """A starter (row 0, is_starter=True) placement must come out as a placed,
+    chamfered shingle -- not be silently dropped.
+
+    calculate_shingle_placements never emits a starter today (the row-0
+    survival rule always skips it: v_row = -exposure puts it wholly below the
+    eave), so this forces one.  Regression for a 39d382a refactor slip that
+    left the chamfer / Placement / clip-and-append block indented inside the
+    `else:` (wedge) branch of `if is_starter:`, so a starter was built and
+    then discarded.
+    """
+    starter = {'row': 0, 'col': 0, 'u': 5.0, 'v': 10.0, 'v_butt': 8.5,
+               'is_starter': True}
+    monkeypatch.setattr(sp, "calculate_shingle_placements",
+                        lambda *a, **k: [starter])
+    shapes, stats = sp._generate_shingles_for_face(wall_face, _params(0.1))
+    assert len(shapes) == 1
+    assert stats['attempted'] == 1          # chamfer was attempted on it too
+    assert abs(shapes[0].BoundBox.XMin - 5.0) < 1e-6   # placed at its u

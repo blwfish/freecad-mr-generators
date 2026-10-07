@@ -29,6 +29,7 @@ from shingle_geometry import (
     analyze_roof_intersection,
     chamfer_failure_message,
 )
+import shingle_geometry
 
 
 class TestParameterValidation:
@@ -940,6 +941,37 @@ class TestChamferFailureMessage:
     def test_single_line_terminated_for_console_print(self):
         msg = chamfer_failure_message(3, 10, 0.4, 0.25, "x")
         assert msg.endswith("\n") and msg.count("\n") == 1
+
+
+class TestStarterCourseFlag:
+    """The starter course (row 0) is dormant behind ENABLE_STARTER_COURSE.
+    Pins the dormant state and, as a characterization test, that flipping the
+    flag alone does NOT revive it (row 0 is still dropped by the survival
+    rule) -- so a future revisit fails here loudly, then updates this."""
+
+    CONFIGS = [(40, 30, 3.5, 2.0, 1.5), (3.5, 1.5, 3.5, 2.0, 1.5),
+               (10, 3, 7, 5, 5), (200, 500, 0.5, 0.5, 0.1)]
+
+    def test_flag_defaults_off(self):
+        assert shingle_geometry.ENABLE_STARTER_COURSE is False
+
+    @pytest.mark.parametrize("u,v,w,h,e", CONFIGS)
+    def test_no_starter_placements_when_off(self, u, v, w, h, e):
+        pl = calculate_shingle_placements(u, v, w, h, e, "half")
+        assert pl and not any(p['is_starter'] for p in pl)
+        assert all(p['row'] != 0 for p in pl)
+
+    @pytest.mark.parametrize("u,v,w,h,e", CONFIGS)
+    def test_flag_on_alone_still_yields_no_starter(self, monkeypatch, u, v, w, h, e):
+        monkeypatch.setattr(shingle_geometry, "ENABLE_STARTER_COURSE", True)
+        pl = calculate_shingle_placements(u, v, w, h, e, "half")
+        assert not any(p['is_starter'] for p in pl)
+
+    def test_flag_does_not_change_other_rows(self, monkeypatch):
+        off = calculate_shingle_placements(40, 30, 3.5, 2.0, 1.5, "half")
+        monkeypatch.setattr(shingle_geometry, "ENABLE_STARTER_COURSE", True)
+        on = calculate_shingle_placements(40, 30, 3.5, 2.0, 1.5, "half")
+        assert on == off
 
 
 if __name__ == '__main__':

@@ -32,6 +32,17 @@ from roof_geometry import (
     is_valid_clip_fragment,
 )
 
+# Starter course (row 0: a flat box one exposure tall, vs. the wedge profile of
+# every other row).  Switched OFF -- it has never rendered.  Row 0 sits at
+# v_row = -exposure, wholly below the eave, so the survival rule below always
+# skips it (swept 3375 face/shingle/exposure combinations: zero starters, and
+# the pre-39d382a inline code skipped it the same way).  The proxy's starter
+# branch (shingle_proxy._generate_shingles_for_face) is kept for a possible
+# revisit.  Setting this True does NOT revive the starter by itself: row 0
+# would still hit the same survival rule and be skipped; a real starter needs
+# its position (v_row) and that rule rethought first.
+ENABLE_STARTER_COURSE = False
+
 
 def validate_parameters(shingle_width: float, shingle_height: float, 
                        material_thickness: float, shingle_exposure: float) -> Tuple[bool, List[str]]:
@@ -231,7 +242,8 @@ def calculate_shingle_placements(u_length: float, v_length: float,
     course's own height: shingle_exposure for row 0, shingle_height for
     every other row), and is_starter is True only for row 0 (the
     rectangular starter course, vs. every other row's tapered wedge
-    profile).
+    profile).  While ENABLE_STARTER_COURSE is False (the default) row 0 is
+    never placed, so is_starter is always False in the result.
     """
     layout = calculate_layout(u_length, v_length, shingle_width,
                               shingle_exposure, stagger_pattern)
@@ -241,6 +253,8 @@ def calculate_shingle_placements(u_length: float, v_length: float,
     placements = []
     for row in range(num_courses):
         is_starter = (row == 0)
+        if is_starter and not ENABLE_STARTER_COURSE:
+            continue
         v_row = row * shingle_exposure - shingle_exposure
         v_h = shingle_exposure if is_starter else shingle_height
         v_butt = v_row - v_h

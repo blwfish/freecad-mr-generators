@@ -195,7 +195,9 @@ def _generate_shingles_for_face(face, params):
                         + _scale_vector(v_vec, v))
 
         if is_starter:
-            # Starter course: rectangular box
+            # Starter course: rectangular box.  Dormant -- placements never
+            # include one while shingle_geometry.ENABLE_STARTER_COURSE is
+            # False (see the comment there before enabling).
             shingle_shape = Part.makeBox(shingle_width, exposure,
                                          material_thickness)
             butt_position = top_position + _scale_vector(v_vec, -exposure)
@@ -220,25 +222,25 @@ def _generate_shingles_for_face(face, params):
                                                          -shingle_height)
 
         # Chamfer one vertical edge
-            if chamfer > 0:
-                chamfer_stats['attempted'] += 1
-                shingle_shape, chamfer_error = _chamfer_vertical_edge(
-                    shingle_shape, chamfer)
-                if chamfer_error is not None:
-                    chamfer_stats['failed'] += 1
-                    if chamfer_stats['first_error'] is None:
-                        chamfer_stats['first_error'] = chamfer_error
+        if chamfer > 0:
+            chamfer_stats['attempted'] += 1
+            shingle_shape, chamfer_error = _chamfer_vertical_edge(
+                shingle_shape, chamfer)
+            if chamfer_error is not None:
+                chamfer_stats['failed'] += 1
+                if chamfer_stats['first_error'] is None:
+                    chamfer_stats['first_error'] = chamfer_error
 
-            shingle_shape.Placement = App.Placement(butt_position,
-                                                    final_rotation)
+        shingle_shape.Placement = App.Placement(butt_position,
+                                                final_rotation)
 
-            # Clip to face boundary
-            if clip_volumes is not None:
-                clipped = _clip_shape(shingle_shape, clip_volumes)
-                if clipped is not None:
-                    shingle_shapes.append(clipped)
-            else:
-                shingle_shapes.append(shingle_shape)
+        # Clip to face boundary
+        if clip_volumes is not None:
+            clipped = _clip_shape(shingle_shape, clip_volumes)
+            if clipped is not None:
+                shingle_shapes.append(clipped)
+        else:
+            shingle_shapes.append(shingle_shape)
 
     return shingle_shapes, chamfer_stats
 
