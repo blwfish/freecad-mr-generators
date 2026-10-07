@@ -306,3 +306,24 @@ def calculate_shingle_placements(u_length: float, v_length: float,
 # get_roof_coordinate_system, find_coincident_edges,
 # classify_roof_intersection, calculate_dihedral_angle,
 # analyze_roof_intersection) are imported from roof_geometry above.
+
+
+def chamfer_failure_message(failed: int, attempted: int, chamfer: float,
+                            wedge_thickness: float, first_error) -> str:
+    """Report-view text for shingles whose V-groove chamfer could not be cut.
+
+    Without the groove, neighbouring shingles tile edge to edge and fuse into
+    one strip on 3D-print export, so this must be visible.  A chamfer at or
+    above the wedge thickness is the known cause (OCCT cannot chamfer more
+    than the adjoining face allows), so name it when it applies.
+    """
+    msg = (f"ShingleGenerator: V-groove chamfer FAILED on {failed} of "
+           f"{attempted} shingles ({chamfer:g} mm) -- those shingles have no "
+           f"groove and will fuse with their neighbours when exported.")
+    if chamfer >= wedge_thickness:
+        msg += (f" Chamfer {chamfer:g} mm is not smaller than the wedge "
+                f"thickness {wedge_thickness:g} mm; reduce Chamfer (or set it "
+                f"to 0 for auto) or increase WedgeThickness.")
+    if first_error:
+        msg += f" First error: {first_error}"
+    return msg + "\n"

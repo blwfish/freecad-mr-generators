@@ -27,6 +27,7 @@ from shingle_geometry import (
     classify_roof_intersection,
     calculate_dihedral_angle,
     analyze_roof_intersection,
+    chamfer_failure_message,
 )
 
 
@@ -898,6 +899,47 @@ class TestCalculateShinglePlacementsBoundaryOverflow:
         and intentional, not undiscovered."""
         placements = calculate_shingle_placements(0.001, 0.001, **self.BASE)
         assert placements == []
+
+
+class TestChamferFailureMessage:
+    """chamfer_failure_message: the Report-view text for shingles whose
+    V-groove chamfer could not be cut.  A failed chamfer leaves neighbouring
+    shingles fused on 3D-print export, so the text must state the counts and,
+    when the chamfer is not smaller than the wedge (the known OCCT cause),
+    name that cause and the fix."""
+
+    def test_states_counts_and_chamfer_size(self):
+        msg = chamfer_failure_message(7, 240, 0.375, 0.25, None)
+        assert "7 of 240" in msg
+        assert "0.375 mm" in msg
+        assert "fuse" in msg
+
+    @pytest.mark.parametrize("chamfer,names_cause", [
+        (0.2499, False),   # just below the wedge: not the known cause
+        (0.25, True),      # at the wedge: >= is contract, OCCT fails here
+        (0.2501, True),    # just above
+        (0.375, True),     # the old auto value (1.5x material)
+    ])
+    def test_wedge_cause_named_at_below_above_boundary(self, chamfer, names_cause):
+        msg = chamfer_failure_message(1, 1, chamfer, 0.25, None)
+        assert ("not smaller than the wedge" in msg) is names_cause
+
+    def test_cause_names_the_fix(self):
+        msg = chamfer_failure_message(1, 1, 0.5, 0.25, None)
+        assert "reduce Chamfer" in msg
+        assert "WedgeThickness" in msg
+
+    def test_first_error_included_when_given(self):
+        msg = chamfer_failure_message(1, 1, 0.1, 0.25, "BRep_API: command not done")
+        assert "First error: BRep_API: command not done" in msg
+
+    @pytest.mark.parametrize("empty", [None, ""])
+    def test_no_first_error_text_when_absent_or_empty(self, empty):
+        assert "First error" not in chamfer_failure_message(1, 1, 0.1, 0.25, empty)
+
+    def test_single_line_terminated_for_console_print(self):
+        msg = chamfer_failure_message(3, 10, 0.4, 0.25, "x")
+        assert msg.endswith("\n") and msg.count("\n") == 1
 
 
 if __name__ == '__main__':

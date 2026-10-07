@@ -17,6 +17,13 @@ from pathlib import Path
 
 VERSION = "6.0.0"
 
+# Auto V-groove chamfer = this fraction of MaterialThickness, on one vertical
+# edge of each shingle -- the only thing separating neighbours, since they tile
+# edge to edge.  Must stay well under the wedge it cuts (WedgeThickness auto =
+# 1x material): the old auto value of 1.5x material exceeded it, makeChamfer
+# failed silently, and the shingles fused into one strip on 3D-print export.
+AUTO_CHAMFER_FRACTION = 0.5
+
 # Ensure geometry library is importable (same directory)
 _here = Path(__file__).parent
 for p in (str(_here), str(_here / '_lib')):
@@ -28,6 +35,7 @@ from shingle_geometry import (
     validate_stagger_pattern,
     calculate_shingle_placements,
     is_valid_clip_fragment,
+    chamfer_failure_message,
 )
 from freecad_utils import (  # noqa: E402
     resolve_sources_faces, get_roof_face_coordinate_system, GenericViewProxy,
@@ -99,8 +107,46 @@ def _clip_shape(shape, clip_volumes):
 # Shingle generation (from face + params dict)
 # =============================================================================
 
+def _chamfer_vertical_edge(shape, chamfer):
+    """Chamfer the shingle's one visible vertical edge (the V-groove joint).
+
+    Returns (shape, error).  error is None on success, else a short string and
+    the original shape is returned unchanged -- the caller counts failures and
+    reports them (see chamfer_failure_message); never swallow them here.
+    """
+    bb = shape.BoundBox
+    best_edge = None
+    best_score = -1
+    for edge in shape.Edges:
+        verts = edge.Vertexes
+        if len(verts) != 2:
+            continue
+        v0, v1 = verts[0].Point, verts[1].Point
+        avg_x = (v0.x + v1.x) / 2.0
+        avg_z = (v0.z + v1.z) / 2.0
+        score = avg_x / bb.XLength + avg_z / bb.ZLength
+        dy = abs(v1.y - v0.y)
+        if dy > edge.Length * 0.9 and score > best_score:
+            best_score = score
+            best_edge = edge
+    if best_edge is None:
+        return shape, "no vertical edge found to chamfer"
+    try:
+        chamfered = shape.makeChamfer(chamfer, [best_edge])
+    except Part.OCCError as e:
+        return shape, str(e)
+    if chamfered.ShapeType == 'Compound' and len(chamfered.Solids) == 1:
+        return chamfered.Solids[0], None
+    return chamfered, None
+
+
 def _generate_shingles_for_face(face, params):
-    """Generate shingle shapes for a single face. Returns list of Solids."""
+    """Generate shingle shapes for a single face.
+
+    Returns (solids, chamfer_stats) where chamfer_stats is a dict with
+    'attempted', 'failed' and 'first_error' so the caller can report chamfer
+    failures instead of silently producing groove-free (fused) shingles.
+    """
     shingle_width = params['shingle_width']
     shingle_height = params['shingle_height']
     material_thickness = params['material_thickness']
@@ -138,6 +184,7 @@ def _generate_shingles_for_face(face, params):
     final_rotation = App.Rotation(rotation_matrix)
 
     shingle_shapes = []
+    chamfer_stats = {'attempted': 0, 'failed': 0, 'first_error': None}
 
     for placement in placements:
         row, u, v, is_starter = (placement['row'], placement['u'],
@@ -174,32 +221,13 @@ def _generate_shingles_for_face(face, params):
 
         # Chamfer one vertical edge
             if chamfer > 0:
-                try:
-                    bb = shingle_shape.BoundBox
-                    best_edge = None
-                    best_score = -1
-                    for edge in shingle_shape.Edges:
-                        verts = edge.Vertexes
-                        if len(verts) != 2:
-                            continue
-                        v0, v1 = verts[0].Point, verts[1].Point
-                        avg_x = (v0.x + v1.x) / 2.0
-                        avg_z = (v0.z + v1.z) / 2.0
-                        score = avg_x / bb.XLength + avg_z / bb.ZLength
-                        dy = abs(v1.y - v0.y)
-                        if dy > edge.Length * 0.9 and score > best_score:
-                            best_score = score
-                            best_edge = edge
-                    if best_edge is not None:
-                        chamfered = shingle_shape.makeChamfer(chamfer,
-                                                              [best_edge])
-                        if (chamfered.ShapeType == 'Compound'
-                                and len(chamfered.Solids) == 1):
-                            shingle_shape = chamfered.Solids[0]
-                        else:
-                            shingle_shape = chamfered
-                except Exception:
-                    pass
+                chamfer_stats['attempted'] += 1
+                shingle_shape, chamfer_error = _chamfer_vertical_edge(
+                    shingle_shape, chamfer)
+                if chamfer_error is not None:
+                    chamfer_stats['failed'] += 1
+                    if chamfer_stats['first_error'] is None:
+                        chamfer_stats['first_error'] = chamfer_error
 
             shingle_shape.Placement = App.Placement(butt_position,
                                                     final_rotation)
@@ -212,7 +240,7 @@ def _generate_shingles_for_face(face, params):
             else:
                 shingle_shapes.append(shingle_shape)
 
-    return shingle_shapes
+    return shingle_shapes, chamfer_stats
 
 
 # =============================================================================
@@ -250,7 +278,7 @@ class ShingleProxy:
         add_property(obj, "App::PropertyLength", 'WedgeThickness', grp,
             "Butt-edge wedge thickness (0 = auto: 1x material)")
         add_property(obj, "App::PropertyLength", 'Chamfer', grp,
-            "V-groove chamfer at shingle edge (0 = auto: 1.5x material)")
+            "V-groove chamfer at shingle edge (0 = auto: 0.5x material)")
 
         add_property(obj, "App::PropertyString", 'GeneratorVersion', grp,
             "Generator version (read-only)", editor_mode=1)
@@ -287,7 +315,7 @@ class ShingleProxy:
             wedge = mat_thick * 1
         chamfer = float(obj.Chamfer)
         if chamfer == 0:
-            chamfer = mat_thick * 1.5
+            chamfer = mat_thick * AUTO_CHAMFER_FRACTION
 
         params = {
             'shingle_width':      float(obj.ShingleWidth),
@@ -320,13 +348,24 @@ class ShingleProxy:
         # directly, outside any try/except -- the same bug a same-day fix
         # already covered in 8 sibling proxies but missed here).
         all_shingles = []
+        chamfer_attempted = chamfer_failed = 0
+        chamfer_first_error = None
         for face, link_obj, sub_name in resolve_sources_faces(obj.Sources, "ShingleGenerator"):
             try:
-                pieces = _generate_shingles_for_face(face, params)
+                pieces, stats = _generate_shingles_for_face(face, params)
                 all_shingles.extend(pieces)
+                chamfer_attempted += stats['attempted']
+                chamfer_failed += stats['failed']
+                if chamfer_first_error is None:
+                    chamfer_first_error = stats['first_error']
             except Exception as e:
                 App.Console.PrintError(
                     f"  {link_obj.Label}.{sub_name}: {e}\n")
+
+        if chamfer_failed:
+            App.Console.PrintError(chamfer_failure_message(
+                chamfer_failed, chamfer_attempted, params['chamfer'],
+                params['wedge_thickness'], chamfer_first_error))
 
         if not all_shingles:
             App.Console.PrintWarning("ShingleGenerator: no shingles generated\n")
