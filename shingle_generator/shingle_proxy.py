@@ -15,7 +15,7 @@ import math
 import sys
 from pathlib import Path
 
-VERSION = "6.0.0"
+VERSION = "6.0.1"
 
 # Auto V-groove chamfer = this fraction of MaterialThickness, on one vertical
 # edge of each shingle -- the only thing separating neighbours, since they tile

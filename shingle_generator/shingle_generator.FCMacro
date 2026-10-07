@@ -1,5 +1,5 @@
 """
-Parametric Shingle Generator for FreeCAD v6.0.0
+Parametric Shingle Generator for FreeCAD v6.0.1
 
 Fully parametric: change ShingleWidth, Exposure, StaggerPattern, etc. in the
 Properties panel and the shingles regenerate automatically.
@@ -10,6 +10,21 @@ WORKFLOW:
 3. Shingle object appears — adjust properties in panel to taste
 
 Version History:
+- 6.0.1 (2026-10-07): Bug fixes (no new features, no property changes).
+       * Shingles fused into one strip on 3D-print export: the auto V-groove
+         chamfer (Chamfer = 0) was 1.5x MaterialThickness (0.375), larger than
+         the wedge it cuts (0.25), so OCCT's makeChamfer failed and the
+         failure was swallowed by a blanket `except: pass`. Auto is now 0.5x
+         MaterialThickness, and a chamfer that cannot be cut (e.g. an explicit
+         value >= the wedge) is reported once per recompute as a red error in
+         the Report view with the cause and fix, instead of passing silently.
+         Existing roofs with Chamfer = 0 pick up the groove on next recompute.
+       * Fixed a misplaced block (indentation slip from the 2026-09-15
+         course-math extraction) that would have silently dropped any
+         starter-course shingle. Latent only: the starter course has never
+         rendered (row 0 sits below the eave and is always skipped), so it is
+         now parked behind shingle_geometry.ENABLE_STARTER_COURSE = False.
+         Roof output is otherwise unchanged.
 - 6.0.0 (2026-08-08): FeaturePython conversion — this macro previously ran a
          completely independent ~950-line implementation that never touched
          shingle_proxy.py's parametric ShingleProxy object at all (full-review
