@@ -1,5 +1,5 @@
 """
-Parametric Clapboard Siding Generator for FreeCAD v7.0.0
+Parametric Clapboard Siding Generator for FreeCAD v7.0.1
 
 Fully parametric: change ClapboardHeight or ClapboardThickness in the
 Properties panel and the siding regenerates automatically.

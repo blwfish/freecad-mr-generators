@@ -1,5 +1,5 @@
 """
-Roof Seam Generator for FreeCAD v4.0.0
+Roof Seam Generator for FreeCAD v5.1.0
 
 Generates hip cap shingles or valley flashing between two selected roof faces.
 Fully parametric: change properties in panel and geometry updates.

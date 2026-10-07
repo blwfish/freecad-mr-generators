@@ -1,5 +1,5 @@
 """
-Parametric Brick Generator Macro v6.0.0
+Parametric Brick Generator Macro v7.4.0
 
 Fully parametric: change BondPattern, BrickWidth, MortarDepth, etc. in the
 Properties panel and the brickwork regenerates automatically.

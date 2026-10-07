@@ -1,5 +1,5 @@
 """
-Parametric Board-and-Batten Siding Generator for FreeCAD v2.0.0
+Parametric Board-and-Batten Siding Generator for FreeCAD v2.0.1
 
 Fully parametric: change BoardWidth, BattenWidth, BoardThickness, or
 BattenProjection in the Properties panel and the siding regenerates.

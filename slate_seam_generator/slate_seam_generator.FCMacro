@@ -1,5 +1,5 @@
 """
-Slate Seam Cap Generator for FreeCAD v1.0.0
+Slate Seam Cap Generator for FreeCAD v1.2.0
 
 Generates slate hip/ridge caps straddling the seam between two selected
 roof faces -- covering the residual gap/mismatch left where each face's

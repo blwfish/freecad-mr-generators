@@ -1,5 +1,5 @@
 """
-Parametric Bead Board Trim Generator for FreeCAD v2.0.0
+Parametric Bead Board Trim Generator for FreeCAD v2.0.1
 
 Fully parametric: change BeadSpacing, BeadDepth, or BeadGap in the Properties
 panel and the bead board trim regenerates.

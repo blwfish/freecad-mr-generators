@@ -253,6 +253,27 @@ whether a given proxy copies its whole input shape — it's good practice
 either way, just not sufficient on its own to fix the composition problem
 above.
 
+## Versioning rule: a code change to a generator bumps its VERSION
+
+The `VERSION = "x.y.z"` constant in `<generator>/*_proxy.py` is the single
+source of truth: the Report view prints it and every object stores it in
+`GeneratorVersion`, so it is the only way to tell which build made a model.
+Fixes used to land without a bump (shingle chamfer fix 2026-10-06; the 09-15
+review pass across several generators) until the number meant nothing.
+
+- Patch bump for a bug fix, minor for a feature, and add a line to the
+  macro's "Version History" docstring.
+- The macro docstring's first-line version ("... for FreeCAD v6.0.1") is a
+  hand-typed copy of `VERSION`; `tests/test_version_consistency.py` fails when
+  they drift.
+- A `commit-msg` hook (`tools/check_version_bump.py`) rejects a commit that
+  changes `<gen>/*.py` or `*.FCMacro` (outside `tests/`) without increasing
+  that generator's `VERSION`.  `shared/` changes are not checked.  A commit
+  that genuinely needs no bump (comment-only, a header sync) adds a trailer
+  line `No-Version-Bump: <reason>` to its message.
+- The hook is versioned in `.githooks/`; enable it once per clone:
+  `git config core.hooksPath .githooks`.
+
 ## Environment notes
 
 - FreeCAD MCP socket: auto-discovered via `~/.cache/freecad-mcp/instances/`
